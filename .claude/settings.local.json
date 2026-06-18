@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/agetka/vs-code/projects/NiChart_Project -maxdepth 4 -type f -name \"*.py\" | sort | head -60)",
+      "Read(//home/agetka/vs-code/projects/NiChart_Project/**)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)"
+    ]
+  }
+}

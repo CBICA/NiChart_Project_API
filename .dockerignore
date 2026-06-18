@@ -1,0 +1,18 @@
+.git
+.env
+.env.cloud-local
+.aws/
+aws-credentials*
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+dist/
+build/
+
+# Never bake user data or sample data into the image
+data/
+sample_data/

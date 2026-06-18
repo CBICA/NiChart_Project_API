@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      target: dev
+    ports:
+      - "${NICHART_PORT:-8000}:8000"
+    volumes:
+      # Bind-mount source so --reload picks up edits without rebuilding
+      - .:/app
+      # Host bind-mount for user data (not a named volume) so that sibling
+      # containers spawned by DockerBackend can reach the same directory.
+      # Set NICHART_HOST_DATA_PATH on the host to control where data lands.
+      - ${NICHART_HOST_DATA_PATH:-./data}:/data
+      # Docker socket — required for local pipeline execution (DockerBackend).
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      NICHART_EXECUTION_MODE: ${NICHART_EXECUTION_MODE:-local}
+      NICHART_DATA_ROOT: /data
+      # Tell DockerBackend the host-side path it should use when mounting
+      # /data into sibling containers. Must match NICHART_HOST_DATA_PATH.
+      NICHART_HOST_DATA_ROOT: ${NICHART_HOST_DATA_PATH:-./data}
+      NICHART_COGNITO_REGION: ${NICHART_COGNITO_REGION:-us-east-1}
+      NICHART_COGNITO_USER_POOL_ID: ${NICHART_COGNITO_USER_POOL_ID:-us-east-1_BSBhcKA66}
+      NICHART_COGNITO_IDENTITY_POOL_ID: ${NICHART_COGNITO_IDENTITY_POOL_ID:-us-east-1:12c87a16-8336-450c-bf25-b98990c7dcf8}
+      NICHART_STAGING_TTL_HOURS: ${NICHART_STAGING_TTL_HOURS:-24}
+      # Allowed CORS origins — set to the UI's domain in production.
+      # JSON array, e.g.: '["https://nichart.example.com"]'
+      NICHART_CORS_ORIGINS: ${NICHART_CORS_ORIGINS:-["http://localhost:3000"]}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

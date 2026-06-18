@@ -1,0 +1,39 @@
+pipeline_name: DLMUSE Brain Segmentation
+description: |
+  Segmentation pipeline starting from T1-weighted MRI brain scans.
+
+categories:
+  - image-processing
+  - segmentation
+  - feature-extraction
+
+requires:
+  - needs_T1
+
+steps:
+  - id: run_nichart_dlmuse
+    tool: nichart_dlmuse # MUST CORRESPOND EXACTLY to a tool in resources/tools dir
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+outputs:
+  download_dirs:
+    - ${STUDY}/dlmuse_seg
+    - ${STUDY}/dlmuse_vol
+  tabular_output:
+    - ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
+
+results:
+  batch_features:
+    file: "dlmuse_vol/DLMUSE_Volumes.csv"
+    mrid_column: "MRID"
+    label_map: "atlases/muse/muse_mapping_derived.csv"
+    column_template: "DL_MUSE_Volume_{id}"
+  per_subject:
+    - id: "segmentation"
+      pattern: "dlmuse_seg/{MRID}_DLMUSE.nii.gz"
+      type: "segmentation_nifti"
+  atlas: "atlases/muse/MNI152_1mm_LPS.nii.gz"
+  atlas_segmentation: "atlases/muse/MNI152_1mm_LPS_DLMUSE.nii.gz"

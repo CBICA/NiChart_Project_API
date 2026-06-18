@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""
+Get Cognito tokens for CLI / API testing.
+
+Usage:
+    # Print only the ID token (default — for Authorization: Bearer header)
+    python scripts/get-token.py user@example.com
+
+    # Print only the access token (for X-Access-Token header / Lambda calls)
+    python scripts/get-token.py user@example.com --access-token
+
+    # Print both as shell variable assignments (eval to set both at once)
+    python scripts/get-token.py user@example.com --env
+
+Common patterns:
+    TOKEN=$(python scripts/get-token.py user@example.com)
+    ACCESS_TOKEN=$(python scripts/get-token.py user@example.com --access-token)
+    # or in one call:
+    eval $(python scripts/get-token.py user@example.com --env)
+
+When submitting pipeline jobs in cloud mode, pass both:
+    curl -H "Authorization: Bearer $TOKEN" \\
+         -H "X-Access-Token: $ACCESS_TOKEN" \\
+         -X POST http://localhost:8000/projects/myproject/jobs/pipelines ...
+
+Requires ALLOW_USER_PASSWORD_AUTH on the Cognito app client.
+"""
+
+import getpass
+import json
+import sys
+import urllib.error
+import urllib.request
+
+USER_POOL_ID = "us-east-1_BSBhcKA66"
+CLIENT_ID    = "1ugglpalgp9r2gvb24s2v7dunq"
+REGION       = "us-east-1"
+ENDPOINT     = f"https://cognito-idp.{REGION}.amazonaws.com/"
+
+
+def get_tokens(email: str, password: str) -> dict:
+    body = json.dumps({
+        "AuthFlow": "USER_PASSWORD_AUTH",
+        "ClientId": CLIENT_ID,
+        "AuthParameters": {"USERNAME": email, "PASSWORD": password},
+    }).encode()
+
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=body,
+        headers={
+            "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+            "Content-Type": "application/x-amz-json-1.1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.load(resp)["AuthenticationResult"]
+    except urllib.error.HTTPError as e:
+        error = json.load(e)
+        print(f"Auth failed: {error.get('message', e)}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    mode = "id"
+    email_arg = None
+    for arg in args:
+        if arg == "--access-token":
+            mode = "access"
+        elif arg == "--env":
+            mode = "env"
+        else:
+            email_arg = arg
+
+    email    = email_arg or input("Email: ")
+    password = getpass.getpass("Password: ")
+    result   = get_tokens(email, password)
+
+    if mode == "access":
+        print(result["AccessToken"])
+    elif mode == "env":
+        print(f"TOKEN={result['IdToken']}")
+        print(f"ACCESS_TOKEN={result['AccessToken']}")
+    else:
+        print(result["IdToken"])

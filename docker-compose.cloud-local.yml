@@ -1,0 +1,37 @@
+# Cloud-local testing overlay.
+#
+# Runs the API server in cloud mode against the real Lambda/Batch/CloudWatch
+# stack using temporary credentials assumed from the ECS task role.
+#
+# Usage: see docs/cloud-local-testing.md
+#
+# Quick start (after running scripts/export-cloud-creds.sh):
+#   docker compose -f docker-compose.yml -f docker-compose.cloud-local.yml \
+#     --env-file .env.cloud-local up
+
+services:
+  api:
+    volumes:
+      # Mount /fsx/fsx at the same path so data paths sent to Lambda are valid.
+      # Create this directory first: sudo mkdir -p ${NICHART_HOST_DATA_PATH} && sudo chown $USER ${NICHART_HOST_DATA_PATH}
+      - ${NICHART_HOST_DATA_PATH:-./data}:/fsx/fsx
+    environment:
+      NICHART_EXECUTION_MODE: cloud
+      # Must match the path prefix the Lambda validates (/fsx/fsx/{user_sub}/).
+      NICHART_DATA_ROOT: /fsx/fsx
+      NICHART_HOST_DATA_ROOT: ${NICHART_HOST_DATA_PATH:-./data}
+      # Cognito — values default to the production pool used in cloud deployment.
+      NICHART_COGNITO_REGION: ${NICHART_COGNITO_REGION:-us-east-1}
+      NICHART_COGNITO_USER_POOL_ID: ${NICHART_COGNITO_USER_POOL_ID:-us-east-1_BSBhcKA66}
+      NICHART_COGNITO_IDENTITY_POOL_ID: ${NICHART_COGNITO_IDENTITY_POOL_ID:-us-east-1:12c87a16-8336-450c-bf25-b98990c7dcf8}
+      # Allowed CORS origins — set to the UI's domain in production.
+      # JSON array, e.g.: '["https://nichart.example.com"]'
+      NICHART_CORS_ORIGINS: ${NICHART_CORS_ORIGINS:-["http://localhost:3000"]}
+      # AWS Batch / Lambda
+      NICHART_BATCH_QUEUE_NAME: ${NICHART_BATCH_QUEUE_NAME:-cbica-nichart-jobqueue-standard}
+      NICHART_LAMBDA_FUNCTION_NAME: ${NICHART_LAMBDA_FUNCTION_NAME:-cbica-nichart-submitjob}
+      # Temporary credentials from scripts/export-cloud-creds.sh → .env.cloud-local
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}

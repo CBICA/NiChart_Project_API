@@ -1,0 +1,27 @@
+name: dcm2niix
+description: "Converts a single DICOM series to NIfTI format using dcm2niix."
+inputs:
+  input:
+    type: directory
+outputs:
+  output:
+    type: directory
+mounts:
+  input:
+    path_in_container: /mnt/in
+    mode: ro
+  output:
+    path_in_container: /mnt/out
+    mode: rw
+resources:
+  vcpus: 2
+  memory: 4096
+  gpus: 0
+container:
+  image: "ghcr.io/rordenlab/dcm2niix:latest"
+  command: "dcm2niix -o /mnt/out -z y -f {mrid} /mnt/in"
+parameters:
+  mrid:
+    type: str
+    default: subject
+time_per_subject_seconds: null

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Testing / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment — never commit actual secrets
+.env
+# Cloud-local testing env — contains temporary AWS credentials
+.env.cloud-local
+# Mounted AWS credential files
+.aws/
+aws-credentials*
+
+# Local data directories — never commit imaging data or sample data
+data/
+sample_data/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

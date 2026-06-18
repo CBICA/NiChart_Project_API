@@ -1,0 +1,27 @@
+name: dummy_sleep
+description: >
+  Synthetic no-op tool that sleeps for a configurable duration.
+  Used for testing pipeline orchestration and the job API without real imaging data.
+
+inputs: {}
+outputs: {}
+mounts: {}
+
+resources:
+  vcpus: 1
+  memory: 256
+  gpus: 0
+
+container:
+  image: "alpine:3.19"
+  command: "sleep {duration_seconds}"
+
+parameters:
+  duration_seconds:
+    type: int
+    default: 10
+
+# Optional: expected wall-clock seconds to process one subject.
+# Used by GET /cloud/status to estimate queue drain time.
+# null means no estimate is available for this tool.
+time_per_subject_seconds: null
