@@ -61,6 +61,23 @@ class PipelineRunDetail(PipelineRunSummary):
 
     steps: list[StepStatus] = Field(default_factory=list)
     error: str | None = Field(default=None, description="Top-level error message if the run failed.")
+    jobs_ahead: int | None = Field(
+        default=None,
+        description=(
+            "Number of Batch jobs submitted before this one that are still waiting "
+            "for compute capacity. Cloud mode only; null in local mode or when no "
+            "step is currently pending on the Batch queue."
+        ),
+    )
+    estimated_wait_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Estimated seconds until this job reaches the front of the queue, "
+            "computed as the sum of (num_subjects × time_per_subject_seconds) for "
+            "each job submitted ahead of this one. Null when timing data is "
+            "unavailable for any ahead job."
+        ),
+    )
 
 
 class PipelineRunLogs(BaseModel):

@@ -25,6 +25,7 @@ so resolved data paths match what the Lambda expects.
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -149,3 +150,64 @@ class BatchBackend(JobBackend):
             raise RuntimeError(f"Lambda error ({result.get('statusCode')}): {msg}")
         body = json.loads(result["body"])
         return BatchJobHandle(body["job_id"], self._batch, self._logs)
+
+    async def get_queue_position(
+        self,
+        job_id: str,
+        queue_name: str,
+        tools_path: Path,
+    ) -> tuple[int, float | None]:
+        """Return (jobs_ahead, estimated_wait_seconds) for a queued Batch job.
+
+        Counts all SUBMITTED/PENDING/RUNNABLE jobs on the queue that were
+        submitted *before* the given job, then sums their
+        num_subjects × time_per_subject_seconds to estimate the wait.
+        """
+        from app.services.catalog_service import get_tool
+
+        our_resp = await asyncio.to_thread(self._batch.describe_jobs, jobs=[job_id])
+        if not our_resp["jobs"]:
+            return 0, None
+        our_created_at: int = our_resp["jobs"][0].get("createdAt", 0)
+
+        ahead_ids: list[str] = []
+        for status in ("SUBMITTED", "PENDING", "RUNNABLE"):
+            next_token = None
+            while True:
+                kwargs: dict[str, Any] = {"jobQueue": queue_name, "jobStatus": status}
+                if next_token:
+                    kwargs["nextToken"] = next_token
+                resp = await asyncio.to_thread(self._batch.list_jobs, **kwargs)
+                for j in resp.get("jobSummaryList", []):
+                    if j["jobId"] != job_id and j.get("createdAt", float("inf")) < our_created_at:
+                        ahead_ids.append(j["jobId"])
+                next_token = resp.get("nextToken")
+                if not next_token:
+                    break
+
+        if not ahead_ids:
+            return 0, None
+
+        total_secs = 0.0
+        has_estimate = False
+        for i in range(0, len(ahead_ids), 100):
+            details = (
+                await asyncio.to_thread(self._batch.describe_jobs, jobs=ahead_ids[i : i + 100])
+            ).get("jobs", [])
+            for job in details:
+                params = job.get("parameters", {})
+                tool_id = params.get("tool_id")
+                try:
+                    ns = int(params.get("num_subjects", 1))
+                except (ValueError, TypeError):
+                    ns = 1
+                if tool_id:
+                    try:
+                        tspec = get_tool(tools_path, tool_id)
+                        if tspec.time_per_subject_seconds is not None:
+                            total_secs += tspec.time_per_subject_seconds * ns
+                            has_estimate = True
+                    except Exception:
+                        pass
+
+        return len(ahead_ids), (total_secs if has_estimate else None)

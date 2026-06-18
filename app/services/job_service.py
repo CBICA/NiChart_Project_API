@@ -341,10 +341,18 @@ async def run_pipeline_task(
             _persist_run(run, study_dir)
             return
 
-        # Estimate subject count for cloud queue drain metric
+        # Estimate subject count for cloud queue-drain metric.
+        # For directory inputs, count NIfTI files inside (each = one subject).
+        # For file inputs, count each file as one subject.
+        # Take the max across all inputs as the upper-bound estimate.
+        def _count_subjects(p: Path) -> int:
+            if p.is_dir():
+                return sum(1 for f in p.iterdir() if f.suffix in (".gz", ".nii"))
+            return 1 if p.exists() else 0
+
         num_subjects = max(
             1,
-            sum(1 for v in resolved_inputs.values() if Path(v).is_file()),
+            max((_count_subjects(Path(v)) for v in resolved_inputs.values()), default=0),
         ) if resolved_inputs else 1
 
         step.status = "running"

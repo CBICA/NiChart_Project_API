@@ -112,7 +112,11 @@ async def list_pipeline_runs(
     summary="Get pipeline run detail",
     description=(
         "Returns the full run record including per-step status, timestamps, "
-        "and any error messages."
+        "and any error messages. "
+        "In cloud mode, while a step is actively waiting on the Batch queue, "
+        "``jobs_ahead`` and ``estimated_wait_seconds`` are populated by querying "
+        "all jobs submitted to the queue before this one. These fields are null "
+        "in local mode or once a job has left the queue."
     ),
     response_model=PipelineRunDetail,
     responses={**_AUTH_ERRORS, 404: {"model": ErrorDetail}},
@@ -120,8 +124,34 @@ async def list_pipeline_runs(
 async def get_pipeline_run(
     run_id: str,
     user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+    backend: JobBackend = Depends(get_backend),
 ) -> PipelineRunDetail:
-    return job_service.get_run_detail(run_id=run_id, user_id=user.sub)
+    detail = job_service.get_run_detail(run_id=run_id, user_id=user.sub)
+
+    if settings.execution_mode == "cloud" and detail.status == "running":
+        from app.backends.batch_backend import BatchBackend
+
+        if isinstance(backend, BatchBackend):
+            pending_job_id = next(
+                (s.job_id for s in detail.steps if s.status == "running" and s.job_id),
+                None,
+            )
+            if pending_job_id:
+                try:
+                    jobs_ahead, wait_secs = await backend.get_queue_position(
+                        job_id=pending_job_id,
+                        queue_name=settings.batch_queue_name,
+                        tools_path=settings.tools_path,
+                    )
+                    detail = detail.model_copy(update={
+                        "jobs_ahead": jobs_ahead,
+                        "estimated_wait_seconds": wait_secs,
+                    })
+                except Exception:
+                    pass  # queue position is best-effort; don't fail the request
+
+    return detail
 
 
 @jobs_router.get(
