@@ -28,14 +28,26 @@ from app.routers.results import router as results_router
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Startup / shutdown hook. Extend here as services are added."""
+    import logging
+
+    from app.backends import get_backend_instance
     from app.services import job_service
 
+    _log = logging.getLogger(__name__)
     settings = get_settings()
     # Ensure data root exists (local mode); cloud FSx handles this transparently.
     if settings.execution_mode == "local":
         settings.data_root.mkdir(parents=True, exist_ok=True)
-    # Restore run history from disk (marks in-progress runs as failed).
+    # Restore run history from disk. SLURM runs still marked "running" are left
+    # as-is so resume_runs() below can reconnect to them.
     job_service.load_runs_from_disk(settings.data_root)
+    # Re-attach polling tasks for any SLURM jobs that survived the last restart.
+    if job_service.has_slurm_runs_to_resume():
+        try:
+            backend = get_backend_instance(settings)
+            await job_service.resume_runs(settings, backend)
+        except Exception as exc:
+            _log.warning("Could not resume SLURM runs at startup: %s", exc)
     yield
 
 

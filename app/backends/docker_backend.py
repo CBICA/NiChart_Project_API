@@ -72,6 +72,10 @@ class DockerBackend(JobBackend):
         self._data_root = settings.data_root
         self._host_data_root = settings.host_data_root or settings.data_root
 
+    @property
+    def backend_name(self) -> str:
+        return "docker"
+
     def _host_path(self, container_path: str) -> str:
         """Translate a container-internal data path to the corresponding host-side path."""
         p = Path(container_path)

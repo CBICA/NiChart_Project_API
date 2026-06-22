@@ -66,9 +66,56 @@ class Settings(BaseSettings):
         ),
     )
 
+    # S3 data sync — cloud mode only.
+    # When s3_data_bucket is set the job orchestrator syncs project data to S3
+    # before submitting each step and pulls results back after completion.
+    # This removes the FSx dependency for cloud-local testing and makes FSx
+    # optional in production (FSx remains useful for concurrent jobs at scale).
+    s3_data_bucket: str | None = Field(
+        default=None,
+        description=(
+            "S3 bucket for project data sync. When set, data is uploaded before "
+            "each pipeline step and downloaded after. e.g. 'cbica-nichart-io'."
+        ),
+    )
+    s3_data_prefix: str = Field(
+        default="fsx",
+        description="Key prefix within s3_data_bucket mirroring the FSx layout.",
+    )
+
     staging_ttl_hours: int = Field(
         default=24,
         description="Hours after which uncommitted staging uploads are eligible for cleanup.",
+    )
+
+    # Explicit backend override.
+    # When set, this takes precedence over the execution_mode auto-selection.
+    # Valid values: "docker", "singularity", "batch".
+    # When unset (default), the backend is chosen automatically:
+    #   execution_mode=cloud                         → batch
+    #   execution_mode=local + sif_dir is set        → singularity
+    #   execution_mode=local (default)               → docker
+    job_backend: str | None = Field(
+        default=None,
+        description=(
+            "Explicit job backend override: 'docker', 'singularity', or 'batch'. "
+            "When unset, the backend is inferred from execution_mode and sif_dir."
+        ),
+    )
+
+    # Singularity/Apptainer local mode.
+    # When sif_dir is set AND execution_mode is 'local', the Singularity backend is
+    # used instead of Docker. Run scripts/build-sif-registry.py first to populate it.
+    sif_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Directory containing pre-built .sif images. "
+            "When set in local mode, the Singularity backend is used instead of Docker."
+        ),
+    )
+    container_runner: str = Field(
+        default="apptainer",
+        description="Singularity runner command ('apptainer' or 'singularity').",
     )
 
     # Docker (local mode) — host-side path to the data directory so sibling containers
@@ -83,6 +130,41 @@ class Settings(BaseSettings):
             "Defaults to data_root when not set."
         ),
     )
+
+    # SLURM backend — only used when NICHART_JOB_BACKEND=slurm.
+    # Requires apptainer on the compute nodes and NICHART_SIF_DIR set.
+    slurm_partition: str | None = Field(
+        default=None,
+        description="SLURM partition for job submissions (e.g. 'gpu'). Uses cluster default if unset.",
+    )
+    slurm_account: str | None = Field(
+        default=None,
+        description="SLURM account/project to charge (--account flag). Uses user default if unset.",
+    )
+    slurm_extra_sbatch_args: list[str] = Field(
+        default=[],
+        description="Extra sbatch flags appended verbatim, e.g. ['--constraint=h100'].",
+    )
+    slurm_logs_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Directory for SLURM job log files. Named {job_id}.log. "
+            "Defaults to <data_root>/_slurm_logs. "
+            "Must be on a filesystem accessible to both the API server and compute nodes."
+        ),
+    )
+    slurm_time_safety_factor: float = Field(
+        default=2.0,
+        description="Multiply estimated job time by this factor when setting --time.",
+    )
+    slurm_default_time_minutes: int = Field(
+        default=1440,
+        description="SLURM --time limit (minutes) when no time_per_subject_seconds estimate is available.",
+    )
+    slurm_sbatch_cmd: str = Field(default="sbatch", description="Path or name of the sbatch executable.")
+    slurm_squeue_cmd: str = Field(default="squeue", description="Path or name of the squeue executable.")
+    slurm_sacct_cmd: str = Field(default="sacct", description="Path or name of the sacct executable.")
+    slurm_scancel_cmd: str = Field(default="scancel", description="Path or name of the scancel executable.")
 
     @property
     def jwks_url(self) -> str:

@@ -8,11 +8,14 @@ from pydantic import BaseModel, Field
 
 
 class ParameterSpec(BaseModel):
-    """Specification for a single tool parameter."""
+    """Specification for a single configurable parameter."""
 
     type: str = Field(description="Python type name: 'int', 'float', 'bool', or 'str'.")
     default: Any | None = Field(default=None, description="Default value if not supplied by the caller.")
+    description: str | None = Field(default=None, description="Human-readable description for UI rendering.")
     choices: list[Any] | None = Field(default=None, description="Exhaustive list of allowed values, if constrained.")
+    min: float | None = Field(default=None, description="Minimum value (numeric types only).")
+    max: float | None = Field(default=None, description="Maximum value (numeric types only).")
 
 
 class IOField(BaseModel):
@@ -78,6 +81,16 @@ class PipelineSummary(BaseModel):
 
 
 class PipelineDetail(PipelineSummary):
-    """Full pipeline definition including ordered steps."""
+    """Full pipeline definition including ordered steps and user-configurable parameters."""
 
     steps: list[PipelineStep] = Field(default_factory=list)
+    parameters: dict[str, ParameterSpec] = Field(
+        default_factory=dict,
+        description=(
+            "User-overridable parameters for this pipeline. "
+            "Each entry describes the type, default, and optional constraints. "
+            "Pass values via ``params`` in the pipeline submit body. "
+            "Step-level params in the YAML are fixed by the pipeline author and "
+            "cannot be overridden."
+        ),
+    )

@@ -12,12 +12,14 @@
 services:
   api:
     volumes:
-      # Mount /fsx/fsx at the same path so data paths sent to Lambda are valid.
-      # Create this directory first: sudo mkdir -p ${NICHART_HOST_DATA_PATH} && sudo chown $USER ${NICHART_HOST_DATA_PATH}
+      # NICHART_HOST_DATA_PATH can be any directory on the host — it is mounted
+      # at /fsx/fsx inside the container so data paths sent to the Lambda match
+      # the prefix it validates (/fsx/fsx/{user_sub}/...).
+      # Example: export NICHART_HOST_DATA_PATH=~/nichart-data
       - ${NICHART_HOST_DATA_PATH:-./data}:/fsx/fsx
     environment:
       NICHART_EXECUTION_MODE: cloud
-      # Must match the path prefix the Lambda validates (/fsx/fsx/{user_sub}/).
+      # Path inside the container — must match the Lambda's expected prefix.
       NICHART_DATA_ROOT: /fsx/fsx
       NICHART_HOST_DATA_ROOT: ${NICHART_HOST_DATA_PATH:-./data}
       # Cognito — values default to the production pool used in cloud deployment.
@@ -30,6 +32,12 @@ services:
       # AWS Batch / Lambda
       NICHART_BATCH_QUEUE_NAME: ${NICHART_BATCH_QUEUE_NAME:-cbica-nichart-jobqueue-standard}
       NICHART_LAMBDA_FUNCTION_NAME: ${NICHART_LAMBDA_FUNCTION_NAME:-cbica-nichart-submitjob}
+      # S3 data sync — when set, the API server automatically syncs project data
+      # to S3 before each pipeline step and pulls results back after completion.
+      # This eliminates the need for FSx and makes manual fsx-sync.sh calls
+      # unnecessary. Set to the bucket name (without s3://).
+      NICHART_S3_DATA_BUCKET: ${NICHART_S3_DATA_BUCKET:-cbica-nichart-io}
+      NICHART_S3_DATA_PREFIX: ${NICHART_S3_DATA_PREFIX:-fsx}
       # Temporary credentials from scripts/export-cloud-creds.sh → .env.cloud-local
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}

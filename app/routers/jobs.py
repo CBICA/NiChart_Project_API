@@ -13,12 +13,15 @@ URL structure:
   DELETE /jobs/pipelines/{run_id}                — cancel
 """
 
+import re
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from app.auth.dependencies import CurrentUser, require_auth
 from app.backends import get_backend
 from app.backends.base import JobBackend
 from app.config import Settings, get_settings
+from app.models.catalog import ParameterSpec, PipelineDetail
 from app.models.errors import ErrorDetail
 from app.models.jobs import (
     PipelineRunDetail,
@@ -27,6 +30,96 @@ from app.models.jobs import (
     PipelineRunSummary,
 )
 from app.services import catalog_service, file_service, job_service
+from app.services.job_service import S3SyncConfig
+
+
+_TYPE_MAP: dict[str, type] = {"int": int, "float": float, "bool": bool, "str": str}
+
+# Allowlist for free-entry string parameters. Rejects spaces and all shell
+# metacharacters (; | & $ ` ( ) < > ! \ " ' # ~ { } [ ] * ? ^ % = + @).
+# Choices-constrained string params bypass this check (they're whitelisted explicitly).
+_SAFE_STRING_RE = re.compile(r"^[a-zA-Z0-9._-]{1,256}$")
+
+
+def _resolve_params(
+    submitted: dict,
+    declared: dict[str, ParameterSpec],
+) -> dict:
+    """Validate submitted params against declared schema and apply defaults.
+
+    Returns the effective params dict (defaults filled in, types coerced).
+    Raises HTTPException(400) for:
+      - unknown parameter names
+      - wrong type
+      - value not in ``choices``
+      - numeric value outside ``min``/``max``
+      - free-entry string containing spaces or shell metacharacters
+    """
+    unknown = set(submitted) - set(declared)
+    if unknown:
+        raise HTTPException(
+            400,
+            f"Unknown pipeline parameter(s): {sorted(unknown)}. "
+            f"Accepted: {sorted(declared)}",
+        )
+
+    effective: dict = {}
+    for name, spec in declared.items():
+        if name in submitted:
+            raw = submitted[name]
+            # Coerce type — booleans must be checked before int since bool <: int.
+            if spec.type == "bool":
+                if not isinstance(raw, bool):
+                    raise HTTPException(
+                        400,
+                        f"Parameter '{name}' must be a boolean (true/false), "
+                        f"got {type(raw).__name__!r}",
+                    )
+            else:
+                py_type = _TYPE_MAP.get(spec.type)
+                if py_type is not None:
+                    try:
+                        raw = py_type(raw)
+                    except (TypeError, ValueError):
+                        raise HTTPException(
+                            400,
+                            f"Parameter '{name}' must be of type {spec.type!r}, "
+                            f"got {type(raw).__name__!r}",
+                        )
+
+            # Choices whitelist (all types).
+            if spec.choices is not None and raw not in spec.choices:
+                raise HTTPException(
+                    400,
+                    f"Parameter '{name}': {raw!r} is not an allowed value. "
+                    f"Must be one of: {spec.choices}",
+                )
+
+            # Numeric range (int and float only).
+            if spec.type in ("int", "float"):
+                if spec.min is not None and raw < spec.min:
+                    raise HTTPException(400, f"Parameter '{name}' must be >= {spec.min}")
+                if spec.max is not None and raw > spec.max:
+                    raise HTTPException(400, f"Parameter '{name}' must be <= {spec.max}")
+
+            # String injection guard.
+            # Choices-constrained strings are safe (already whitelisted above).
+            # Free-entry strings are restricted to [a-zA-Z0-9._-] to prevent
+            # shell metacharacters from reaching bash -c in Batch jobs.
+            if spec.type == "str" and spec.choices is None:
+                if not _SAFE_STRING_RE.match(str(raw)):
+                    raise HTTPException(
+                        400,
+                        f"Parameter '{name}': free-entry string values must contain "
+                        f"only letters, digits, '.', '_', or '-' (max 256 chars). "
+                        f"Spaces and shell metacharacters are not allowed.",
+                    )
+
+            effective[name] = raw
+        else:
+            if spec.default is not None:
+                effective[name] = spec.default
+    return effective
 
 # Two routers: one project-scoped (for submission), one top-level (for queries)
 project_router = APIRouter(prefix="/projects/{project_id}/jobs", tags=["Jobs"])
@@ -67,22 +160,30 @@ async def submit_pipeline(
 ) -> PipelineRunDetail:
     pdir = file_service.resolve_project(settings, user, project_id)
     pipeline = catalog_service.get_pipeline(settings.pipelines_path, body.pipeline_id)
+    effective_params = _resolve_params(body.params, pipeline.parameters)
     run = job_service.create_pipeline_run(
         user_id=user.sub,
         project_id=project_id,
         pipeline_id=body.pipeline_id,
         pipeline_steps=pipeline.steps,
     )
+    s3_sync: S3SyncConfig | None = None
+    if settings.s3_data_bucket and settings.execution_mode == "cloud":
+        s3_sync = S3SyncConfig(
+            bucket=settings.s3_data_bucket,
+            prefix=settings.s3_data_prefix,
+        )
     background_tasks.add_task(
         job_service.run_pipeline_task,
         run=run,
         pipeline_steps=pipeline.steps,
         study_dir=pdir,
         backend=backend,
-        user_params=body.params,
+        user_params=effective_params,
         reuse_cached_steps=body.reuse_cached_steps,
         user_token=user.token,
         tools_path=settings.tools_path,
+        s3_sync=s3_sync,
     )
     return job_service.get_run_detail(run.run_id, user.sub)
 

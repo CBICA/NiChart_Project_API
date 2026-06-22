@@ -2,7 +2,7 @@
 
 Run the NiChart API server on your local machine in `cloud` mode — with real
 Cognito auth, real Lambda invocations, and real Batch/CloudWatch interactions —
-without needing the full ECS deployment.
+without needing the full ECS deployment or an FSx mount.
 
 ---
 
@@ -12,33 +12,56 @@ without needing the full ECS deployment.
 |---|---|---|
 | JWT auth | Cognito (enforced) | Cognito (enforced — same pool) |
 | Job submission | Lambda → Batch | Lambda → Batch (same Lambda) |
-| Data root | `/fsx/fsx` on FSx | `/fsx/fsx` on your local disk |
-| Batch job data | Available on FSx | **Not available** — Batch jobs will start but fail because input data doesn't exist on FSx |
-| Credentials | ECS task role (auto) | Assumed via `sts:AssumeRole` |
+| Data root | `/fsx/fsx` inside container | Any host directory, mounted at `/fsx/fsx` inside container |
+| Data durability | FSx for Lustre (S3-mirrored) | S3 directly — API server syncs before/after each step |
+| Credentials | ECS task role (auto-refresh) | Assumed via `sts:AssumeRole` (expires after max session duration) |
 
-**What you can test:** auth enforcement, project/file management endpoints,
-Lambda submission, Batch job queuing, Batch status polling, CloudWatch log
-retrieval.
+**What you can test end-to-end:** auth, project/file management, Lambda submission,
+full pipeline execution (Batch containers pull inputs from S3 and push outputs back —
+the API server handles the sync automatically).
 
-**What you cannot test end-to-end:** pipeline execution (Batch containers won't
-find your locally-created data on FSx unless you separately upload it there).
+**What differs from production:** credentials are temporary STS tokens and expire;
+there is no FSx layer so very large concurrent workloads won't benefit from FSx's
+caching — for testing this doesn't matter.
+
+---
+
+## How S3 sync works
+
+The Lambda already injects `aws s3 sync` at both ends of every Batch job command:
+
+```
+aws s3 sync s3://{bucket}/fsx/{user_id} /fsx/fsx/{user_id}  &&  <tool>  &&
+aws s3 sync /fsx/fsx/{user_id} s3://{bucket}/fsx/{user_id}
+```
+
+In production, FSx transparently bridges this S3 bucket and the container's
+filesystem. In cloud-local mode, the API server replaces FSx:
+
+1. **Before submitting each step**: the API server uploads the project directory
+   to `s3://{bucket}/fsx/{user_id}/{project}/` so the Batch job finds its inputs.
+2. **After each step completes** (success or failure): the API server downloads
+   from S3 so pipeline outputs appear locally and can be served via the files API.
+
+This is all automatic when `NICHART_S3_DATA_BUCKET` is set (it is, in the
+compose overlay). No manual `fsx-sync.sh` calls needed.
 
 ---
 
 ## One-time setup
 
-### 1. Create `/fsx/fsx` locally
+### 1. Choose a data directory
 
-The API sends data paths under `/fsx/fsx/{user_sub}/...` to the Lambda.
-The Lambda validates they fall within that prefix, so the path must match
-exactly. Create the directory on your machine:
+Pick any directory on your machine. The overlay mounts it at `/fsx/fsx` inside
+the container — that path is what the Lambda validates. The host path is arbitrary.
 
 ```bash
-sudo mkdir -p /fsx/fsx
-sudo chown $USER:$USER /fsx/fsx
+export NICHART_HOST_DATA_PATH=~/nichart-data
+mkdir -p "$NICHART_HOST_DATA_PATH"
 ```
 
-The compose overlay mounts this directory into the container at the same path.
+Add this export to your shell profile so it survives new terminals, or set it in
+`.env.cloud-local` (the overlay picks it up via `--env-file`).
 
 ### 2. Create a dedicated IAM user for local testing
 
@@ -104,11 +127,16 @@ aws ecs describe-task-definition \
   --profile nichart-local-dev
 ```
 
+**f. (Optional) Increase the role's maximum session duration**
+By default STS tokens expire after 1 hour. For longer sessions (up to 12 hours):
+IAM → Roles → (the task role) → Edit → Maximum session duration → 6 hours.
+Then update `scripts/export-cloud-creds.sh` has `--duration-seconds 21600`.
+
 ---
 
 ## Daily workflow
 
-### Step 1 — Export credentials (refresh hourly)
+### Step 1 — Export credentials
 
 ```bash
 scripts/export-cloud-creds.sh \
@@ -116,7 +144,7 @@ scripts/export-cloud-creds.sh \
   --profile nichart-local-dev
 ```
 
-This calls `sts:AssumeRole`, writes the temporary credentials to `.env.cloud-local`
+This calls `sts:AssumeRole`, writes temporary credentials to `.env.cloud-local`
 (git-ignored), and prints the expiration time. Re-run when they expire.
 
 `jq` must be installed (`sudo apt install jq` / `brew install jq`).
@@ -129,62 +157,30 @@ docker compose -f docker-compose.yml -f docker-compose.cloud-local.yml \
 ```
 
 The overlay:
-- Overrides `NICHART_EXECUTION_MODE=cloud` and `NICHART_DATA_ROOT=/fsx/fsx`
-- Passes the `AWS_*` credentials from `.env.cloud-local` into the container
-- Mounts `/fsx/fsx` at the same path inside the container
+- Sets `NICHART_EXECUTION_MODE=cloud` and `NICHART_DATA_ROOT=/fsx/fsx`
+- Mounts `$NICHART_HOST_DATA_PATH` at `/fsx/fsx` inside the container
+- Sets `NICHART_S3_DATA_BUCKET=cbica-nichart-io` to enable automatic S3 sync
+- Passes the temporary `AWS_*` credentials into the container
 
 The server starts on `http://localhost:8000`.
 
-### Step 3 — Get Cognito tokens
+### Step 3 — Get a Cognito token
 
-Cloud mode enforces auth on all non-public routes. Use `scripts/get-token.py`
-to sign in with your Cognito email and password.
-
-The API server validates the **ID token** (`Authorization: Bearer`), but the
-Lambda verifies the caller via Cognito's `GetUser` API which requires an
-**access token**. Fetch both in one call:
+Cloud mode enforces auth on all non-public routes.
 
 ```bash
-# Prompts for password; sets TOKEN (ID token) and ACCESS_TOKEN in the shell
-eval $(python scripts/get-token.py your@email.com --env)
+# Prompts for password; prints the ID token
+TOKEN=$(python scripts/get-token.py your@email.com)
 
-# Regular API requests only need the ID token
+# Verify it works
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects
-
-# Pipeline submission requires both — the access token is forwarded to Lambda
-curl -H "Authorization: Bearer $TOKEN" \
-     -H "X-Access-Token: $ACCESS_TOKEN" \
-     -X POST http://localhost:8000/projects/myproject/jobs/pipelines ...
 ```
 
-Tokens are valid for 1 hour by default. Re-run and re-`eval` to refresh.
-No AWS credentials or browser flow required — the script calls Cognito's
-HTTPS API directly.
+Tokens expire after 1 hour. Re-run the script to refresh.
 
-### Step 4 — Test pipeline submission
+### Step 4 — Run a pipeline end-to-end
 
-FSx for Lustre mirrors `s3://cbica-nichart-io/fsx/`. Batch jobs read input
-from and write output to FSx, so local data must be uploaded to S3 first, and
-results must be downloaded afterwards. `scripts/fsx-sync.sh` handles both
-directions using the task role credentials in `.env.cloud-local`.
-
-**Find your Cognito sub** (the directory name under `/fsx/fsx/`):
 ```bash
-# After creating at least one project through the API, your sub dir appears:
-ls /fsx/fsx/
-
-# Or decode it directly from the token:
-python3 -c "
-import sys, base64, json
-t = sys.argv[1].split('.')[1]
-t += '=' * (4 - len(t) % 4)
-print(json.loads(base64.b64decode(t))['sub'])
-" "$TOKEN"
-```
-
-**Full test workflow:**
-```bash
-SUB="<your-cognito-sub>"
 PROJECT="my-test-project"
 
 # 1. Create the project
@@ -193,37 +189,65 @@ curl -s -X POST http://localhost:8000/projects \
   -H "Content-Type: application/json" \
   -d "{\"name\": \"$PROJECT\"}" | jq
 
-# 2. Upload imaging data locally (e.g. a T1 NIfTI)
-curl -s -X POST "http://localhost:8000/projects/$PROJECT/files/upload/nifti" \
+# 2. Upload a T1 NIfTI (two-step: stage then commit)
+STAGE=$(curl -s -X POST "http://localhost:8000/projects/$PROJECT/files/upload/nifti" \
   -H "Authorization: Bearer $TOKEN" \
-  -F "files=@/path/to/sub001_T1.nii.gz" | jq
-# ... then commit the staging proposal via the commit endpoint
+  -F "files=@/path/to/sub001_T1.nii.gz")
+echo "$STAGE" | jq
 
-# 3. Sync local data up to S3 so Batch can see it
-scripts/fsx-sync.sh up --user "$SUB" --project "$PROJECT"
+STAGING_ID=$(echo "$STAGE" | jq -r '.staging_id')
+curl -s -X POST "http://localhost:8000/projects/$PROJECT/files/stage/$STAGING_ID/commit" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mappings": [{"filename": "sub001_T1.nii.gz", "mrid": "sub001", "modality": "t1"}]}' | jq
 
-# 4. Submit the pipeline (Lambda invoked → Batch job queued)
-#    X-Access-Token is required so the Lambda can verify you via Cognito GetUser
+# 3. Submit the pipeline
+#    The API server automatically uploads data to S3 before Batch sees the job.
 RUN_ID=$(curl -s -X POST "http://localhost:8000/projects/$PROJECT/jobs/pipelines" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-Access-Token: $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"pipeline_id": "run_dlmuse"}' | jq -r '.run_id')
+echo "Run: $RUN_ID"
 
-# 5. Poll until the job finishes (Batch runs on the cloud side)
+# 4. Poll status (Batch runs on the cloud side)
 curl -s "http://localhost:8000/jobs/pipelines/$RUN_ID" \
-  -H "Authorization: Bearer $TOKEN" | jq '.status'
+  -H "Authorization: Bearer $TOKEN" | jq '{status, jobs_ahead, estimated_wait_seconds}'
 
-# 6. Check CloudWatch logs
+# 5. Wait for completion, then inspect results
+#    Results are downloaded from S3 automatically after the step finishes.
+curl -s "http://localhost:8000/projects/$PROJECT/results/run_dlmuse" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 6. Check logs if anything went wrong
 curl -s "http://localhost:8000/jobs/pipelines/$RUN_ID/logs" \
   -H "Authorization: Bearer $TOKEN" | jq -r '.logs'
+```
 
-# 7. Sync results back down from S3
+No manual S3 sync steps needed — the API server handles it automatically.
+
+---
+
+## Manual S3 inspection
+
+If you want to inspect or pre-populate data in S3 directly, `scripts/fsx-sync.sh`
+is still available:
+
+```bash
+# Upload to S3 manually (e.g. to pre-seed data for a Batch-only test)
+scripts/fsx-sync.sh up --user "$SUB" --project "$PROJECT"
+
+# Download from S3 manually (e.g. to retrieve results if the server was restarted)
 scripts/fsx-sync.sh down --user "$SUB" --project "$PROJECT"
+```
 
-# 8. Results are now visible via the files API
-curl -s "http://localhost:8000/projects/$PROJECT/files" \
-  -H "Authorization: Bearer $TOKEN" | jq
+Find your Cognito `sub`:
+```bash
+python3 -c "
+import sys, base64, json
+t = sys.argv[1].split('.')[1]
+t += '=' * (4 - len(t) % 4)
+print(json.loads(base64.b64decode(t))['sub'])
+" "$TOKEN"
 ```
 
 ---
@@ -232,18 +256,16 @@ curl -s "http://localhost:8000/projects/$PROJECT/files" \
 
 | File | Purpose |
 |---|---|
-| `docker-compose.cloud-local.yml` | Compose overlay — mounts `/fsx/fsx`, sets cloud env vars, passes credentials |
-| `.env.cloud-local` | Temporary AWS credentials (git-ignored, written by the script) |
+| `docker-compose.cloud-local.yml` | Compose overlay — mounts data dir at `/fsx/fsx`, sets cloud env vars, enables S3 sync |
+| `.env.cloud-local` | Temporary AWS credentials (git-ignored, written by the export script) |
 | `.env.cloud-local.example` | Template — copy to `.env.cloud-local` if populating manually |
 | `scripts/export-cloud-creds.sh` | Assumes the task role and writes `.env.cloud-local` |
 | `scripts/get-token.py` | Signs in with Cognito email/password and prints an ID token |
-| `scripts/fsx-sync.sh` | Syncs `/fsx/fsx/` ↔ `s3://cbica-nichart-io/fsx/` (up before submit, down after) |
+| `scripts/fsx-sync.sh` | Manual S3 sync helper (not required for normal workflow) |
 
 ---
 
 ## Refreshing expired credentials
-
-Credentials are valid for 1 hour. When they expire:
 
 ```bash
 scripts/export-cloud-creds.sh \
@@ -270,8 +292,12 @@ issued by the old ALB app client.
 Your IAM identity isn't in the task role's trust policy. See the one-time setup step above.
 
 **`Lambda returned 403 / path not within allowed prefix`**
-`NICHART_DATA_ROOT` isn't `/fsx/fsx`. The overlay sets this automatically; make sure you're
-using both compose files.
+`NICHART_DATA_ROOT` inside the container isn't `/fsx/fsx`. Make sure you're using
+both compose files and the overlay is applied correctly.
+
+**`S3 pre-sync failed: ...` in pipeline logs**
+The task role is missing S3 permissions on `cbica-nichart-io`. The role should
+already have these for FSx access — check the attached policies in IAM.
 
 **`[No log stream yet — job ... status: RUNNABLE]`**
 The Batch job is still queued. Poll status a few times; the log stream only appears
@@ -279,7 +305,3 @@ once the container starts.
 
 **`[CloudWatch error: ... AccessDeniedException]`**
 The task role is missing `logs:GetLogEvents` on `/aws/batch/job`. Verify the IAM policy.
-
-**`An error occurred (AccessDenied) when calling the ListObjectsV2 operation` (fsx-sync.sh)**
-The task role is missing S3 permissions on `cbica-nichart-io`. The role should already
-have these for FSx access — check the attached policies in IAM.

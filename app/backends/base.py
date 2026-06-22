@@ -37,6 +37,11 @@ class ToolSpec:
     parameters: dict[str, Any] = field(default_factory=dict)  # raw spec dicts from YAML
     resources: dict[str, Any] = field(default_factory=dict)   # vcpus, memory, gpus
     time_per_subject_seconds: float | None = None
+    # Singularity invocation mode for this tool.
+    # "run"  → apptainer run  sif <args>    (command template is args to the container entrypoint)
+    # "exec" → apptainer exec sif <cmd>     (command template begins with the executable)
+    # None   → auto-detect: use "run" if rendered command starts with '-', else "exec"
+    singularity_run_mode: str | None = None
 
     def render_command(self, params: dict[str, Any]) -> str:
         """Substitute mount container paths and resolved params into the command template."""
@@ -85,6 +90,11 @@ class JobHandle(ABC):
     def job_id(self) -> str:
         """Stable identifier for this job (container name or AWS Batch job ID)."""
 
+    @property
+    def log_path(self) -> str | None:
+        """Persistent log file path, if available (e.g. SLURM output file). None otherwise."""
+        return None
+
 
 # ── Backend ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +105,21 @@ class JobBackend(ABC):
     Exactly one backend is instantiated per server process, chosen by
     ``NICHART_EXECUTION_MODE``.
     """
+
+    @property
+    def backend_name(self) -> str:
+        """Short lowercase identifier for this backend ('docker', 'singularity', 'slurm', 'batch')."""
+        return "unknown"
+
+    def reconnect(self, job_id: str, log_path: str | None = None) -> "JobHandle | None":
+        """
+        Reconstruct a ``JobHandle`` for a previously-submitted job after an API server restart.
+
+        Returns ``None`` if this backend cannot reconnect (Docker, Singularity — child process
+        is gone after restart).  The SLURM backend overrides this to poll the scheduler by
+        job ID.
+        """
+        return None
 
     @abstractmethod
     async def submit(

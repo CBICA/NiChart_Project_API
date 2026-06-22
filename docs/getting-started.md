@@ -340,6 +340,8 @@ All variables are prefixed `NICHART_`. Set them in `.env` or via the compose
 | `NICHART_HOST_DATA_ROOT` | — | Host path to data root, needed for DooD (local mode with sibling containers) |
 | `NICHART_CORS_ORIGINS` | `["http://localhost:3000"]` | JSON array of allowed UI origins |
 | `NICHART_STAGING_TTL_HOURS` | `24` | Hours before uncommitted uploads are cleaned up |
+| `NICHART_S3_DATA_BUCKET` | — | S3 bucket for automatic data sync in cloud mode (e.g. `cbica-nichart-io`). When set, data is uploaded to S3 before each step and downloaded after. |
+| `NICHART_S3_DATA_PREFIX` | `fsx` | Key prefix within the S3 data bucket |
 | `NICHART_COGNITO_USER_POOL_ID` | `us-east-1_BSBhcKA66` | Cognito pool (cloud mode) |
 | `NICHART_COGNITO_CLIENT_ID` | `1ugglpalgp9r2gvb24s2v7dunq` | App client ID (cloud mode) |
 | `NICHART_LAMBDA_FUNCTION_NAME` | `cbica-nichart-submitjob` | Lambda for job submission (cloud mode) |

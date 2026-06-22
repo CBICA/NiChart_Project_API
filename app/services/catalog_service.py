@@ -87,6 +87,10 @@ def get_pipeline(pipelines_path: Path, pipeline_id: str) -> PipelineDetail:
             )
             for s in (data.get("steps") or [])
         ],
+        parameters={
+            k: ParameterSpec(**v)
+            for k, v in (data.get("parameters") or {}).items()
+        },
     )
 
 
@@ -105,6 +109,7 @@ def load_tool_spec(tools_path: Path, tool_id: str) -> ToolSpec:
         parameters=data.get("parameters") or {},
         resources=data.get("resources") or {},
         time_per_subject_seconds=data.get("time_per_subject_seconds"),
+        singularity_run_mode=data.get("container", {}).get("singularity_run_mode"),
     )
 
 

@@ -118,6 +118,10 @@ class BatchBackend(JobBackend):
         self._logs = boto3.client("logs", region_name=region)
         self._lambda_name = settings.lambda_function_name
 
+    @property
+    def backend_name(self) -> str:
+        return "batch"
+
     async def submit(
         self,
         tool_spec: ToolSpec,

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,11 @@ import urllib.request
 import yaml
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field, validator
+
+# Allowlist for free-entry string parameters — mirrors the check in the API server.
+# Rejects spaces and all shell metacharacters to prevent command injection in the
+# bash -c wrapper that Batch uses to run tool containers.
+_SAFE_STRING_RE = re.compile(r"^[a-zA-Z0-9._-]{1,256}$")
 
 BATCH_QUEUE = "cbica-nichart-jobqueue-standard"
 BATCH_JOB_DEF = "cbica-nichart-jobdefinition-template1"
@@ -91,7 +97,10 @@ class ResourceSpec(BaseModel):
 class ParameterSpec(BaseModel):
     type: str  # "int", "float", "bool", "str"
     default: Optional[Union[int, float, bool, str]] = None
+    description: Optional[str] = None
     choices: Optional[List[Union[int, float, str]]] = None
+    min: Optional[float] = None   # numeric types only
+    max: Optional[float] = None   # numeric types only
 
 
 class ToolSpec(BaseModel):
@@ -104,7 +113,16 @@ class ToolSpec(BaseModel):
     container: Dict[str, Union[str, List[str]]]
     parameters: Dict[str, ParameterSpec]
 
-    def validate_params(self, user_params: Dict[str, Union[int, float, bool, str]]) -> Dict[str, Union[int, float, bool, str]]:
+    def validate_params(self, user_params: Dict) -> Dict:
+        """Validate and coerce user-supplied params against the tool spec.
+
+        Security hardening:
+        - Bool is checked before int (bool is a subclass of int in Python).
+        - Numeric values are checked against min/max if declared.
+        - Choices-constrained params are whitelisted explicitly.
+        - Free-entry string params are restricted to [a-zA-Z0-9._-] to prevent
+          command injection in the bash -c Batch wrapper.
+        """
         validated = {}
         for key, spec in self.parameters.items():
             if key in user_params:
@@ -112,21 +130,55 @@ class ToolSpec(BaseModel):
             elif spec.default is not None:
                 value = spec.default
             else:
-                raise ValueError(f"Missing required parameter: {key}")
+                raise ValueError(f"Missing required parameter: '{key}'")
 
-            # Type check
-            if spec.type == "int" and not isinstance(value, int):
-                raise TypeError(f"Parameter {key} must be int")
-            elif spec.type == "float" and not isinstance(value, float):
-                raise TypeError(f"Parameter {key} must be float")
-            elif spec.type == "bool" and not isinstance(value, bool):
-                raise TypeError(f"Parameter {key} must be bool")
-            elif spec.type == "str" and not isinstance(value, str):
-                raise TypeError(f"Parameter {key} must be str")
+            # Type coercion — bool must be checked before int (bool <: int).
+            if spec.type == "bool":
+                if not isinstance(value, bool):
+                    raise TypeError(
+                        f"Parameter '{key}' must be a boolean (true/false), "
+                        f"got {type(value).__name__!r}"
+                    )
+            elif spec.type == "int":
+                if isinstance(value, bool):
+                    raise TypeError(f"Parameter '{key}' must be int, not bool")
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    raise TypeError(f"Parameter '{key}' must be int")
+            elif spec.type == "float":
+                if isinstance(value, bool):
+                    raise TypeError(f"Parameter '{key}' must be float, not bool")
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    raise TypeError(f"Parameter '{key}' must be float")
+            elif spec.type == "str":
+                value = str(value)
 
-            # Choice check
+            # Choices whitelist (all types).
             if spec.choices and value not in spec.choices:
-                raise ValueError(f"Invalid value for {key}. Must be one of {spec.choices}")
+                raise ValueError(
+                    f"Parameter '{key}': {value!r} is not an allowed value. "
+                    f"Must be one of: {spec.choices}"
+                )
+
+            # Numeric range.
+            if spec.type in ("int", "float"):
+                if spec.min is not None and value < spec.min:
+                    raise ValueError(f"Parameter '{key}' must be >= {spec.min}")
+                if spec.max is not None and value > spec.max:
+                    raise ValueError(f"Parameter '{key}' must be <= {spec.max}")
+
+            # String injection guard — applied to free-entry strings only.
+            # This is the primary defence against command injection in bash -c.
+            if spec.type == "str" and not spec.choices:
+                if not _SAFE_STRING_RE.match(value):
+                    raise ValueError(
+                        f"Parameter '{key}': string values must contain only "
+                        f"letters, digits, '.', '_', or '-' (max 256 chars). "
+                        f"Spaces and shell metacharacters are not allowed."
+                    )
 
             validated[key] = value
         return validated
