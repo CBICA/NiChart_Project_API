@@ -20,6 +20,8 @@ token is required and none is validated. In cloud mode a Cognito ID token in
 the ``Authorization: Bearer`` header is mandatory.
 """
 
+import getpass
+
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -44,7 +46,9 @@ class CurrentUser(BaseModel):
     token: str
 
 
-_LOCAL_USER = CurrentUser(sub="LOCAL_USER", token="")
+def _local_user() -> CurrentUser:
+    """Return a CurrentUser whose sub is the OS-level username of the running process."""
+    return CurrentUser(sub=getpass.getuser(), token="")
 
 
 def get_verifier(settings: Settings = Depends(get_settings)) -> CognitoVerifier:
@@ -80,7 +84,7 @@ async def require_auth(
     Raises ``HTTP 401`` for missing or invalid tokens in cloud mode.
     """
     if settings.execution_mode == "local":
-        return _LOCAL_USER
+        return _local_user()
 
     if credentials is None:
         raise HTTPException(

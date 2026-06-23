@@ -1,0 +1,4357 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "NiChart API",
+    "summary": "Backend API for the NiChart medical-imaging pipeline platform.",
+    "description": "Provides endpoints for managing projects, uploading imaging data, running containerised processing pipelines (locally via Docker or on AWS Batch), and retrieving results. \n\n**Authentication**: In cloud mode every request requires a Cognito ID token in the ``Authorization: Bearer`` header. In local mode (``NICHART_EXECUTION_MODE=local``) authentication is bypassed.",
+    "contact": {
+      "name": "CBICA",
+      "url": "https://github.com/CBICA/NiChart_Project"
+    },
+    "license": {
+      "name": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/catalog/pipelines": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "summary": "List all enabled pipelines",
+        "description": "Returns a summary of every pipeline defined in the resources/pipelines directory. Use ``GET /catalog/pipelines/{pipeline_id}`` to retrieve the full definition.",
+        "operationId": "list_pipelines_catalog_pipelines_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PipelineSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Pipelines Catalog Pipelines Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/pipelines/{pipeline_id}": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "summary": "Get pipeline detail",
+        "description": "Returns the full pipeline definition: description, categories, data requirements, and ordered steps with their tool and I/O mappings.",
+        "operationId": "get_pipeline_catalog_pipelines__pipeline_id__get",
+        "parameters": [
+          {
+            "name": "pipeline_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pipeline Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/tools": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "summary": "List all available tools",
+        "description": "Returns a summary of every tool defined in the resources/tools directory.",
+        "operationId": "list_tools_catalog_tools_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ToolSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Tools Catalog Tools Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/tools/{tool_id}": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "summary": "Get tool detail",
+        "description": "Returns the full tool specification: inputs, outputs, resource requirements, configurable parameters, and the per-subject time estimate used for queue-drain calculations.",
+        "operationId": "get_tool_catalog_tools__tool_id__get",
+        "parameters": [
+          {
+            "name": "tool_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tool Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/resources/{path}": {
+      "get": {
+        "tags": [
+          "Catalog"
+        ],
+        "summary": "Download a public resource file",
+        "description": "Serves static resource files from the server's ``resources/`` directory: atlases, label maps, normative data CSVs, and other reference data. No authentication required. Responses are cached for 24 hours.",
+        "operationId": "get_resource_catalog_resources__path__get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "400": {
+            "description": "Invalid resource path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cloud/status": {
+      "get": {
+        "tags": [
+          "Cloud"
+        ],
+        "summary": "Cloud queue status",
+        "description": "Returns the number of running and pending jobs on the AWS Batch queue and a rough estimate of how long until the queue drains. In local mode all job-count fields are null. No authentication required.",
+        "operationId": "cloud_status_cloud_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloudStatusResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Could not reach the AWS Batch API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects": {
+      "get": {
+        "tags": [
+          "Projects"
+        ],
+        "summary": "List projects",
+        "description": "Returns all projects owned by the authenticated user.",
+        "operationId": "list_projects_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Project"
+                  },
+                  "type": "array",
+                  "title": "Response List Projects Projects Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Projects"
+        ],
+        "summary": "Create a project",
+        "description": "Creates a new project directory. The project name is used as the directory name and URL path segment. Must match ``^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$``.",
+        "operationId": "create_project_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (e.g. invalid project name).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A project with that name already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/projects/{project_id}": {
+      "delete": {
+        "tags": [
+          "Projects"
+        ],
+        "summary": "Delete a project",
+        "description": "Permanently deletes the project and all its data. Irreversible.",
+        "operationId": "delete_project_projects__project_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "List project files",
+        "description": "Returns a flat listing of all visible files and directories in the project. Internal staging (``_upload/``) and working (``_working/``) directories are excluded.",
+        "operationId": "list_files_projects__project_id__files_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectoryTree"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Delete a file or directory",
+        "description": "Permanently deletes the file or directory at ``path``.",
+        "operationId": "delete_file_projects__project_id__files_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Path relative to the project root.",
+              "title": "Path"
+            },
+            "description": "Path relative to the project root."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/download": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Download a file or directory",
+        "description": "Download a single file, or a directory as a streaming zip archive when ``zip=true``. The ``path`` is relative to the project root and is validated to prevent traversal.",
+        "operationId": "download_file_projects__project_id__files_download_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Path relative to the project root.",
+              "title": "Path"
+            },
+            "description": "Path relative to the project root."
+          },
+          {
+            "name": "zip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Stream target directory as a zip archive.",
+              "default": false,
+              "title": "Zip"
+            },
+            "description": "Stream target directory as a zip archive."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content or zip stream.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/upload/nifti": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Upload NIfTI file(s) to staging",
+        "description": "Accepts one or more ``.nii`` / ``.nii.gz`` files. Files land in the project staging area and the server returns its best-effort MRID and modality inference. Follow up with the commit endpoint to move them into the project.",
+        "operationId": "upload_nifti_projects__project_id__files_upload_nifti_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_nifti_projects__project_id__files_upload_nifti_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NiftiStagingResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/stage/{staging_id}/commit": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Commit staged NIfTI files",
+        "description": "Confirms MRID and modality mappings for staged files and moves them into their final locations. Every staged file must appear in ``mappings``.",
+        "operationId": "commit_nifti_projects__project_id__files_stage__staging_id__commit_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Staging Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NiftiCommitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NiftiCommitResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/stage/{staging_id}": {
+      "delete": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Discard a staging area",
+        "description": "Deletes all files in the staging area without committing.",
+        "operationId": "discard_staging_projects__project_id__files_stage__staging_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Staging Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/upload/csv": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Upload participants CSV",
+        "description": "Replaces ``participants/participants.csv`` with the uploaded file. The file is stored as-is; must have at least an ``MRID`` column.",
+        "operationId": "upload_csv_projects__project_id__files_upload_csv_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_csv_projects__project_id__files_upload_csv_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/upload/bids": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Upload a BIDS dataset",
+        "description": "Accepts a ``.zip`` archive containing a BIDS-layout dataset, extracts it, and reorganises it into the NiChart project layout. ``sub-{id}_T1w.nii.gz`` \u2192 ``t1/{id}.nii.gz``, ``_FLAIR`` \u2192 ``fl/``, etc. A ``participants.tsv`` at the archive root is converted to ``participants/participants.csv``.",
+        "operationId": "upload_bids_projects__project_id__files_upload_bids_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_bids_projects__project_id__files_upload_bids_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/upload/idat": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Upload IDAT files",
+        "description": "Accepts a ``.zip`` of ``.idat`` files. Extracted to ``idat/`` in the project.",
+        "operationId": "upload_idat_projects__project_id__files_upload_idat_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_idat_projects__project_id__files_upload_idat_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/participants": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get participants list",
+        "description": "Returns the contents of ``participants/participants.csv`` as JSON rows.",
+        "operationId": "get_participants_projects__project_id__participants_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParticipantsList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Replace participants list",
+        "description": "Overwrites ``participants/participants.csv`` with the provided rows. Full replacement \u2014 rows not included are removed.",
+        "operationId": "update_participants_projects__project_id__participants_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParticipantsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/readiness/{pipeline_id}": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Check pipeline readiness",
+        "description": "Evaluates whether the project has the data required to run a pipeline. Returns a per-requirement status so the client can guide users to upload missing imaging data or fill missing participants.csv columns. Imaging checks scan the modality directories (``t1/``, ``fl/``, etc.) for NIfTI files. CSV checks verify that required columns exist and are non-empty for every subject.",
+        "operationId": "check_readiness_projects__project_id__readiness__pipeline_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "pipeline_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pipeline Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/dicom/upload": {
+      "post": {
+        "tags": [
+          "DICOM"
+        ],
+        "summary": "Upload DICOM zip to staging",
+        "description": "Accepts a single ``.zip`` archive of DICOM files. The archive is extracted with symlink and path-traversal checks into a private staging area. Use the returned ``staging_id`` to inspect series and submit a conversion job.",
+        "operationId": "upload_dicom_projects__project_id__files_dicom_upload_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_dicom_projects__project_id__files_dicom_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DicomStagingResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or staging area not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/dicom/{staging_id}/series": {
+      "get": {
+        "tags": [
+          "DICOM"
+        ],
+        "summary": "Inspect DICOM series",
+        "description": "Reads DICOM headers (via pydicom) in the staging area and returns a list of detected series with their description, modality, study date, and file count. No conversion happens at this step \u2014 it is safe to call multiple times.",
+        "operationId": "list_dicom_series_projects__project_id__files_dicom__staging_id__series_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Staging Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DicomSeriesListing"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or staging area not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/dicom/{staging_id}/convert": {
+      "post": {
+        "tags": [
+          "DICOM"
+        ],
+        "summary": "Submit DICOM conversion job",
+        "description": "Accepts a mapping of DICOM series UIDs to NiChart modality labels and submits a dcm2niix conversion job for each selected series. Series not listed are ignored. Returns a ``run_id`` for polling via ``GET /jobs/pipelines/{run_id}``.",
+        "operationId": "convert_dicom_projects__project_id__files_dicom__staging_id__convert_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Staging Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DicomConvertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DicomConvertResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or staging area not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/dicom/{staging_id}": {
+      "delete": {
+        "tags": [
+          "DICOM"
+        ],
+        "summary": "Discard DICOM staging area",
+        "description": "Permanently deletes the staged DICOM files without converting them. Staging areas are also auto-cleaned after ``NICHART_STAGING_TTL_HOURS``.",
+        "operationId": "discard_dicom_staging_projects__project_id__files_dicom__staging_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Staging Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or staging area not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/jobs/pipelines": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Submit a pipeline run",
+        "description": "Starts an asynchronous pipeline run for the given project. The server spawns a background task that executes each pipeline step in order, polling the job backend between steps. Use the returned ``run_id`` to track progress via ``GET /jobs/pipelines/{run_id}``.",
+        "operationId": "submit_pipeline_projects__project_id__jobs_pipelines_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineRunSubmit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineRunDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pipeline ID or parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or pipeline not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/pipelines": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "List pipeline runs",
+        "description": "Returns the authenticated user's pipeline runs in reverse-chronological order. Pass ``project_id`` to filter to a single project.",
+        "operationId": "list_pipeline_runs_jobs_pipelines_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter runs to this project.",
+              "title": "Project Id"
+            },
+            "description": "Filter runs to this project."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Maximum number of runs to return.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Maximum number of runs to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PipelineRunSummary"
+                  },
+                  "title": "Response List Pipeline Runs Jobs Pipelines Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/pipelines/{run_id}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get pipeline run detail",
+        "description": "Returns the full run record including per-step status, timestamps, and any error messages. In cloud mode, while a step is actively waiting on the Batch queue, ``jobs_ahead`` and ``estimated_wait_seconds`` are populated by querying all jobs submitted to the queue before this one. These fields are null in local mode or once a job has left the queue.",
+        "operationId": "get_pipeline_run_jobs_pipelines__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineRunDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Cancel a pipeline run",
+        "description": "Requests cancellation of a running pipeline. The currently executing tool step is cancelled on the backend; subsequent steps will not be submitted. No-op if the run is already in a terminal state.",
+        "operationId": "cancel_pipeline_run_jobs_pipelines__run_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/pipelines/{run_id}/logs": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get pipeline run logs",
+        "description": "Returns concatenated log output from all steps completed so far. Poll this endpoint alongside the status endpoint during a run.",
+        "operationId": "get_pipeline_logs_jobs_pipelines__run_id__logs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineRunLogs"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/results": {
+      "get": {
+        "tags": [
+          "Results"
+        ],
+        "summary": "List available pipeline results",
+        "description": "Returns a summary for every pipeline that declares a ``results:`` section in its YAML. Summaries indicate which output types are present in the project. Use this to discover which pipelines have results to visualize \u2014 one call covers all pipelines.",
+        "operationId": "list_results_projects__project_id__results_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PipelineResultSummary"
+                  },
+                  "title": "Response List Results Projects  Project Id  Results Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/results/{pipeline_id}": {
+      "get": {
+        "tags": [
+          "Results"
+        ],
+        "summary": "Get full result detail for a pipeline",
+        "description": "Returns the complete result structure for one pipeline: feature columns, label map (column \u2192 segmentation label IDs for overlay rendering), per-subject file availability, subject completeness, and resource paths for the atlas NIfTI and normative data CSV. \n\n**Atlas and normative data** are fetched via ``GET /catalog/resources/{path}`` (public, no auth required, cached 24 h).",
+        "operationId": "get_result_detail_projects__project_id__results__pipeline_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "pipeline_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pipeline Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineResultDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pipeline or project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health check",
+        "description": "Returns server status and the active execution mode. No authentication required.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BatchFeaturesResult": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "download_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Path",
+            "description": "Relative path for use with GET /projects/{id}/files/download."
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns",
+            "description": "Feature columns in the CSV (MRID column excluded)."
+          },
+          "row_count": {
+            "type": "integer",
+            "title": "Row Count",
+            "default": 0
+          },
+          "label_map": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/LabelInfo"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Map",
+            "description": "Maps each feature column to its segmentation label information. Columns not present in the label map have no segmentation correspondence. Present only when a label_map resource is declared in the pipeline YAML."
+          }
+        },
+        "type": "object",
+        "required": [
+          "available"
+        ],
+        "title": "BatchFeaturesResult",
+        "description": "Summary of the pipeline's batch-level feature CSV."
+      },
+      "Body_upload_bids_projects__project_id__files_upload_bids_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_bids_projects__project_id__files_upload_bids_post"
+      },
+      "Body_upload_csv_projects__project_id__files_upload_csv_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_csv_projects__project_id__files_upload_csv_post"
+      },
+      "Body_upload_dicom_projects__project_id__files_dicom_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_dicom_projects__project_id__files_dicom_upload_post"
+      },
+      "Body_upload_idat_projects__project_id__files_upload_idat_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_idat_projects__project_id__files_upload_idat_post"
+      },
+      "Body_upload_nifti_projects__project_id__files_upload_nifti_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_upload_nifti_projects__project_id__files_upload_nifti_post"
+      },
+      "CloudStatusResponse": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "cloud",
+              "local"
+            ],
+            "title": "Mode",
+            "description": "Active execution mode for this server instance."
+          },
+          "queue_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Name",
+            "description": "Name of the AWS Batch job queue being monitored."
+          },
+          "running_job_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Running Job Count",
+            "description": "Number of jobs currently in RUNNING state on the Batch queue."
+          },
+          "pending_job_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Job Count",
+            "description": "Number of jobs currently in PENDING (queued, not yet running) state."
+          },
+          "estimated_queue_drain_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Queue Drain Seconds",
+            "description": "Rough estimate of seconds until the queue is empty, computed as the sum of (time_per_subject_seconds \u00d7 num_subjects) across all running and pending jobs. Null when no per-job subject counts are available."
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "CloudStatusResponse",
+        "description": "Current cloud service busyness as reported by the AWS Batch queue.\n\nIn local mode all job-count fields are ``null`` and ``mode`` is ``\"local\"``."
+      },
+      "ColumnCheck": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "title": "Column",
+            "description": "Required column name."
+          },
+          "present": {
+            "type": "boolean",
+            "title": "Present",
+            "description": "True if this column exists in participants.csv."
+          },
+          "subjects_missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subjects Missing",
+            "description": "MRIDs of subjects where this column is empty or absent."
+          }
+        },
+        "type": "object",
+        "required": [
+          "column",
+          "present"
+        ],
+        "title": "ColumnCheck",
+        "description": "Readiness check for one required column in participants.csv."
+      },
+      "CommittedFile": {
+        "properties": {
+          "mrid": {
+            "type": "string",
+            "title": "Mrid"
+          },
+          "modality": {
+            "type": "string",
+            "title": "Modality"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Path relative to the project root where the file was written."
+          }
+        },
+        "type": "object",
+        "required": [
+          "mrid",
+          "modality",
+          "path"
+        ],
+        "title": "CommittedFile"
+      },
+      "CsvRequirement": {
+        "properties": {
+          "required_columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnCheck"
+            },
+            "type": "array",
+            "title": "Required Columns",
+            "description": "Per-column check results."
+          },
+          "total_subjects": {
+            "type": "integer",
+            "title": "Total Subjects",
+            "description": "Total subjects (rows) in participants.csv."
+          },
+          "satisfied": {
+            "type": "boolean",
+            "title": "Satisfied",
+            "description": "True if every required column exists and is non-empty for all subjects."
+          }
+        },
+        "type": "object",
+        "required": [
+          "required_columns",
+          "total_subjects",
+          "satisfied"
+        ],
+        "title": "CsvRequirement",
+        "description": "Aggregate readiness check for all required participants.csv columns."
+      },
+      "DicomConvertRequest": {
+        "properties": {
+          "series_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesMapping"
+            },
+            "type": "array",
+            "title": "Series Mappings",
+            "description": "One entry per series to convert. Series not listed are ignored."
+          }
+        },
+        "type": "object",
+        "required": [
+          "series_mappings"
+        ],
+        "title": "DicomConvertRequest",
+        "description": "Request body for the DICOM conversion endpoint."
+      },
+      "DicomConvertResult": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "Job run ID. Poll /jobs/pipelines/{run_id} for status."
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "DicomConvertResult",
+        "description": "Response after a conversion job is successfully submitted."
+      },
+      "DicomSeriesListing": {
+        "properties": {
+          "staging_id": {
+            "type": "string",
+            "title": "Staging Id"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesInfo"
+            },
+            "type": "array",
+            "title": "Series"
+          }
+        },
+        "type": "object",
+        "required": [
+          "staging_id",
+          "series"
+        ],
+        "title": "DicomSeriesListing",
+        "description": "All DICOM series detected in a staged upload."
+      },
+      "DicomStagingResult": {
+        "properties": {
+          "staging_id": {
+            "type": "string",
+            "title": "Staging Id",
+            "description": "Opaque identifier for this DICOM staging area."
+          }
+        },
+        "type": "object",
+        "required": [
+          "staging_id"
+        ],
+        "title": "DicomStagingResult",
+        "description": "Response after uploading a DICOM zip."
+      },
+      "DirectoryTree": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "type": "object",
+        "title": "DirectoryTree",
+        "description": "Flat listing of all visible nodes in a project directory."
+      },
+      "ErrorDetail": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "Human-readable description of the error."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorDetail",
+        "description": "Standard error response body."
+      },
+      "FileEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Filename or directory name."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Path relative to the project root."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory"
+            ],
+            "title": "Type",
+            "description": "Node kind."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size",
+            "description": "File size in bytes (files only)."
+          },
+          "mtime": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mtime",
+            "description": "Last-modified UNIX timestamp."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "type"
+        ],
+        "title": "FileEntry",
+        "description": "A single node in the project file tree."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "IOField": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory"
+            ],
+            "title": "Type",
+            "description": "Whether this slot is a single file or a directory."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Human-readable description of this slot."
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "IOField",
+        "description": "An input or output slot on a tool."
+      },
+      "ImagingRequirement": {
+        "properties": {
+          "modality": {
+            "type": "string",
+            "title": "Modality",
+            "description": "Imaging modality directory (t1, fl, t2, t1ce, adc)."
+          },
+          "subject_count": {
+            "type": "integer",
+            "title": "Subject Count",
+            "description": "Number of NIfTI files found in the modality directory."
+          },
+          "satisfied": {
+            "type": "boolean",
+            "title": "Satisfied",
+            "description": "True if at least one subject's file is present."
+          }
+        },
+        "type": "object",
+        "required": [
+          "modality",
+          "subject_count",
+          "satisfied"
+        ],
+        "title": "ImagingRequirement",
+        "description": "Readiness check for a single required imaging modality."
+      },
+      "LabelInfo": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Human-readable region name."
+          },
+          "label_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Label Ids",
+            "description": "Voxel values in the segmentation NIfTI that together form this region. Single-region features have one entry; composite regions have multiple."
+          }
+        },
+        "type": "object",
+        "required": [
+          "display_name",
+          "label_ids"
+        ],
+        "title": "LabelInfo",
+        "description": "Segmentation label information for a single feature column."
+      },
+      "NiftiCommitRequest": {
+        "properties": {
+          "mappings": {
+            "items": {
+              "$ref": "#/components/schemas/NiftiMapping"
+            },
+            "type": "array",
+            "title": "Mappings",
+            "description": "One entry per staged file; every staged file must be accounted for."
+          }
+        },
+        "type": "object",
+        "required": [
+          "mappings"
+        ],
+        "title": "NiftiCommitRequest",
+        "description": "Request body for the NIfTI staging commit endpoint."
+      },
+      "NiftiCommitResult": {
+        "properties": {
+          "committed": {
+            "items": {
+              "$ref": "#/components/schemas/CommittedFile"
+            },
+            "type": "array",
+            "title": "Committed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "committed"
+        ],
+        "title": "NiftiCommitResult",
+        "description": "Response after a successful NIfTI commit."
+      },
+      "NiftiMapping": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "Filename as returned in the staging proposals."
+          },
+          "mrid": {
+            "type": "string",
+            "title": "Mrid",
+            "description": "Subject identifier. Becomes the file stem in the target directory."
+          },
+          "modality": {
+            "type": "string",
+            "enum": [
+              "t1",
+              "fl",
+              "t2",
+              "t1ce",
+              "adc"
+            ],
+            "title": "Modality",
+            "description": "NiChart modality label. Determines which subdirectory the file lands in."
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "mrid",
+          "modality"
+        ],
+        "title": "NiftiMapping",
+        "description": "Confirmed mapping for a single staged NIfTI file."
+      },
+      "NiftiStagingResult": {
+        "properties": {
+          "staging_id": {
+            "type": "string",
+            "title": "Staging Id",
+            "description": "Opaque staging area identifier. Pass to the commit endpoint."
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/NiftiUploadProposal"
+            },
+            "type": "array",
+            "title": "Proposals",
+            "description": "Server's best-effort mapping of filenames to MRID and modality."
+          }
+        },
+        "type": "object",
+        "required": [
+          "staging_id",
+          "proposals"
+        ],
+        "title": "NiftiStagingResult",
+        "description": "Response after uploading NIfTI file(s); requires a follow-up commit call."
+      },
+      "NiftiUploadProposal": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "Original uploaded filename."
+          },
+          "inferred_mrid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inferred Mrid",
+            "description": "MRID inferred from the filename by stripping known suffixes."
+          },
+          "inferred_modality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inferred Modality",
+            "description": "Modality inferred from the filename (t1/fl/t2/t1ce/adc), or null if not detectable."
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename"
+        ],
+        "title": "NiftiUploadProposal",
+        "description": "Server-inferred metadata for a single uploaded NIfTI file."
+      },
+      "ParameterSpec": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Python type name: 'int', 'float', 'bool', or 'str'."
+          },
+          "default": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default",
+            "description": "Default value if not supplied by the caller."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Human-readable description for UI rendering."
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices",
+            "description": "Exhaustive list of allowed values, if constrained."
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min",
+            "description": "Minimum value (numeric types only)."
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max",
+            "description": "Maximum value (numeric types only)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "ParameterSpec",
+        "description": "Specification for a single configurable parameter."
+      },
+      "ParticipantRow": {
+        "properties": {
+          "MRID": {
+            "type": "string",
+            "title": "Mrid",
+            "description": "Subject identifier. Must match the stem of uploaded NIfTI files."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "MRID"
+        ],
+        "title": "ParticipantRow",
+        "description": "One row from participants.csv.\n\n``MRID`` is required. Any additional columns (Age, Sex, MMSE, etc.) are\npreserved as extra fields and round-trip through the API unchanged."
+      },
+      "ParticipantsList": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ParticipantRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "title": "ParticipantsList",
+        "description": "List of participant rows."
+      },
+      "ParticipantsUpdate": {
+        "properties": {
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Rows",
+            "description": "Complete replacement list. Each row must contain an 'MRID' key. Any additional keys are written as extra columns in participants.csv. Existing participants.csv is overwritten."
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "ParticipantsUpdate",
+        "description": "Request body to replace the participants list."
+      },
+      "PerSubjectFileStatus": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "download_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Path",
+            "description": "Relative path for use with GET /projects/{id}/files/download."
+          }
+        },
+        "type": "object",
+        "required": [
+          "available"
+        ],
+        "title": "PerSubjectFileStatus",
+        "description": "Availability of a single per-subject output file."
+      },
+      "PerSubjectOutput": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Output identifier as declared in the pipeline results spec."
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Output type, e.g. 'segmentation_nifti'."
+          },
+          "subjects": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PerSubjectFileStatus"
+            },
+            "type": "object",
+            "title": "Subjects",
+            "description": "Map of MRID \u2192 file availability and download path."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "subjects"
+        ],
+        "title": "PerSubjectOutput",
+        "description": "A named per-subject output type (e.g. a segmentation NIfTI)."
+      },
+      "PipelineDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Pipeline identifier (YAML basename without extension)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable pipeline name."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories"
+          },
+          "requires": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requires",
+            "description": "Data prerequisites (e.g. 'needs_T1', 'needs_demographics')."
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineStep"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ParameterSpec"
+            },
+            "type": "object",
+            "title": "Parameters",
+            "description": "User-overridable parameters for this pipeline. Each entry describes the type, default, and optional constraints. Pass values via ``params`` in the pipeline submit body. Step-level params in the YAML are fixed by the pipeline author and cannot be overridden."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "PipelineDetail",
+        "description": "Full pipeline definition including ordered steps and user-configurable parameters."
+      },
+      "PipelineResultDetail": {
+        "properties": {
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id"
+          },
+          "pipeline_name": {
+            "type": "string",
+            "title": "Pipeline Name"
+          },
+          "batch_features": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BatchFeaturesResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "per_subject": {
+            "items": {
+              "$ref": "#/components/schemas/PerSubjectOutput"
+            },
+            "type": "array",
+            "title": "Per Subject"
+          },
+          "atlas_resource_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Resource Path",
+            "description": "Resource path for the brain atlas NIfTI. Fetch with GET /catalog/resources/{path}."
+          },
+          "atlas_segmentation_resource_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Atlas Segmentation Resource Path",
+            "description": "Resource path for the atlas segmentation NIfTI (reference-mode overlay when no subject data is selected). Fetch with GET /catalog/resources/{path}."
+          },
+          "subjects": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SubjectCompleteness"
+            },
+            "type": "object",
+            "title": "Subjects",
+            "description": "Per-subject completeness across all declared per_subject outputs."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pipeline_id",
+          "pipeline_name"
+        ],
+        "title": "PipelineResultDetail",
+        "description": "Full result detail for one pipeline within a project."
+      },
+      "PipelineResultSummary": {
+        "properties": {
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id"
+          },
+          "pipeline_name": {
+            "type": "string",
+            "title": "Pipeline Name"
+          },
+          "has_batch_features": {
+            "type": "boolean",
+            "title": "Has Batch Features",
+            "description": "True if the batch feature CSV exists in the project."
+          },
+          "per_subject_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Per Subject Ids",
+            "description": "IDs of declared per-subject output types."
+          },
+          "has_atlas": {
+            "type": "boolean",
+            "title": "Has Atlas",
+            "description": "True if the atlas resource file is present on the server."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pipeline_id",
+          "pipeline_name",
+          "has_batch_features",
+          "per_subject_ids",
+          "has_atlas"
+        ],
+        "title": "PipelineResultSummary",
+        "description": "Quick summary of a pipeline's result availability within a project."
+      },
+      "PipelineRunDetail": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "Unique run identifier (UUID)."
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "description": "Overall pipeline status."
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "current_step": {
+            "type": "integer",
+            "title": "Current Step",
+            "description": "Index of the step currently executing (0-based).",
+            "default": 0
+          },
+          "total_steps": {
+            "type": "integer",
+            "title": "Total Steps",
+            "default": 0
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepStatus"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Top-level error message if the run failed."
+          },
+          "jobs_ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobs Ahead",
+            "description": "Number of Batch jobs submitted before this one that are still waiting for compute capacity. Cloud mode only; null in local mode or when no step is currently pending on the Batch queue."
+          },
+          "estimated_wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Wait Seconds",
+            "description": "Estimated seconds until this job reaches the front of the queue, computed as the sum of (num_subjects \u00d7 time_per_subject_seconds) for each job submitted ahead of this one. Null when timing data is unavailable for any ahead job."
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "project_id",
+          "pipeline_id",
+          "status",
+          "submitted_at"
+        ],
+        "title": "PipelineRunDetail",
+        "description": "Full pipeline run record including per-step breakdown."
+      },
+      "PipelineRunLogs": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "logs": {
+            "type": "string",
+            "title": "Logs",
+            "description": "Concatenated log output from all steps executed so far."
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "logs"
+        ],
+        "title": "PipelineRunLogs",
+        "description": "Aggregated logs for all completed steps in a pipeline run."
+      },
+      "PipelineRunSubmit": {
+        "properties": {
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id",
+            "description": "Pipeline identifier (matches a YAML basename in resources/pipelines/)."
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params",
+            "description": "Parameter overrides applied to every step that accepts them."
+          },
+          "reuse_cached_steps": {
+            "type": "boolean",
+            "title": "Reuse Cached Steps",
+            "description": "When True, steps whose inputs haven't changed since the last successful run are skipped. Set to False to force a full re-run.",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "pipeline_id"
+        ],
+        "title": "PipelineRunSubmit",
+        "description": "Request body to submit a pipeline run."
+      },
+      "PipelineRunSummary": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "Unique run identifier (UUID)."
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "description": "Overall pipeline status."
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "current_step": {
+            "type": "integer",
+            "title": "Current Step",
+            "description": "Index of the step currently executing (0-based).",
+            "default": 0
+          },
+          "total_steps": {
+            "type": "integer",
+            "title": "Total Steps",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "project_id",
+          "pipeline_id",
+          "status",
+          "submitted_at"
+        ],
+        "title": "PipelineRunSummary",
+        "description": "Abbreviated pipeline run record for list responses."
+      },
+      "PipelineStep": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Step identifier, unique within the pipeline."
+          },
+          "tool": {
+            "type": "string",
+            "title": "Tool",
+            "description": "Tool ID this step invokes."
+          },
+          "inputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Inputs",
+            "description": "Input slot \u2192 path template mapping."
+          },
+          "outputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Outputs",
+            "description": "Output slot \u2192 path template mapping."
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params",
+            "description": "Parameter overrides for this step."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tool",
+          "inputs",
+          "outputs"
+        ],
+        "title": "PipelineStep",
+        "description": "A single step within a pipeline definition."
+      },
+      "PipelineSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Pipeline identifier (YAML basename without extension)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable pipeline name."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories"
+          },
+          "requires": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requires",
+            "description": "Data prerequisites (e.g. 'needs_T1', 'needs_demographics')."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "PipelineSummary",
+        "description": "Abbreviated pipeline information for list responses."
+      },
+      "Project": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Project identifier (same as directory name)."
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "Creation timestamp (derived from directory mtime)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "Project",
+        "description": "A user project."
+      },
+      "ProjectCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Project name. Used directly as the directory name and URL path segment. Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ProjectCreate",
+        "description": "Request body for creating a new project."
+      },
+      "ReadinessReport": {
+        "properties": {
+          "pipeline_id": {
+            "type": "string",
+            "title": "Pipeline Id",
+            "description": "Pipeline that was checked."
+          },
+          "satisfied": {
+            "type": "boolean",
+            "title": "Satisfied",
+            "description": "True if all checks pass."
+          },
+          "imaging": {
+            "items": {
+              "$ref": "#/components/schemas/ImagingRequirement"
+            },
+            "type": "array",
+            "title": "Imaging",
+            "description": "One entry per imaging modality required by the pipeline."
+          },
+          "csv": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CsvRequirement"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "CSV column checks, present only when the pipeline has csv_has_columns requirements."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pipeline_id",
+          "satisfied"
+        ],
+        "title": "ReadinessReport",
+        "description": "Project readiness check result for a specific pipeline."
+      },
+      "ResourceSpec": {
+        "properties": {
+          "vcpus": {
+            "type": "integer",
+            "title": "Vcpus",
+            "description": "Number of virtual CPUs."
+          },
+          "memory": {
+            "type": "integer",
+            "title": "Memory",
+            "description": "Memory in MiB."
+          },
+          "gpus": {
+            "type": "integer",
+            "title": "Gpus",
+            "description": "Number of GPUs required.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "vcpus",
+          "memory"
+        ],
+        "title": "ResourceSpec",
+        "description": "Compute resources required by a tool."
+      },
+      "SeriesInfo": {
+        "properties": {
+          "series_uid": {
+            "type": "string",
+            "title": "Series Uid",
+            "description": "DICOM SeriesInstanceUID."
+          },
+          "series_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series Description",
+            "description": "DICOM SeriesDescription tag."
+          },
+          "modality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modality",
+            "description": "DICOM Modality tag (e.g. 'MR', 'CT')."
+          },
+          "study_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Study Date",
+            "description": "DICOM StudyDate tag (YYYYMMDD)."
+          },
+          "patient_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patient Id",
+            "description": "DICOM PatientID tag."
+          },
+          "num_files": {
+            "type": "integer",
+            "title": "Num Files",
+            "description": "Number of DICOM files belonging to this series."
+          }
+        },
+        "type": "object",
+        "required": [
+          "series_uid",
+          "num_files"
+        ],
+        "title": "SeriesInfo",
+        "description": "Metadata for a single DICOM series detected in a staged upload."
+      },
+      "SeriesMapping": {
+        "properties": {
+          "series_uid": {
+            "type": "string",
+            "title": "Series Uid",
+            "description": "SeriesInstanceUID of the series to convert."
+          },
+          "nichart_modality": {
+            "type": "string",
+            "enum": [
+              "t1",
+              "fl",
+              "t2",
+              "t1ce",
+              "adc"
+            ],
+            "title": "Nichart Modality",
+            "description": "Target NiChart modality subdirectory."
+          },
+          "mrid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrid",
+            "description": "Output filename prefix (MRID). Defaults to the DICOM PatientID if not provided."
+          }
+        },
+        "type": "object",
+        "required": [
+          "series_uid",
+          "nichart_modality"
+        ],
+        "title": "SeriesMapping",
+        "description": "User-confirmed mapping from a DICOM series to a NiChart modality."
+      },
+      "StepStatus": {
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "title": "Step Id",
+            "description": "Step identifier within the pipeline definition."
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id",
+            "description": "Tool that this step invokes."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "description": "Current execution state."
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id",
+            "description": "Backend job ID (Docker container name or AWS Batch job ID)."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Error message if the step failed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "step_id",
+          "tool_id",
+          "status"
+        ],
+        "title": "StepStatus",
+        "description": "Status record for a single pipeline step."
+      },
+      "SubjectCompleteness": {
+        "properties": {
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "IDs of per_subject outputs that are missing for this subject."
+          }
+        },
+        "type": "object",
+        "required": [
+          "complete",
+          "missing"
+        ],
+        "title": "SubjectCompleteness",
+        "description": "Overall completeness of a subject's pipeline outputs."
+      },
+      "ToolDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Tool identifier (YAML basename without extension)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable tool name."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/IOField"
+            },
+            "type": "object",
+            "title": "Inputs",
+            "description": "Named input slots."
+          },
+          "outputs": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/IOField"
+            },
+            "type": "object",
+            "title": "Outputs",
+            "description": "Named output slots."
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ResourceSpec"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ParameterSpec"
+            },
+            "type": "object",
+            "title": "Parameters"
+          },
+          "time_per_subject_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Per Subject Seconds",
+            "description": "Expected wall-clock seconds to process one subject. Used by GET /cloud/status to estimate queue-drain time."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "inputs",
+          "outputs",
+          "resources"
+        ],
+        "title": "ToolDetail",
+        "description": "Full tool specification."
+      },
+      "ToolSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Tool identifier (YAML basename without extension)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable tool name."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ToolSummary",
+        "description": "Abbreviated tool information for list responses."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

@@ -70,7 +70,7 @@ class DockerBackend(JobBackend):
     def __init__(self, settings: Settings) -> None:
         self._client = docker.from_env()
         self._data_root = settings.data_root
-        self._host_data_root = settings.host_data_root or settings.data_root
+        self._host_data_root = Path(settings.host_data_root or settings.data_root)
 
     @property
     def backend_name(self) -> str:

@@ -1,7 +1,8 @@
 pipeline_name: dummy_pipeline
 description: >
-  Single-step pipeline that runs a configurable sleep.
-  Used for testing the pipeline submission and polling API without imaging data.
+  Single-step pipeline that runs a configurable sleep and writes placeholder output.
+  Used for testing the pipeline submission, step caching, provenance writing, and
+  polling API without imaging data.
 categories:
   - testing
 requires: []
@@ -21,5 +22,6 @@ steps:
   - id: sleep
     tool: dummy_sleep
     inputs: {}
-    outputs: {}
+    outputs:
+      result: "${STUDY}/dummy_output"
     # No step-level params: the user-supplied duration_seconds flows through directly.

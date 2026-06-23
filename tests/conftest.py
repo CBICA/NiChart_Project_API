@@ -25,7 +25,16 @@ import pytest
 from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 
+from app.auth.dependencies import CurrentUser, require_auth
 from app.backends.base import JobBackend, JobHandle, ToolSpec
+
+# Fixed test identity — keeps path assertions deterministic regardless of the
+# OS user running inside the test container.
+_TEST_USER = CurrentUser(sub="LOCAL_USER", token="")
+
+
+async def _override_require_auth() -> CurrentUser:
+    return _TEST_USER
 
 
 # ── Mock backend (no Docker / AWS required in tests) ─────────────────────────
@@ -137,6 +146,7 @@ def local_client():
 
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(execution_mode="local")
+    app.dependency_overrides[require_auth] = _override_require_auth
 
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
@@ -162,6 +172,7 @@ def job_client(tmp_path):
         data_root=tmp_path,
     )
     app.dependency_overrides[get_backend] = lambda: MockBackend()
+    app.dependency_overrides[require_auth] = _override_require_auth
 
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client
@@ -185,6 +196,7 @@ def data_client(tmp_path):
         execution_mode="local",
         data_root=tmp_path,
     )
+    app.dependency_overrides[require_auth] = _override_require_auth
 
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client

@@ -21,6 +21,7 @@ MD5 of ``tool_id|inputs|params``. A step is skipped when its cache entry shows
 
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import logging
 import re
@@ -30,6 +31,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    _API_VERSION = importlib.metadata.version("nichart-api")
+except importlib.metadata.PackageNotFoundError:
+    _API_VERSION = "0.1.0"
 
 from fastapi import HTTPException
 
@@ -138,6 +144,45 @@ def _is_cached(metadata: dict, key: str, inputs: dict) -> bool:
 
 def _mark_cached(metadata: dict, key: str) -> None:
     metadata[key] = {"status": "success", "finished_time": time.time()}
+
+
+# ── Provenance ────────────────────────────────────────────────────────────────
+
+def _write_provenance(
+    resolved_outputs: dict[str, str],
+    step_id: str,
+    pipeline_id: str,
+    container_image: str,
+    params: dict,
+    input_paths: dict,
+    submitted_at: datetime | None,
+    finished_at: datetime | None,
+) -> None:
+    """Write _provenance.json into each output directory after a successful step.
+
+    Never raises — a failed provenance write must not block the pipeline.
+    """
+    payload = {
+        "generated_at": (finished_at or datetime.now(timezone.utc)).isoformat(),
+        "api_version": _API_VERSION,
+        "pipeline_id": pipeline_id,
+        "step_id": step_id,
+        "container_image": container_image,
+        "submitted_at": submitted_at.isoformat() if submitted_at else None,
+        "params": params,
+        "input_paths": input_paths,
+    }
+    # Collect the unique directories that this step wrote into.
+    dirs: set[Path] = set()
+    for path_str in resolved_outputs.values():
+        p = Path(path_str)
+        dirs.add(p if not p.suffix else p.parent)
+    for d in dirs:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "_provenance.json").write_text(json.dumps(payload, indent=2, default=str))
+        except Exception as exc:
+            _log.warning("Could not write provenance to %s: %s", d, exc)
 
 
 # ── Run store persistence ─────────────────────────────────────────────────────
@@ -437,6 +482,7 @@ async def run_pipeline_task(
         # Determine the job handle — either reconnect to an in-progress SLURM job
         # (restart recovery) or submit a fresh job.
         handle: JobHandle | None = None
+        tool_spec = None  # set below; needed for provenance
 
         if step.status == "running" and step.job_id:
             # This step was already submitted before the server restarted.
@@ -454,6 +500,10 @@ async def run_pipeline_task(
                 "Reconnected to %s job %s for step '%s' (run %s)",
                 run.backend_type, step.job_id, step_def.id, run.run_id,
             )
+            try:
+                tool_spec = catalog_service.load_tool_spec(tools_path, step_def.tool)
+            except FileNotFoundError:
+                pass  # provenance will be skipped for this step
 
         if handle is None:
             # Fresh submission path.
@@ -462,7 +512,7 @@ async def run_pipeline_task(
             for path_str in resolved_outputs.values():
                 Path(path_str).mkdir(parents=True, exist_ok=True)
 
-            # Load tool spec
+            # Load tool spec (also used for provenance after success)
             try:
                 tool_spec = catalog_service.load_tool_spec(tools_path, step_def.tool)
             except FileNotFoundError as e:
@@ -555,6 +605,22 @@ async def run_pipeline_task(
             return
 
         step_outputs[step_def.id] = resolved_outputs
+        # Provenance must be written BEFORE _mark_cached so that finished_time
+        # (set by time.time() inside _mark_cached) is >= the provenance file's
+        # mtime. If provenance were written after, its mtime would exceed
+        # finished_time and any downstream step whose input dir overlaps this
+        # step's output dir would appear dirty on the next cache check.
+        if tool_spec:
+            _write_provenance(
+                resolved_outputs=resolved_outputs,
+                step_id=step_def.id,
+                pipeline_id=run.pipeline_id,
+                container_image=tool_spec.image,
+                params=merged_params,
+                input_paths=resolved_inputs,
+                submitted_at=step.submitted_at,
+                finished_at=step.finished_at,
+            )
         _mark_cached(metadata, key)
         _save_metadata(study_dir, metadata)
         _persist_run(run, study_dir)

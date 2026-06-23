@@ -1,11 +1,17 @@
 name: dummy_sleep
 description: >
-  Synthetic no-op tool that sleeps for a configurable duration.
-  Used for testing pipeline orchestration and the job API without real imaging data.
+  Synthetic tool that sleeps for a configurable duration and writes a placeholder
+  output file. Used for testing pipeline orchestration, step caching, provenance
+  writing, and the jobs API without real imaging data.
 
 inputs: {}
-outputs: {}
-mounts: {}
+outputs:
+  result:
+    type: directory
+mounts:
+  result:
+    path_in_container: /output
+    mode: rw
 
 resources:
   vcpus: 1
@@ -14,7 +20,7 @@ resources:
 
 container:
   image: "alpine:3.19"
-  command: "sleep {duration_seconds}"
+  command: "sh -c 'sleep {duration_seconds} && echo placeholder-output > /output/result.txt'"
 
 parameters:
   duration_seconds:
