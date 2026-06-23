@@ -2,6 +2,7 @@
 Catalog service — loads tool and pipeline YAML definitions from the resources directory.
 """
 
+import csv
 from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,9 @@ from fastapi import HTTPException
 
 from app.backends.base import MountSpec, ToolSpec
 from app.models.catalog import (
+    FeatureGroup,
     IOField,
+    LabelInfo,
     ParameterSpec,
     PipelineDetail,
     PipelineStep,
@@ -66,11 +69,100 @@ def _parse_requires(raw: list | None) -> list[str]:
     return result
 
 
-def get_pipeline(pipelines_path: Path, pipeline_id: str) -> PipelineDetail:
+def _build_catalog_features(
+    resources_path: Path,
+    batch_spec: "BatchFeaturesSpec",
+) -> tuple["dict[str, LabelInfo] | None", "list[FeatureGroup] | None"]:
+    """Build label_map and feature_groups for the catalog endpoint.
+
+    Unlike the results-side loader, this reads every entry from the label_map CSV
+    without filtering by actual output columns (no project data available here).
+    feature_groups are derived from compact label_id_range declarations in the YAML.
+    """
+    if not batch_spec.label_map:
+        return None, None
+
+    mapping_file = resources_path / batch_spec.label_map
+    if not mapping_file.exists():
+        return None, None
+
+    label_map: dict[str, LabelInfo] = {}
+    primary_ids: dict[str, int] = {}  # col_name -> primary label_id (for range grouping)
+
+    try:
+        with mapping_file.open() as f:
+            for row in csv.reader(f):
+                if len(row) < 2:
+                    continue
+                try:
+                    label_id = int(row[0].strip())
+                    display_name = row[1].strip()
+                except (ValueError, IndexError):
+                    continue
+                constituents = [int(c.strip()) for c in row[2:] if c.strip()]
+                if not constituents:
+                    constituents = [label_id]
+                col_name = batch_spec.column_template.replace("{id}", str(label_id))
+                label_map[col_name] = LabelInfo(display_name=display_name, label_ids=constituents)
+                primary_ids[col_name] = label_id
+    except Exception:
+        return None, None
+
+    if not label_map:
+        return None, None
+
+    feature_groups: list[FeatureGroup] | None = None
+    if batch_spec.feature_groups:
+        feature_groups = []
+        assigned: set[str] = set()
+        for grp in batch_spec.feature_groups:
+            name = grp["name"]
+            id_range = grp.get("label_id_range")
+            if id_range is None:
+                # catch-all: every column not yet placed in a group
+                columns = sorted(c for c in label_map if c not in assigned)
+            else:
+                lo, hi = id_range
+                columns = sorted(
+                    c for c in label_map
+                    if lo <= primary_ids.get(c, -1) <= hi and c not in assigned
+                )
+            if columns:
+                feature_groups.append(FeatureGroup(name=name, columns=columns))
+                assigned.update(columns)
+
+    return label_map, feature_groups
+
+
+def get_pipeline(
+    pipelines_path: Path,
+    pipeline_id: str,
+    resources_path: Path | None = None,
+) -> PipelineDetail:
     yaml_path = pipelines_path / f"{pipeline_id}.yaml"
     if not yaml_path.exists():
         raise HTTPException(404, f"Pipeline '{pipeline_id}' not found")
     data = _load_yaml(yaml_path)
+    results_raw = data.get("results") or {}
+
+    def _res(rel: str | None) -> str | None:
+        if not rel or resources_path is None:
+            return rel
+        return rel if (resources_path / rel).exists() else None
+
+    label_map = None
+    feature_groups = None
+    bf_raw = results_raw.get("batch_features")
+    if bf_raw and resources_path:
+        batch_spec = BatchFeaturesSpec(
+            file=bf_raw["file"],
+            mrid_column=bf_raw.get("mrid_column", "MRID"),
+            label_map=bf_raw.get("label_map"),
+            column_template=bf_raw.get("column_template", "{id}"),
+            feature_groups=bf_raw.get("feature_groups"),
+        )
+        label_map, feature_groups = _build_catalog_features(resources_path, batch_spec)
+
     return PipelineDetail(
         id=pipeline_id,
         name=data["pipeline_name"],
@@ -91,6 +183,10 @@ def get_pipeline(pipelines_path: Path, pipeline_id: str) -> PipelineDetail:
             k: ParameterSpec(**v)
             for k, v in (data.get("parameters") or {}).items()
         },
+        atlas_resource_path=_res(results_raw.get("atlas")),
+        atlas_segmentation_resource_path=_res(results_raw.get("atlas_segmentation")),
+        label_map=label_map,
+        feature_groups=feature_groups,
     )
 
 
@@ -133,6 +229,7 @@ class BatchFeaturesSpec:
     mrid_column: str = "MRID"
     label_map: str | None = None
     column_template: str = "{id}"
+    feature_groups: list[dict] | None = None  # [{name, label_id_range: [lo, hi]}]
 
 
 @dataclass
@@ -168,6 +265,7 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             mrid_column=bf_raw.get("mrid_column", "MRID"),
             label_map=bf_raw.get("label_map"),
             column_template=bf_raw.get("column_template", "{id}"),
+            feature_groups=bf_raw.get("feature_groups"),
         )
 
     per_subject = [

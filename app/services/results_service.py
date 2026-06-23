@@ -6,9 +6,9 @@ the structured response used by the results endpoints.
 import csv
 from pathlib import Path
 
+from app.models.catalog import LabelInfo
 from app.models.results import (
     BatchFeaturesResult,
-    LabelInfo,
     PerSubjectFileStatus,
     PerSubjectOutput,
     PipelineResultDetail,

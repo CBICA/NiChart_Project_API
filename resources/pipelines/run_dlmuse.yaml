@@ -31,6 +31,17 @@ results:
     mrid_column: "MRID"
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_MUSE_Volume_{id}"
+    feature_groups:
+      - name: "Global"
+        label_id_range: [600, 702]
+      - name: "Lobar"
+        label_id_range: [500, 525]
+      - name: "Sub-lobar Bilateral"
+        label_id_range: [400, 436]
+      - name: "Sub-lobar Hemispheric"
+        label_id_range: [300, 345]
+      - name: "Individual Regions"
+        label_id_range: [1, 207]
   per_subject:
     - id: "segmentation"
       pattern: "dlmuse_seg/{MRID}_DLMUSE.nii.gz"

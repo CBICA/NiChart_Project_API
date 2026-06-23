@@ -2,17 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-
-class LabelInfo(BaseModel):
-    """Segmentation label information for a single feature column."""
-
-    display_name: str = Field(description="Human-readable region name.")
-    label_ids: list[int] = Field(
-        description=(
-            "Voxel values in the segmentation NIfTI that together form this region. "
-            "Single-region features have one entry; composite regions have multiple."
-        )
-    )
+from app.models.catalog import LabelInfo  # noqa: F401 — re-exported for results consumers
 
 
 class PerSubjectFileStatus(BaseModel):

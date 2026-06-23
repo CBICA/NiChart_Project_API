@@ -80,6 +80,33 @@ class PipelineSummary(BaseModel):
     )
 
 
+class LabelInfo(BaseModel):
+    """Display metadata for a single feature column.
+
+    ``label_ids`` is only present for pipelines that produce a segmentation NIfTI.
+    When present, the values are the voxel intensities in the atlas segmentation that
+    together form this region and should be used to build ROI overlays.
+    For pipelines without segmentation output, ``label_map`` on ``PipelineDetail``
+    will be null rather than containing ``LabelInfo`` entries with empty label_ids.
+    """
+
+    display_name: str = Field(description="Human-readable region name.")
+    label_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Voxel values in the segmentation NIfTI that together form this region. "
+            "Null for pipelines that do not produce a segmentation output."
+        ),
+    )
+
+
+class FeatureGroup(BaseModel):
+    """A named group of feature columns for hierarchical display in the UI."""
+
+    name: str = Field(description="Display name for this group (e.g. 'Lobar', 'Global').")
+    columns: list[str] = Field(description="Feature column names belonging to this group.")
+
+
 class PipelineDetail(PipelineSummary):
     """Full pipeline definition including ordered steps and user-configurable parameters."""
 
@@ -92,5 +119,39 @@ class PipelineDetail(PipelineSummary):
             "Pass values via ``params`` in the pipeline submit body. "
             "Step-level params in the YAML are fixed by the pipeline author and "
             "cannot be overridden."
+        ),
+    )
+    atlas_resource_path: str | None = Field(
+        default=None,
+        description=(
+            "Resource path for the brain atlas NIfTI declared by this pipeline. "
+            "Fetch with GET /catalog/resources/{path}. "
+            "Null if no atlas is declared or the file is not present on the server."
+        ),
+    )
+    atlas_segmentation_resource_path: str | None = Field(
+        default=None,
+        description=(
+            "Resource path for the atlas segmentation NIfTI declared by this pipeline. "
+            "Fetch with GET /catalog/resources/{path}. "
+            "Null if no atlas segmentation is declared or the file is not present."
+        ),
+    )
+    label_map: dict[str, LabelInfo] | None = Field(
+        default=None,
+        description=(
+            "Maps each batch-feature column name to its display name and, when the "
+            "pipeline produces a segmentation, the constituent voxel label IDs in the "
+            "atlas segmentation NIfTI. Null if no label_map resource is configured or "
+            "the resource file is absent. Pipelines without segmentation output will "
+            "have this field null."
+        ),
+    )
+    feature_groups: list[FeatureGroup] | None = Field(
+        default=None,
+        description=(
+            "Ordered grouping of batch-feature columns for hierarchical UI display "
+            "(e.g. nested dropdowns). Null if the pipeline does not declare "
+            "feature_groups in its YAML."
         ),
     )
