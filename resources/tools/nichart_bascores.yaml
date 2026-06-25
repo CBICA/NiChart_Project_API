@@ -1,0 +1,38 @@
+name: NiChart_BAScores
+description: >
+  Extracts direct image-to-biomarker brain aging scores from MNI-aligned T1 scans
+  and produces attention maps for visualization.
+
+inputs:
+  t1_img:
+    type: directory
+
+outputs:
+  out_csv:
+    type: file
+  out_attention:
+    type: directory
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  out_csv:
+    path_in_container: /output/BAScores.csv
+    mode: rw
+  out_attention:
+    path_in_container: /output/output_attention
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 14000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_bascores:0.0.1
+  command: -i {t1_img} -o {out_attention} --csv {out_csv} --device cuda

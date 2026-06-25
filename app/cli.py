@@ -532,13 +532,128 @@ def readiness(
 ) -> None:
     """Check whether a project has the data needed to run a pipeline."""
     report = _api("GET", f"/projects/{project}/readiness/{pipeline_id}")
-    ready = report.get("ready", False)
-    badge = Text("READY", style="green") if ready else Text("NOT READY", style="red")
+    satisfied = report.get("satisfied", False)
+    badge = Text("READY", style="green") if satisfied else Text("NOT READY", style="red")
     console.print(f"\nProject [bold]{project}[/bold] → pipeline [bold]{pipeline_id}[/bold]: {badge}\n")
-    checks = report.get("checks") or []
-    for c in checks:
-        icon = "[green]✓[/green]" if c["passed"] else "[red]✗[/red]"
-        console.print(f"  {icon}  {c['message']}")
+
+    # Imaging modality checks
+    for img in report.get("imaging") or []:
+        icon = "[green]✓[/green]" if img["satisfied"] else "[red]✗[/red]"
+        console.print(
+            f"  {icon}  {img['modality'].upper()} imaging — "
+            f"{img['subject_count']} subject(s)"
+        )
+
+    # CSV column checks
+    csv = report.get("csv")
+    if csv:
+        csv_icon = "[green]✓[/green]" if csv["satisfied"] else "[red]✗[/red]"
+        console.print(
+            f"  {csv_icon}  participants.csv — "
+            f"{csv['total_subjects']} subject(s)"
+        )
+        for col in csv.get("required_columns") or []:
+            missing = col.get("subjects_missing") or []
+            invalid = col.get("subjects_invalid") or []
+            ok = col["present"] and not missing and not invalid
+            col_icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
+            note = ""
+            if not col["present"]:
+                note = " [red](column absent)[/red]"
+            else:
+                parts = []
+                if missing:
+                    parts.append(f"{len(missing)} subject(s) empty")
+                if invalid:
+                    parts.append(f"{len(invalid)} subject(s) invalid value")
+                if parts:
+                    note = f" [yellow]({', '.join(parts)})[/yellow]"
+            console.print(f"      {col_icon}  {col['column']}{note}")
+
+    # Subject count check (harmonized pipelines)
+    sc = report.get("subject_count")
+    if sc:
+        if sc["satisfied"] and not sc["recommended_met"]:
+            icon = "[yellow]⚠[/yellow]"
+            note = (
+                f"[yellow]{sc['actual']} subject(s) — meets minimum ({sc['required']})"
+                f" but below recommended ({sc['recommended']}) for reliable harmonization[/yellow]"
+            )
+        elif sc["satisfied"]:
+            icon = "[green]✓[/green]"
+            note = f"{sc['actual']} subject(s) (min {sc['required']}, recommended {sc['recommended']})"
+        else:
+            icon = "[red]✗[/red]"
+            note = (
+                f"[red]{sc['actual']} subject(s) — below minimum {sc['required']} "
+                f"required for harmonization[/red]"
+            )
+        console.print(f"  {icon}  Subject count — {note}")
+
+    console.print()
+
+
+# ── nichart provenance ────────────────────────────────────────────────────────
+
+@app.command()
+def provenance(
+    project: str = typer.Argument(..., help="Project name."),
+    dirty_only: bool = typer.Option(False, "--dirty-only", "-d", help="Show only dirty/missing entries."),
+) -> None:
+    """Verify that cached pipeline step outputs are not stale."""
+    report = _api("GET", f"/projects/{project}/provenance")
+    summary = report.get("summary", "no_provenance")
+    entries = report.get("entries") or []
+
+    _SUMMARY_STYLE = {
+        "all_clean": ("green", "✓ All steps clean"),
+        "some_dirty": ("red", "✗ Some steps are dirty or have missing inputs"),
+        "no_provenance": ("dim", "— No completed steps found"),
+    }
+    style, label = _SUMMARY_STYLE.get(summary, ("white", summary))
+    console.print(f"\nProject [bold]{project}[/bold]: [{style}]{label}[/{style}]\n")
+
+    if not entries:
+        return
+
+    _OVERALL_ICON = {
+        "clean": "[green]✓[/green]",
+        "dirty": "[red]✗[/red]",
+        "missing_inputs": "[red]✗[/red]",
+        "unreadable": "[yellow]?[/yellow]",
+    }
+    _INPUT_ICON = {
+        "clean": "[green]·[/green]",
+        "modified": "[red]M[/red]",
+        "missing": "[red]![/red]",
+    }
+
+    for entry in entries:
+        overall = entry.get("overall", "unreadable")
+        if dirty_only and overall == "clean":
+            continue
+
+        icon = _OVERALL_ICON.get(overall, "?")
+        step = entry.get("step_id") or "?"
+        ts = entry.get("generated_at", "")[:16].replace("T", " ")
+        console.print(
+            f"  {icon}  [bold]{entry.get('output_dir', '?')}[/bold]  "
+            f"[dim]step:{step}  pipeline:{entry.get('pipeline_id','?')}  @ {ts}[/dim]"
+        )
+
+        if overall == "unreadable":
+            console.print(f"       [yellow]{entry.get('error')}[/yellow]")
+            continue
+
+        for inp in entry.get("inputs") or []:
+            inp_icon = _INPUT_ICON.get(inp["status"], "?")
+            note = ""
+            if inp["status"] == "modified":
+                note = f" [red]({inp['modified_count']} file(s) changed)[/red]"
+            elif inp["status"] == "missing":
+                note = " [red](not found)[/red]"
+            console.print(f"       {inp_icon} {inp['label']}: [dim]{inp['path']}[/dim]{note}")
+
     console.print()
 
 
@@ -694,13 +809,29 @@ def jobs_submit(
     # Readiness check
     if not skip_readiness:
         report = _api("GET", f"/projects/{project}/readiness/{pipeline_id}", silent_errors=True)
-        if isinstance(report, dict) and not report.get("ready", True):
-            console.print("[yellow]Readiness warnings:[/yellow]")
-            for c in report.get("checks") or []:
-                if not c["passed"]:
-                    console.print(f"  [yellow]⚠[/yellow]  {c['message']}")
+        if isinstance(report, dict) and not report.get("satisfied", True):
+            console.print("[yellow]Project is not ready to run this pipeline:[/yellow]")
+            for img in report.get("imaging") or []:
+                if not img["satisfied"]:
+                    console.print(f"  [red]✗[/red]  Missing {img['modality'].upper()} imaging data")
+            csv = report.get("csv")
+            if csv and not csv["satisfied"]:
+                console.print("  [red]✗[/red]  participants.csv incomplete")
+            sc = report.get("subject_count")
+            if sc and not sc["satisfied"]:
+                console.print(
+                    f"  [red]✗[/red]  Only {sc['actual']} subject(s); "
+                    f"minimum {sc['required']} required for harmonization"
+                )
             if not Confirm.ask("Submit anyway?", default=False):
                 raise typer.Exit(0)
+        elif isinstance(report, dict):
+            sc = report.get("subject_count")
+            if sc and not sc.get("recommended_met", True):
+                console.print(
+                    f"[yellow]⚠  Harmonization works best with {sc['recommended']}+ subjects; "
+                    f"you have {sc['actual']}.[/yellow]"
+                )
 
     run = _api(
         "POST",

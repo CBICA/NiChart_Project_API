@@ -1,0 +1,36 @@
+name: merge_feature_csvs_by_mrid
+description: Merges two feature CSVs on the MRID key, producing a single combined CSV.
+
+inputs:
+  csv_1:
+    type: file
+  csv_2:
+    type: file
+
+outputs:
+  out_csv:
+    type: file
+
+mounts:
+  csv_1:
+    path_in_container: /input/csv_1.csv
+    mode: ro
+  csv_2:
+    path_in_container: /input/csv_2.csv
+    mode: ro
+  out_csv:
+    path_in_container: /output/csv_out.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 14000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/merge_feature_csvs:0.0.1
+  command: --csvone {csv_1} --csvtwo {csv_2} --output {out_csv}

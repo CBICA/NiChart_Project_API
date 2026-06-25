@@ -1,0 +1,31 @@
+name: GenFAR
+description: Runs GenFAR inference on MNI-aligned T1 scans.
+
+inputs:
+  t1_dir:
+    type: directory
+
+outputs:
+  output_dir:
+    type: directory
+
+mounts:
+  t1_dir:
+    path_in_container: /input/images
+    mode: ro
+  output_dir:
+    path_in_container: /output/genfar
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 14000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/genfar:0.0.1
+  command: --data-dir {t1_dir} --output-dir {output_dir}

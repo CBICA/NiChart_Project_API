@@ -269,7 +269,7 @@ async def get_pipeline_logs(
     run_id: str,
     user: CurrentUser = Depends(require_auth),
 ) -> PipelineRunLogs:
-    return job_service.get_run_logs(run_id=run_id, user_id=user.sub)
+    return await job_service.get_run_logs(run_id=run_id, user_id=user.sub)
 
 
 @jobs_router.delete(

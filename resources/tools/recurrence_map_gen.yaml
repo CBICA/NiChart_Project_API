@@ -1,0 +1,31 @@
+name: recurrence_map_gen
+description: Generates glioblastoma recurrence infiltration maps from preprocessed multi-modal inputs.
+
+inputs:
+  preprocessing_results:
+    type: directory
+
+outputs:
+  recurrence_map_out:
+    type: directory
+
+mounts:
+  preprocessing_results:
+    path_in_container: /input
+    mode: ro
+  recurrence_map_out:
+    path_in_container: /output
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 28000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/recurrence_map_gen_pipeline:0.0.1
+  command: --input {preprocessing_results} --output {recurrence_map_out}

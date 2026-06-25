@@ -22,6 +22,13 @@ class ColumnCheck(BaseModel):
         default_factory=list,
         description="MRIDs of subjects where this column is empty or absent.",
     )
+    subjects_invalid: list[str] = Field(
+        default_factory=list,
+        description=(
+            "MRIDs of subjects where this column's value fails the pipeline's declared schema "
+            "(wrong type, out of range, or not in allowed categorical values)."
+        ),
+    )
 
 
 class CsvRequirement(BaseModel):
@@ -34,11 +41,21 @@ class CsvRequirement(BaseModel):
     )
 
 
+class SubjectCountRequirement(BaseModel):
+    """Readiness check for a minimum subject count, used by harmonized pipelines."""
+
+    actual: int = Field(description="Unique MRIDs detected across all modality directories.")
+    required: int = Field(description="Minimum subjects needed to run the pipeline at all.")
+    recommended: int = Field(description="Recommended number of subjects for reliable results.")
+    satisfied: bool = Field(description="True if actual >= required.")
+    recommended_met: bool = Field(description="True if actual >= recommended.")
+
+
 class ReadinessReport(BaseModel):
     """Project readiness check result for a specific pipeline."""
 
     pipeline_id: str = Field(description="Pipeline that was checked.")
-    satisfied: bool = Field(description="True if all checks pass.")
+    satisfied: bool = Field(description="True if all hard requirements pass.")
     imaging: list[ImagingRequirement] = Field(
         default_factory=list,
         description="One entry per imaging modality required by the pipeline.",
@@ -46,4 +63,12 @@ class ReadinessReport(BaseModel):
     csv: CsvRequirement | None = Field(
         default=None,
         description="CSV column checks, present only when the pipeline has csv_has_columns requirements.",
+    )
+    subject_count: SubjectCountRequirement | None = Field(
+        default=None,
+        description=(
+            "Subject count check, present only for pipelines with min_subjects requirements "
+            "(e.g. harmonized pipelines). satisfied=False blocks running; "
+            "recommended_met=False should surface a warning to the user."
+        ),
     )

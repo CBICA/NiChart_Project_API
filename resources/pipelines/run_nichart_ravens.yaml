@@ -1,0 +1,39 @@
+pipeline_name: RAVENS Abnormality Mapping
+description: |
+  Generates patient-specific regional brain volume abnormality maps using DLMUSE and RAVENS.
+
+categories:
+  - image-processing
+  - abnormality-mapping
+
+requires:
+  - needs_T1
+  - needs_demographics
+  - csv_has_columns:
+      - name: MRID
+        type: string
+      - name: Age
+        type: float
+        min: 0
+        max: 120
+      - name: Sex
+        type: categorical
+        values: [M, F]
+
+steps:
+  - id: run_dlmuse
+    tool: nichart_dlmuse
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+
+  - id: run_nichart_ravens
+    tool: nichart_ravens
+    inputs:
+      t1_img: ${STUDY}/t1
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+      demog_csv: ${STUDY}/participants/participants.csv
+    outputs:
+      ravens_out: ${STUDY}/nichart_ravens_out

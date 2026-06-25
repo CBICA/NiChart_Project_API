@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app.backends.base import MountSpec, ToolSpec
 from app.models.catalog import (
+    ColumnSpec,
     FeatureGroup,
     IOField,
     LabelInfo,
@@ -28,6 +29,19 @@ from app.models.catalog import (
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open() as f:
         return yaml.safe_load(f)
+
+
+def _load_disabled_pipelines(pipelines_path: Path) -> set[str]:
+    """Return pipeline IDs listed in disabled.txt (supports # comments)."""
+    disabled_file = pipelines_path / "disabled.txt"
+    if not disabled_file.exists():
+        return set()
+    disabled: set[str] = set()
+    for raw_line in disabled_file.read_text().splitlines():
+        line = raw_line.split("#")[0].strip()
+        if line:
+            disabled.add(line)
+    return disabled
 
 
 def get_tool(tools_path: Path, tool_id: str) -> ToolDetail:
@@ -67,6 +81,31 @@ def _parse_requires(raw: list | None) -> list[str]:
     for item in raw or []:
         result.append(item if isinstance(item, str) else str(item))
     return result
+
+
+def _parse_column_schemas(raw_requires: list | None) -> dict[str, ColumnSpec]:
+    """Extract ColumnSpec entries from the csv_has_columns requirement block."""
+    for item in raw_requires or []:
+        if not isinstance(item, dict):
+            continue
+        cols = item.get("csv_has_columns")
+        if not cols:
+            continue
+        schemas: dict[str, ColumnSpec] = {}
+        for col in cols:
+            if isinstance(col, str):
+                schemas[col] = ColumnSpec(name=col)
+            elif isinstance(col, dict) and col.get("name"):
+                schemas[col["name"]] = ColumnSpec(
+                    name=col["name"],
+                    type=col.get("type", "string"),
+                    min=col.get("min"),
+                    max=col.get("max"),
+                    values=[str(v) for v in col["values"]] if col.get("values") else None,
+                    description=col.get("description"),
+                )
+        return schemas
+    return {}
 
 
 def _build_catalog_features(
@@ -139,6 +178,8 @@ def get_pipeline(
     pipeline_id: str,
     resources_path: Path | None = None,
 ) -> PipelineDetail:
+    if pipeline_id in _load_disabled_pipelines(pipelines_path):
+        raise HTTPException(404, f"Pipeline '{pipeline_id}' not found")
     yaml_path = pipelines_path / f"{pipeline_id}.yaml"
     if not yaml_path.exists():
         raise HTTPException(404, f"Pipeline '{pipeline_id}' not found")
@@ -163,12 +204,13 @@ def get_pipeline(
         )
         label_map, feature_groups = _build_catalog_features(resources_path, batch_spec)
 
+    raw_requires = data.get("requires")
     return PipelineDetail(
         id=pipeline_id,
         name=data["pipeline_name"],
         description=data.get("description"),
         categories=data.get("categories") or [],
-        requires=_parse_requires(data.get("requires")),
+        requires=_parse_requires(raw_requires),
         steps=[
             PipelineStep(
                 id=s["id"],
@@ -187,6 +229,7 @@ def get_pipeline(
         atlas_segmentation_resource_path=_res(results_raw.get("atlas_segmentation")),
         label_map=label_map,
         feature_groups=feature_groups,
+        column_schemas=_parse_column_schemas(raw_requires),
     )
 
 
@@ -216,6 +259,8 @@ def get_pipeline_raw_requires(pipelines_path: Path, pipeline_id: str) -> list:
     (e.g. ``{"csv_has_columns": ["MRID", "Age"]}``). Returns an empty list
     when the pipeline has no requirements.
     """
+    if pipeline_id in _load_disabled_pipelines(pipelines_path):
+        raise HTTPException(404, f"Pipeline '{pipeline_id}' not found")
     yaml_path = pipelines_path / f"{pipeline_id}.yaml"
     if not yaml_path.exists():
         raise HTTPException(404, f"Pipeline '{pipeline_id}' not found")
@@ -286,8 +331,11 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
 
 
 def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:
+    disabled = _load_disabled_pipelines(pipelines_path)
     result = []
     for yaml_path in sorted(pipelines_path.glob("*.yaml")):
+        if yaml_path.stem in disabled:
+            continue
         try:
             data = _load_yaml(yaml_path)
             result.append(PipelineSummary(

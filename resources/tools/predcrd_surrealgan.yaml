@@ -1,0 +1,36 @@
+name: predcrd_surrealgan
+description: Predicts SurrealGAN R-Scores along 5 disease progression dimensions from DLMUSE ROIs and demographics.
+
+inputs:
+  dlmuse_vol:
+    type: file
+  demog_csv:
+    type: file
+
+outputs:
+  surrealgan_csv:
+    type: file
+
+mounts:
+  dlmuse_vol:
+    path_in_container: /input/dlmuse.csv
+    mode: ro
+  demog_csv:
+    path_in_container: /input/demog.csv
+    mode: ro
+  surrealgan_csv:
+    path_in_container: /output/SurrealGAN_RScores.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 14000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/surrealgan_predcrd_wrapped:0.0.1
+  command: --roi_csv {dlmuse_vol} --demog_csv {demog_csv} --out_csv {surrealgan_csv}

@@ -8,6 +8,7 @@ Import ``app`` for production use::
 Call ``create_app()`` in tests to get a fresh, isolated instance.
 """
 
+import importlib.metadata
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -23,6 +24,11 @@ from app.routers.files import router as files_router
 from app.routers.jobs import jobs_router, project_router as jobs_project_router
 from app.routers.projects import router as projects_router
 from app.routers.results import router as results_router
+
+try:
+    _VERSION = importlib.metadata.version("nichart-api")
+except importlib.metadata.PackageNotFoundError:
+    _VERSION = "0.1.0"
 
 
 @asynccontextmanager
@@ -73,7 +79,7 @@ def create_app() -> FastAPI:
             "token in the ``Authorization: Bearer`` header. In local mode "
             "(``NICHART_EXECUTION_MODE=local``) authentication is bypassed."
         ),
-        version="0.1.0",
+        version=_VERSION,
         contact={"name": "CBICA", "url": "https://github.com/CBICA/NiChart_Project"},
         license_info={"name": "MIT"},
         lifespan=_lifespan,
@@ -115,7 +121,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "execution_mode": settings.execution_mode,
-            "version": "0.1.0",
+            "version": _VERSION,
         }
 
     return app

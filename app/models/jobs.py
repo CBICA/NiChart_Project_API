@@ -38,6 +38,9 @@ class StepStatus(BaseModel):
     job_id: str | None = Field(
         default=None, description="Backend job ID (Docker container name or AWS Batch job ID)."
     )
+    container_image: str | None = Field(
+        default=None, description="Container image used for this step (e.g. 'cbica/nichart_dlmuse:1.0.10-wrapped')."
+    )
     error: str | None = Field(default=None, description="Error message if the step failed.")
 
 

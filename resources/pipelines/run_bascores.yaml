@@ -1,0 +1,44 @@
+pipeline_name: Image-to-Biomarker Brain Aging Scores
+description: |
+  Brain age regression pipeline starting from T1 scans. Outputs attention maps alongside biomarker scores.
+
+categories:
+  - image-to-biomarker
+  - brain-age
+  - regression
+  - inference
+
+requires:
+  - needs_T1
+
+steps:
+  - id: run_dlmuse
+    tool: nichart_dlmuse
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+
+  - id: binarize_dlmuse_to_dlicv
+    tool: binarize_seg_to_mask
+    inputs:
+      seg_dir: ${STUDY}/dlmuse_seg
+    outputs:
+      mask_dir: ${STUDY}/dlicv_mask
+
+  - id: align_dlicv_to_mni
+    tool: dlicv_to_mni
+    inputs:
+      img_dir: ${STUDY}/t1
+      mask_dir: ${STUDY}/dlicv_mask
+    outputs:
+      mni_dir: ${STUDY}/t1_mni
+
+  - id: run_nichart_bascores
+    tool: nichart_bascores
+    inputs:
+      t1_img: ${STUDY}/t1_mni
+    outputs:
+      out_csv: ${STUDY}/ml_biomarkers/SPARE_BA_Image.csv
+      out_attention: ${STUDY}/spare_ba_image_attention

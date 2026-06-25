@@ -1,0 +1,31 @@
+name: ithresolve_gbm
+description: Produces tumor composition (methylation class scores) from epigenetic IDAT arrays.
+
+inputs:
+  idat_dir:
+    type: directory
+
+outputs:
+  output_dir:
+    type: directory
+
+mounts:
+  idat_dir:
+    path_in_container: /input
+    mode: ro
+  output_dir:
+    path_in_container: /output
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 14000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: sm3kon/gbm-deconv:0.2.0
+  command: --input {idat_dir} --output {output_dir}

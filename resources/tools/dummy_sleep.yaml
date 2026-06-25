@@ -20,7 +20,7 @@ resources:
 
 container:
   image: "alpine:3.19"
-  command: "sh -c 'sleep {duration_seconds} && echo placeholder-output > /output/result.txt'"
+  command: "sh -c 'echo \"[dummy_sleep] starting, will sleep {duration_seconds}s\"; sleep {duration_seconds}; echo \"[dummy_sleep] done\"; echo placeholder-output > /output/result.txt'"
 
 parameters:
   duration_seconds:

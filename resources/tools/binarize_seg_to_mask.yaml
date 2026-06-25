@@ -1,0 +1,31 @@
+name: binarize_seg_to_mask
+description: Takes a directory of NIfTI segmentations and converts them to binary masks.
+
+inputs:
+  seg_dir:
+    type: directory
+
+outputs:
+  mask_dir:
+    type: directory
+
+mounts:
+  seg_dir:
+    path_in_container: /input/segs
+    mode: ro
+  mask_dir:
+    path_in_container: /output/masks
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 14000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nifti-binarizer:0.0.1
+  command: --input_dir {seg_dir} --output_dir {mask_dir}

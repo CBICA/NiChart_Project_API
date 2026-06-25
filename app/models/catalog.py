@@ -80,6 +80,37 @@ class PipelineSummary(BaseModel):
     )
 
 
+class ColumnSpec(BaseModel):
+    """Validation schema for a single required participants.csv column."""
+
+    name: str = Field(description="Column name as it must appear in the CSV header.")
+    type: Literal["string", "int", "float", "categorical"] = Field(
+        default="string",
+        description=(
+            "'string' — any non-empty text. "
+            "'int' — whole number, optionally bounded by min/max. "
+            "'float' — decimal number, optionally bounded by min/max. "
+            "'categorical' — must be one of the strings listed in values."
+        ),
+    )
+    min: float | None = Field(
+        default=None,
+        description="Inclusive lower bound for numeric types. Null means no lower bound.",
+    )
+    max: float | None = Field(
+        default=None,
+        description="Inclusive upper bound for numeric types. Null means no upper bound.",
+    )
+    values: list[str] | None = Field(
+        default=None,
+        description="Exhaustive list of accepted values for categorical columns.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="Human-readable description shown in the UI alongside the column input.",
+    )
+
+
 class LabelInfo(BaseModel):
     """Display metadata for a single feature column.
 
@@ -153,5 +184,14 @@ class PipelineDetail(PipelineSummary):
             "Ordered grouping of batch-feature columns for hierarchical UI display "
             "(e.g. nested dropdowns). Null if the pipeline does not declare "
             "feature_groups in its YAML."
+        ),
+    )
+    column_schemas: dict[str, ColumnSpec] = Field(
+        default_factory=dict,
+        description=(
+            "Validation schema for each column declared in csv_has_columns. "
+            "Keyed by column name. Use this to drive client-side CSV validation: "
+            "type checking, numeric range enforcement, and categorical value lists. "
+            "Columns not listed here have no declared schema (accept any non-empty value)."
         ),
     )

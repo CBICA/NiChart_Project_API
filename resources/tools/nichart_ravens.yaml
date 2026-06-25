@@ -1,0 +1,41 @@
+name: nichart_ravens
+description: Uses T1 scans and DLMUSE segmentations to generate patient-specific regional brain volume abnormality maps via RAVENS.
+
+inputs:
+  t1_img:
+    type: directory
+  dlmuse_seg:
+    type: directory
+  demog_csv:
+    type: file
+
+outputs:
+  ravens_out:
+    type: directory
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  dlmuse_seg:
+    path_in_container: /input/dlmuse_seg
+    mode: ro
+  demog_csv:
+    path_in_container: /input/demog.csv
+    mode: ro
+  ravens_out:
+    path_in_container: /output
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 28000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_ravens:0.0.1
+  command: --demog-csv {demog_csv} --t1-dir {t1_img} --dlmuse-dir {dlmuse_seg} --output-dir {ravens_out} --reg-mode test --n-jobs -1

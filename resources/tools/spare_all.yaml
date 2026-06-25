@@ -1,0 +1,36 @@
+name: spare_all
+description: Runs all available NiChart SPARE scores using DLMUSE ROI volumes and demographics.
+
+inputs:
+  dlmuse_vol:
+    type: file
+  demog_csv:
+    type: file
+
+outputs:
+  spare_all_csv:
+    type: file
+
+mounts:
+  demog_csv:
+    path_in_container: /input/demographics.csv
+    mode: ro
+  dlmuse_vol:
+    path_in_container: /input/dlmuse_vol.csv
+    mode: ro
+  spare_all_csv:
+    path_in_container: /output/SPARE_ALL.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 8000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_spare_score_runall:0.0.4
+  command: "-i {dlmuse_vol} -demog {demog_csv} --category misc -o {spare_all_csv}"

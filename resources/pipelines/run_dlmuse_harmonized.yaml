@@ -1,0 +1,67 @@
+pipeline_name: DLMUSE Brain Segmentation (Harmonized)
+description: |
+  Segmentation pipeline starting from T1-weighted MRI brain scans, with harmonization to the NiChart reference dataset.
+
+categories:
+  - image-processing
+  - segmentation
+  - feature-extraction
+  - harmonized
+
+requires:
+  - needs_T1
+  - needs_demographics
+  - csv_has_columns:
+      - name: MRID
+        type: string
+      - name: Age
+        type: float
+        min: 0
+        max: 120
+      - name: Sex
+        type: categorical
+        values: [M, F]
+  - min_subjects:
+      required: 3
+      recommended: 30
+
+steps:
+  - id: run_nichart_dlmuse
+    tool: nichart_dlmuse
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+
+  - id: harmonize_dlmuse
+    tool: harmonize_dlmuse
+    inputs:
+      dlmuse_vol_unharmonized: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
+      covariate_csv: ${STUDY}/participants/participants.csv
+    outputs:
+      dlmuse_vol_harmonized: ${STUDY}/dlmuse_vol_harmonized
+
+results:
+  batch_features:
+    file: "dlmuse_vol_harmonized/DLMUSE_Volumes.csv"
+    mrid_column: "MRID"
+    label_map: "atlases/muse/muse_mapping_derived.csv"
+    column_template: "DL_MUSE_Volume_{id}"
+    feature_groups:
+      - name: "Global"
+        label_id_range: [600, 702]
+      - name: "Lobar"
+        label_id_range: [500, 525]
+      - name: "Sub-lobar Bilateral"
+        label_id_range: [400, 436]
+      - name: "Sub-lobar Hemispheric"
+        label_id_range: [300, 345]
+      - name: "Individual Regions"
+        label_id_range: [1, 207]
+  per_subject:
+    - id: "segmentation"
+      pattern: "dlmuse_seg/{MRID}_DLMUSE.nii.gz"
+      type: "segmentation_nifti"
+  atlas: "atlases/muse/MNI152_1mm_LPS.nii.gz"
+  atlas_segmentation: "atlases/muse/MNI152_1mm_LPS_DLMUSE.nii.gz"

@@ -1,0 +1,48 @@
+name: nichart_dlwmls_v2
+description: >
+  Segments white matter lesions on FLAIR MRI brain scans using T1-DLMUSE context,
+  producing segmentations and regional lesion volumes.
+
+inputs:
+  fl_img:
+    type: directory
+  t1_img:
+    type: directory
+  dlmuse_seg:
+    type: directory
+  demog_csv:
+    type: file
+
+outputs:
+  nichart_dlwmls_out:
+    type: directory
+
+mounts:
+  fl_img:
+    path_in_container: /input/fl
+    mode: ro
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  dlmuse_seg:
+    path_in_container: /input/dlmuse_seg
+    mode: ro
+  demog_csv:
+    path_in_container: /input/demog.csv
+    mode: ro
+  nichart_dlwmls_out:
+    path_in_container: /output/nichart_dlwmls_out
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 28000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_dlwmls:0.0.3
+  command: --list {demog_csv} --fl_dir {fl_img} --t1_dir {t1_img} --dlmuse_dir {dlmuse_seg} --out_dir {nichart_dlwmls_out} --device cuda --named-headers --dlmuse_suff _T1_DLMUSE.nii.gz --infer-mrids

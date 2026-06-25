@@ -1,0 +1,41 @@
+name: nichart_dkgp
+description: Runs DKGP inference on subjects using DLMUSE ROIs, demographics, and SPARE scores.
+
+inputs:
+  dlmuse_vol:
+    type: file
+  demog_csv:
+    type: file
+  spare_csv:
+    type: file
+
+outputs:
+  dkgp_out:
+    type: directory
+
+mounts:
+  dlmuse_vol:
+    path_in_container: /input/dlmuse.csv
+    mode: ro
+  demog_csv:
+    path_in_container: /input/demographics.csv
+    mode: ro
+  spare_csv:
+    path_in_container: /input/SPARE.csv
+    mode: ro
+  dkgp_out:
+    path_in_container: /output
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 14000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_dkgp:0.0.1
+  command: --csv1 {dlmuse_vol} --csv2 {demog_csv} --csv3 {spare_csv} --out-dir {dkgp_out}

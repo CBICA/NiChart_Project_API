@@ -1,0 +1,62 @@
+pipeline_name: DKGP
+description: |
+  DKGP inference using DLMUSE ROIs, demographics, and SPARE scores.
+
+categories:
+  - image-to-biomarker
+  - regression
+  - inference
+
+requires:
+  - needs_T1
+  - needs_demographics
+  - csv_has_columns:
+      - name: MRID
+        type: string
+      - name: Age
+        type: float
+        min: 0
+        max: 120
+      - name: Sex
+        type: categorical
+        values: [M, F]
+      - name: AD_Diagnosis
+        type: categorical
+        values: [CN, MCI, AD]
+        description: Clinical diagnosis group at time of scan
+      - name: ADAS_COG_13
+        type: float
+        min: 0
+        max: 85
+        description: Alzheimer's Disease Assessment Scale — Cognitive subscale (13-item)
+      - name: MMSE
+        type: float
+        min: 0
+        max: 30
+        description: Mini-Mental State Examination score
+
+steps:
+  - id: run_nichart_dlmuse
+    tool: nichart_dlmuse
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+
+  - id: run_spare_all
+    tool: spare_all
+    inputs:
+      dlmuse_vol: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
+      demog_csv: ${STUDY}/participants/participants.csv
+    outputs:
+      spare_all_csv: ${STUDY}/ml_biomarkers/SPARE_ALL.csv
+
+  - id: run_dkgp
+    tool: dkgp
+    inputs:
+      dlmuse_vol: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
+      demog_csv: ${STUDY}/participants/participants.csv
+      spare_csv: ${STUDY}/ml_biomarkers/SPARE_ALL.csv
+    outputs:
+      dkgp_out: ${STUDY}/dkgp_results

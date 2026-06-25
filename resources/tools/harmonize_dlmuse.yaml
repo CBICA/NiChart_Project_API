@@ -1,0 +1,36 @@
+name: harmonize_dlmuse
+description: Harmonizes DLMUSE ROI volumes to a large reference dataset using ComBat-FAM and subject covariates.
+
+inputs:
+  dlmuse_vol_unharmonized:
+    type: file
+  covariate_csv:
+    type: file
+
+outputs:
+  dlmuse_vol_harmonized:
+    type: directory
+
+mounts:
+  dlmuse_vol_unharmonized:
+    path_in_container: /input/unharmonized_DLMUSE_Volumes.csv
+    mode: ro
+  covariate_csv:
+    path_in_container: /input/covariates.csv
+    mode: ro
+  dlmuse_vol_harmonized:
+    path_in_container: /output/dlmuse_vol_harmonized
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 14000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/combatfam_harmonize_dlmuse:0.0.2
+  command: -i {dlmuse_vol_unharmonized} -c {covariate_csv} -o {dlmuse_vol_harmonized}

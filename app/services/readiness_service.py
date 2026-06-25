@@ -14,7 +14,9 @@ from app.models.readiness import (
     CsvRequirement,
     ImagingRequirement,
     ReadinessReport,
+    SubjectCountRequirement,
 )
+from app.services.file_service import collect_project_mrids
 
 # Map lowercase requires token → modality directory name
 _MODALITY_TOKEN: dict[str, str] = {
@@ -40,25 +42,26 @@ def _count_subjects_in_dir(project_path: Path, modality_dir: str) -> int:
     )
 
 
-def _read_csv_coverage(project_path: Path) -> tuple[int, dict[str, list[str]]]:
-    """Return ``(total_subjects, {column_name: [mrids_with_empty_value]})``.
+def _read_csv_coverage(project_path: Path) -> tuple[int, dict[str, list[str]], set[str]]:
+    """Return ``(total_subjects, {column_name: [mrids_with_empty_value]}, all_lowercase_columns)``.
 
-    Only non-MRID columns are included in the second dict. The MRID column
-    is matched case-insensitively. Returns ``(0, {})`` when the CSV is absent
-    or has no MRID column.
+    The third element is the set of all column names (lowercase) present in the CSV,
+    including MRID. The second dict covers only non-MRID columns.
+    Returns ``(0, {}, set())`` when the CSV is absent or has no MRID column.
     """
     csv_path = project_path / _PARTICIPANTS_CSV
     if not csv_path.exists():
-        return 0, {}
+        return 0, {}, set()
     with csv_path.open(newline="") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
         if not fieldnames:
-            return 0, {}
+            return 0, {}, set()
+        all_cols_lower = {k.lower() for k in fieldnames}
         col_map = {k.lower(): k for k in fieldnames}
         mrid_col = col_map.get("mrid")
         if not mrid_col:
-            return 0, {}
+            return 0, {}, all_cols_lower
         data_cols = [c for c in fieldnames if c != mrid_col]
         missing: dict[str, list[str]] = {c: [] for c in data_cols}
         total = 0
@@ -70,7 +73,72 @@ def _read_csv_coverage(project_path: Path) -> tuple[int, dict[str, list[str]]]:
             for col in data_cols:
                 if not (row.get(col) or "").strip():
                     missing[col].append(mrid)
-    return total, missing
+    return total, missing, all_cols_lower
+
+
+def _validate_cell(value: str, schema: dict) -> bool:
+    """Return True if value satisfies the column schema."""
+    col_type = schema.get("type", "string")
+    if col_type == "string":
+        return True
+    if col_type in ("int", "float"):
+        try:
+            num = float(value)
+            if col_type == "int" and num != int(num):
+                return False
+            lo = schema.get("min")
+            hi = schema.get("max")
+            if lo is not None and num < lo:
+                return False
+            if hi is not None and num > hi:
+                return False
+        except (ValueError, TypeError):
+            return False
+    elif col_type == "categorical":
+        allowed = [str(v) for v in (schema.get("values") or [])]
+        if allowed and value not in allowed:
+            return False
+    return True
+
+
+def _check_csv_values(
+    project_path: Path,
+    col_schemas: dict[str, dict],
+) -> dict[str, list[str]]:
+    """Return {column_name: [mrids_with_invalid_values]} for columns with non-string schemas."""
+    schemas_to_check = {
+        name: s for name, s in col_schemas.items()
+        if s.get("type", "string") != "string" and name.lower() != "mrid"
+    }
+    if not schemas_to_check:
+        return {}
+    csv_path = project_path / _PARTICIPANTS_CSV
+    if not csv_path.exists():
+        return {}
+    col_invalid: dict[str, list[str]] = {}
+    with csv_path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        if not fieldnames:
+            return {}
+        col_map = {k.lower(): k for k in fieldnames}
+        mrid_col = col_map.get("mrid")
+        if not mrid_col:
+            return {}
+        for row in reader:
+            mrid = (row.get(mrid_col) or "").strip()
+            if not mrid:
+                continue
+            for col_name, schema in schemas_to_check.items():
+                actual_col = col_map.get(col_name.lower())
+                if not actual_col:
+                    continue  # absent columns flagged separately
+                value = (row.get(actual_col) or "").strip()
+                if not value:
+                    continue  # empty values flagged separately
+                if not _validate_cell(value, schema):
+                    col_invalid.setdefault(col_name, []).append(mrid)
+    return col_invalid
 
 
 def check_readiness(
@@ -81,6 +149,8 @@ def check_readiness(
     """Evaluate every requirement in ``raw_requires`` against the project directory."""
     imaging_checks: list[ImagingRequirement] = []
     csv_columns_required: list[str] = []
+    col_schemas: dict[str, dict] = {}
+    min_subjects_spec: dict | None = None
 
     for item in raw_requires:
         if isinstance(item, str):
@@ -96,27 +166,41 @@ def check_readiness(
         elif isinstance(item, dict):
             cols = item.get("csv_has_columns") or []
             if isinstance(cols, list):
-                csv_columns_required.extend(str(c) for c in cols)
+                for c in cols:
+                    if isinstance(c, str):
+                        csv_columns_required.append(c)
+                    elif isinstance(c, dict) and c.get("name"):
+                        name = str(c["name"])
+                        csv_columns_required.append(name)
+                        col_schemas[name] = c
+            if "min_subjects" in item:
+                min_subjects_spec = item["min_subjects"]
 
     csv_req: CsvRequirement | None = None
     if csv_columns_required:
-        total, col_missing = _read_csv_coverage(project_path)
+        total, col_missing, all_cols_lower = _read_csv_coverage(project_path)
+        col_invalid = _check_csv_values(project_path, col_schemas)
         col_map = {k.lower(): k for k in col_missing}
         column_checks: list[ColumnCheck] = []
         csv_satisfied = True
         for req_col in csv_columns_required:
-            actual = col_map.get(req_col.lower())
-            if actual is None:
+            req_lower = req_col.lower()
+            if req_lower not in all_cols_lower:
                 column_checks.append(ColumnCheck(column=req_col, present=False, subjects_missing=[]))
                 csv_satisfied = False
+            elif req_lower == "mrid":
+                column_checks.append(ColumnCheck(column=req_col, present=True, subjects_missing=[]))
             else:
-                missing_mrids = col_missing[actual]
+                actual = col_map.get(req_lower)
+                missing_mrids = col_missing.get(actual, []) if actual else []
+                invalid_mrids = col_invalid.get(req_col, [])
                 column_checks.append(ColumnCheck(
                     column=req_col,
                     present=True,
                     subjects_missing=missing_mrids,
+                    subjects_invalid=invalid_mrids,
                 ))
-                if missing_mrids:
+                if missing_mrids or invalid_mrids:
                     csv_satisfied = False
         csv_req = CsvRequirement(
             required_columns=column_checks,
@@ -124,13 +208,29 @@ def check_readiness(
             satisfied=csv_satisfied,
         )
 
+    subject_count_check: SubjectCountRequirement | None = None
+    if min_subjects_spec is not None:
+        required = int(min_subjects_spec.get("required", 1))
+        recommended = int(min_subjects_spec.get("recommended", required))
+        actual = len(collect_project_mrids(project_path))
+        subject_count_check = SubjectCountRequirement(
+            actual=actual,
+            required=required,
+            recommended=recommended,
+            satisfied=actual >= required,
+            recommended_met=actual >= recommended,
+        )
+
     all_ok = all(c.satisfied for c in imaging_checks)
     if csv_req is not None:
         all_ok = all_ok and csv_req.satisfied
+    if subject_count_check is not None:
+        all_ok = all_ok and subject_count_check.satisfied
 
     return ReadinessReport(
         pipeline_id=pipeline_id,
         satisfied=all_ok,
         imaging=imaging_checks,
         csv=csv_req,
+        subject_count=subject_count_check,
     )

@@ -62,6 +62,7 @@ class _StepRecord:
     finished_at: datetime | None = None
     job_id: str | None = None
     log_path: str | None = None  # persistent log file path (SLURM only); used for reconnect
+    container_image: str | None = None
     error: str | None = None
     logs: str = ""
 
@@ -84,6 +85,10 @@ class _RunRecord:
 
 
 _runs: dict[str, _RunRecord] = {}
+
+# Maps run_id → the JobHandle of the step currently executing.
+# Populated in _poll_to_completion; used by get_run_logs for live log tailing.
+_active_handles: dict[str, JobHandle] = {}
 
 
 # ── Path resolution (pipeline YAML templates) ─────────────────────────────────
@@ -210,6 +215,7 @@ def _run_to_dict(run: _RunRecord) -> dict:
                 "finished_at": s.finished_at.isoformat() if s.finished_at else None,
                 "job_id": s.job_id,
                 "log_path": s.log_path,
+                "container_image": s.container_image,
                 "error": s.error,
                 "logs": s.logs,
             }
@@ -245,6 +251,7 @@ def _run_from_dict(d: dict) -> _RunRecord:
             finished_at=_dt(s.get("finished_at")),
             job_id=s.get("job_id"),
             log_path=s.get("log_path"),
+            container_image=s.get("container_image"),
             error=s.get("error"),
             logs=s.get("logs", ""),
         )
@@ -366,23 +373,27 @@ async def _poll_to_completion(
     if study_dir:
         _persist_run(run, study_dir)
 
-    while True:
-        if run.cancelled:
-            await handle.cancel()
-            step.status = "failed"
-            step.error = "Cancelled by user"
-            run.status = "failed"
-            run.error = "Cancelled by user"
-            run.finished_at = datetime.now(timezone.utc)
-            return False
+    _active_handles[run.run_id] = handle
+    try:
+        while True:
+            if run.cancelled:
+                await handle.cancel()
+                step.status = "failed"
+                step.error = "Cancelled by user"
+                run.status = "failed"
+                run.error = "Cancelled by user"
+                run.finished_at = datetime.now(timezone.utc)
+                return False
 
-        job_status = await handle.status()
-        if job_status in ("succeeded", "failed"):
-            break
-        await asyncio.sleep(5)
+            job_status = await handle.status()
+            if job_status in ("succeeded", "failed"):
+                break
+            await asyncio.sleep(5)
 
-    step.logs = await handle.logs()
-    step.finished_at = datetime.now(timezone.utc)
+        step.logs = await handle.logs()
+        step.finished_at = datetime.now(timezone.utc)
+    finally:
+        _active_handles.pop(run.run_id, None)
 
     if job_status == "succeeded":
         step.status = "succeeded"
@@ -538,6 +549,7 @@ async def run_pipeline_task(
 
             step.status = "running"
             step.submitted_at = datetime.now(timezone.utc)
+            step.container_image = tool_spec.image
 
             # Upload project data to S3 before submitting so the Batch job can pull
             # the latest inputs. A sync failure aborts the step.
@@ -780,6 +792,7 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
                 submitted_at=s.submitted_at,
                 finished_at=s.finished_at,
                 job_id=s.job_id,
+                container_image=s.container_image,
                 error=s.error,
             )
             for s in run.steps
@@ -810,18 +823,27 @@ def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
     return _to_detail(run)
 
 
-def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
+async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
     run = _runs.get(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
         raise HTTPException(403, "Access denied")
-    all_logs = "\n".join(
-        f"=== Step {s.step_id} ===\n{s.logs}"
-        for s in run.steps
-        if s.logs
-    )
-    return PipelineRunLogs(run_id=run_id, logs=all_logs)
+
+    parts: list[str] = []
+    active_handle = _active_handles.get(run_id)
+    for s in run.steps:
+        if s.status == "running" and active_handle is not None:
+            try:
+                live_logs = await active_handle.logs()
+            except Exception:
+                live_logs = s.logs
+        else:
+            live_logs = s.logs
+        if live_logs:
+            parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
+
+    return PipelineRunLogs(run_id=run_id, logs="\n".join(parts))
 
 
 def cancel_run(run_id: str, user_id: str) -> None:

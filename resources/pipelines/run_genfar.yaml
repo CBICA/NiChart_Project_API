@@ -1,0 +1,42 @@
+pipeline_name: GenFAR
+description: |
+  Runs GenFAR inference models from T1 scans aligned to MNI ICBM152 space.
+
+categories:
+  - image-to-biomarker
+  - regression
+  - inference
+
+requires:
+  - needs_T1
+
+steps:
+  - id: run_dlmuse
+    tool: nichart_dlmuse
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      dlmuse_vol: ${STUDY}/dlmuse_vol
+      dlmuse_seg: ${STUDY}/dlmuse_seg
+
+  - id: binarize_dlmuse_to_dlicv
+    tool: binarize_seg_to_mask
+    inputs:
+      seg_dir: ${STUDY}/dlmuse_seg
+    outputs:
+      mask_dir: ${STUDY}/dlicv_mask
+
+  - id: align_dlicv_to_mni_icbm152
+    tool: dlicv_to_mni_icbm152
+    inputs:
+      img_dir: ${STUDY}/t1
+      mask_dir: ${STUDY}/dlicv_mask
+    outputs:
+      mni_dir: ${STUDY}/t1_mni_icbm152
+
+  - id: run_genfar
+    tool: genfar
+    inputs:
+      t1_dir: ${STUDY}/t1_mni_icbm152
+    outputs:
+      output_dir: ${STUDY}/ml_biomarkers

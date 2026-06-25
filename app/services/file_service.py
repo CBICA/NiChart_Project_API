@@ -203,6 +203,58 @@ def write_participants(project_path: Path, rows: list) -> None:
             writer.writerow({k: ("" if d.get(k) is None else d.get(k, "")) for k in fieldnames})
 
 
+_MODALITY_DIRS = {"t1", "fl", "t2", "t1ce", "adc"}
+
+
+def collect_project_mrids(project_path: Path) -> list[str]:
+    """Return sorted list of MRIDs detected from committed NIfTI files in modality directories."""
+    mrids: set[str] = set()
+    for mod in _MODALITY_DIRS:
+        mod_path = project_path / mod
+        if not mod_path.is_dir():
+            continue
+        for f in mod_path.iterdir():
+            if f.name.endswith(".nii.gz"):
+                mrids.add(f.name[:-7])
+            elif f.name.endswith(".nii"):
+                mrids.add(f.name[:-4])
+    return sorted(mrids)
+
+
+def participants_template_csv(project_path: Path) -> str:
+    """Build a participants CSV template string.
+
+    Pre-populates the MRID column with all MRIDs detected from modality directories.
+    Rows already present in participants.csv keep their values; new MRIDs get empty
+    additional columns. Column order mirrors the existing CSV if one exists.
+    """
+    detected = collect_project_mrids(project_path)
+    existing = read_participants(project_path)
+
+    existing_by_mrid: dict[str, dict] = {}
+    extra_cols: list[str] = []
+    for row in existing.rows:
+        d = row.model_dump()
+        mrid = d.pop("MRID")
+        existing_by_mrid[mrid] = d
+        for col in d:
+            if col not in extra_cols:
+                extra_cols.append(col)
+
+    # Include MRIDs from existing CSV that have no NIfTI (keeps data they already entered)
+    all_mrids = sorted(set(detected) | set(existing_by_mrid))
+    fieldnames = ["MRID"] + extra_cols
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for mrid in all_mrids:
+        row_data = {"MRID": mrid}
+        row_data.update(existing_by_mrid.get(mrid, {}))
+        writer.writerow(row_data)
+    return buf.getvalue()
+
+
 # ── NIfTI filename inference ──────────────────────────────────────────────────
 
 _MODALITY_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -213,19 +265,35 @@ _MODALITY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("t1",   re.compile(r"_T1(?:w)?\b", re.IGNORECASE)),
 ]
 
+_KNOWN_MODALITIES = {"t1", "fl", "t2", "t1ce", "adc"}
+
 _STRIP_SUFFIX = re.compile(
     r"(_T1CE|_FLAIR|_FL|_T2|_ADC|_T1w|_T1)?(\.nii\.gz|\.nii)$",
     re.IGNORECASE,
 )
 
 
-def infer_nifti_metadata(filename: str) -> tuple[str | None, str | None]:
+def infer_nifti_metadata(original_path: str) -> tuple[str | None, str | None]:
+    """Infer MRID and modality from an upload path.
+
+    MRID is derived from the basename (suffixes and modality tags stripped).
+    Modality is detected from the basename first; if not found, the parent
+    directory name is checked against known modality codes (t1/fl/t2/t1ce/adc).
+    This allows uploads like ``fl/subject001.nii.gz`` to resolve correctly even
+    when the filename itself carries no modality indicator.
+    """
+    p = Path(original_path)
+    basename = p.name
     modality = None
     for mod, pattern in _MODALITY_PATTERNS:
-        if pattern.search(filename):
+        if pattern.search(basename):
             modality = mod
             break
-    mrid = _STRIP_SUFFIX.sub("", filename).strip("_-. ")
+    if modality is None:
+        parent = p.parent.name.lower()
+        if parent in _KNOWN_MODALITIES:
+            modality = parent
+    mrid = _STRIP_SUFFIX.sub("", basename).strip("_-. ")
     return mrid or None, modality
 
 
@@ -242,10 +310,22 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
         if not (safe_name.endswith(".nii") or safe_name.endswith(".nii.gz")):
             shutil.rmtree(staging_dir)
             raise HTTPException(400, f"'{filename}' is not a .nii or .nii.gz file")
+        # Deduplicate: two uploads with the same basename get _1, _2 ... suffixes.
+        if safe_name.endswith(".nii.gz"):
+            stem, ext = safe_name[:-7], ".nii.gz"
+        else:
+            stem, ext = safe_name[:-4], ".nii"
         dest = staging_dir / safe_name
+        counter = 1
+        while dest.exists():
+            safe_name = f"{stem}_{counter}{ext}"
+            dest = staging_dir / safe_name
+            counter += 1
         assert_safe_path(staging_dir, dest)
         dest.write_bytes(data)
-        mrid, modality = infer_nifti_metadata(safe_name)
+        # Infer from the original upload path so that directory components
+        # (e.g. "fl/subject001.nii.gz") contribute to modality detection.
+        mrid, modality = infer_nifti_metadata(filename)
         proposals.append(NiftiUploadProposal(
             filename=safe_name,
             inferred_mrid=mrid,

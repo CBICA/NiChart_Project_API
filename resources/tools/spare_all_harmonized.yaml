@@ -1,0 +1,36 @@
+name: spare_all_harmonized
+description: Runs all available NiChart SPARE scores using harmonized DLMUSE ROI volumes and demographics.
+
+inputs:
+  dlmuse_vol_harmonized:
+    type: file
+  demog_csv:
+    type: file
+
+outputs:
+  spare_all_csv:
+    type: file
+
+mounts:
+  demog_csv:
+    path_in_container: /input/demographics.csv
+    mode: ro
+  dlmuse_vol_harmonized:
+    path_in_container: /input/dlmuse_vol.csv
+    mode: ro
+  spare_all_csv:
+    path_in_container: /output/SPARE_ALL.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 8000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_spare_score_runall:0.0.4
+  command: "-i {dlmuse_vol_harmonized} -demog {demog_csv} --category misc --harmonize -o {spare_all_csv}"

@@ -1,0 +1,9 @@
+# disabled.txt — pipelines hidden from the catalog API
+#
+# Format: one pipeline_id (YAML stem) per non-blank line.
+# Lines starting with # are comments. Inline comments after the id are also allowed.
+# Example:
+#   run_old_pipeline   # deprecated; replaced by run_new_pipeline
+#
+# Disabled pipelines are excluded from GET /catalog/pipelines and return 404
+# on GET /catalog/pipelines/{id}. The YAML files themselves are left in place.

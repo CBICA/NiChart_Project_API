@@ -120,6 +120,7 @@ class DockerBackend(JobBackend):
             detach=True,
             remove=False,
             name=name,
+            ipc_mode="host",
             device_requests=device_requests or None,
         )
         return DockerJobHandle(container)

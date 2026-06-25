@@ -18,8 +18,9 @@ from app.models.files import (
     ParticipantsList,
     ParticipantsUpdate,
 )
+from app.models.provenance import ProvenanceReport
 from app.models.readiness import ReadinessReport
-from app.services import catalog_service, file_service, readiness_service
+from app.services import catalog_service, file_service, provenance_service, readiness_service
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["Files"])
 
@@ -269,6 +270,32 @@ async def get_participants(
     return file_service.read_participants(pdir)
 
 
+@router.get(
+    "/participants/template",
+    summary="Download participants CSV template",
+    description=(
+        "Returns a CSV template pre-populated with all MRIDs detected from committed "
+        "NIfTI files in the project's modality directories. Rows already present in "
+        "participants.csv retain their values; newly detected MRIDs appear with empty "
+        "additional columns. Use this as a starting point for filling in demographic or "
+        "clinical data before uploading."
+    ),
+    responses={**_AUTH_ERRORS},
+)
+async def get_participants_template(
+    project_id: str,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    csv_content = file_service.participants_template_csv(pdir)
+    return StreamingResponse(
+        content=iter([csv_content.encode()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}_participants_template.csv"'},
+    )
+
+
 @router.patch(
     "/participants",
     summary="Replace participants list",
@@ -313,3 +340,28 @@ async def check_readiness(
     pdir = file_service.resolve_project(settings, user, project_id)
     raw_requires = catalog_service.get_pipeline_raw_requires(settings.pipelines_path, pipeline_id)
     return readiness_service.check_readiness(pdir, pipeline_id, raw_requires)
+
+
+# ── Provenance verification ────────────────────────────────────────────────────
+
+@router.get(
+    "/provenance",
+    summary="Verify step provenance",
+    description=(
+        "Scans all ``_provenance.json`` files written by the pipeline executor after each "
+        "successful step, then checks whether any recorded input paths have been modified "
+        "since the step finished. "
+        "A 'dirty' entry means the step's cached result may be stale and the step should "
+        "re-run. A 'missing_inputs' entry means a required input no longer exists. "
+        "Returns 'no_provenance' summary when no steps have completed yet."
+    ),
+    response_model=ProvenanceReport,
+    responses=_AUTH_ERRORS,
+)
+async def verify_provenance(
+    project_id: str,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> ProvenanceReport:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    return provenance_service.verify_provenance(pdir, project_id)

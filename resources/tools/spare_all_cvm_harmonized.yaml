@@ -1,0 +1,36 @@
+name: spare_all_cvm_harmonized
+description: Runs all CVM-category SPARE scores using harmonized merged DLMUSE+DLWMLS features and demographics.
+
+inputs:
+  merged_dlwmls_dlmuse_csv:
+    type: file
+  demog_csv:
+    type: file
+
+outputs:
+  spare_all_cvm_csv:
+    type: file
+
+mounts:
+  demog_csv:
+    path_in_container: /input/demographics.csv
+    mode: ro
+  merged_dlwmls_dlmuse_csv:
+    path_in_container: /input/merged_dlwmls_dlmuse.csv
+    mode: ro
+  spare_all_cvm_csv:
+    path_in_container: /output/SPARE_CVM_ALL.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 2
+  memory: 8000
+  gpus: 0
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/nichart_spare_score_runall:0.0.4
+  command: "-i {merged_dlwmls_dlmuse_csv} -demog {demog_csv} --category cvm --harmonize -o {spare_all_cvm_csv}"

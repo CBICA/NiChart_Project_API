@@ -1477,6 +1477,92 @@
                 }
             }
         },
+        "/projects/{project_id}/participants/template": {
+            "get": {
+                "tags": [
+                    "Files"
+                ],
+                "summary": "Download participants CSV template",
+                "description": "Returns a CSV template pre-populated with all MRIDs detected from committed NIfTI files in the project's modality directories. Rows already present in participants.csv retain their values; newly detected MRIDs appear with empty additional columns. Use this as a starting point for filling in demographic or clinical data before uploading.",
+                "operationId": "get_participants_template_projects__project_id__participants_template_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "project_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Project Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Access denied to this project.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Project or file not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid or unsafe path.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/projects/{project_id}/readiness/{pipeline_id}": {
             "get": {
                 "tags": [
@@ -1517,6 +1603,94 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/ReadinessReport"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Missing or invalid token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Access denied to this project.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Project or file not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid or unsafe path.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorDetail"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{project_id}/provenance": {
+            "get": {
+                "tags": [
+                    "Files"
+                ],
+                "summary": "Verify step provenance",
+                "description": "Scans all ``_provenance.json`` files written by the pipeline executor after each successful step, then checks whether any recorded input paths have been modified since the step finished. A 'dirty' entry means the step's cached result may be stale and the step should re-run. A 'missing_inputs' entry means a required input no longer exists. Returns 'no_provenance' summary when no steps have completed yet.",
+                "operationId": "verify_provenance_projects__project_id__provenance_get",
+                "security": [
+                    {
+                        "HTTPBearer": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "project_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Project Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProvenanceReport"
                                 }
                             }
                         }
@@ -2779,6 +2953,84 @@
                 "title": "ColumnCheck",
                 "description": "Readiness check for one required column in participants.csv."
             },
+            "ColumnSpec": {
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "title": "Name",
+                        "description": "Column name as it must appear in the CSV header."
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "categorical"
+                        ],
+                        "title": "Type",
+                        "description": "'string' \u2014 any non-empty text. 'int' \u2014 whole number, optionally bounded by min/max. 'float' \u2014 decimal number, optionally bounded by min/max. 'categorical' \u2014 must be one of the strings listed in values.",
+                        "default": "string"
+                    },
+                    "min": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Min",
+                        "description": "Inclusive lower bound for numeric types. Null means no lower bound."
+                    },
+                    "max": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Max",
+                        "description": "Inclusive upper bound for numeric types. Null means no upper bound."
+                    },
+                    "values": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Values",
+                        "description": "Exhaustive list of accepted values for categorical columns."
+                    },
+                    "description": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Description",
+                        "description": "Human-readable description shown in the UI alongside the column input."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "name"
+                ],
+                "title": "ColumnSpec",
+                "description": "Validation schema for a single required participants.csv column."
+            },
             "CommittedFile": {
                 "properties": {
                     "mrid": {
@@ -3529,6 +3781,14 @@
                         ],
                         "title": "Feature Groups",
                         "description": "Ordered grouping of batch-feature columns for hierarchical UI display (e.g. nested dropdowns). Null if the pipeline does not declare feature_groups in its YAML."
+                    },
+                    "column_schemas": {
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/ColumnSpec"
+                        },
+                        "type": "object",
+                        "title": "Column Schemas",
+                        "description": "Validation schema for each column declared in csv_has_columns. Keyed by column name. Use this to drive client-side CSV validation: type checking, numeric range enforcement, and categorical value lists. Columns not listed here have no declared schema (accept any non-empty value)."
                     }
                 },
                 "type": "object",
@@ -4004,6 +4264,151 @@
                 "title": "ProjectCreate",
                 "description": "Request body for creating a new project."
             },
+            "ProvenanceEntry": {
+                "properties": {
+                    "output_dir": {
+                        "type": "string",
+                        "title": "Output Dir",
+                        "description": "Project-relative path of the directory containing this _provenance.json."
+                    },
+                    "pipeline_id": {
+                        "type": "string",
+                        "title": "Pipeline Id",
+                        "description": "Pipeline that produced this output."
+                    },
+                    "step_id": {
+                        "type": "string",
+                        "title": "Step Id",
+                        "description": "Step within that pipeline."
+                    },
+                    "container_image": {
+                        "type": "string",
+                        "title": "Container Image",
+                        "description": "Container image used."
+                    },
+                    "generated_at": {
+                        "type": "string",
+                        "title": "Generated At",
+                        "description": "ISO timestamp when the step finished."
+                    },
+                    "inputs": {
+                        "items": {
+                            "$ref": "#/components/schemas/ProvenanceInputCheck"
+                        },
+                        "type": "array",
+                        "title": "Inputs",
+                        "description": "Staleness check for each input path recorded at run time."
+                    },
+                    "overall": {
+                        "type": "string",
+                        "enum": [
+                            "clean",
+                            "dirty",
+                            "missing_inputs",
+                            "unreadable"
+                        ],
+                        "title": "Overall",
+                        "description": "'clean' \u2014 all inputs unchanged since the step ran. 'dirty' \u2014 at least one input was modified after the step. 'missing_inputs' \u2014 at least one input path no longer exists. 'unreadable' \u2014 the _provenance.json file could not be parsed."
+                    },
+                    "error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error",
+                        "description": "Parse error message, present only when overall='unreadable'."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "output_dir",
+                    "pipeline_id",
+                    "step_id",
+                    "container_image",
+                    "generated_at",
+                    "inputs",
+                    "overall"
+                ],
+                "title": "ProvenanceEntry",
+                "description": "Parsed and verified contents of one _provenance.json file."
+            },
+            "ProvenanceInputCheck": {
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "title": "Label",
+                        "description": "Mount label as declared in the tool YAML."
+                    },
+                    "path": {
+                        "type": "string",
+                        "title": "Path",
+                        "description": "Absolute host path recorded at run time."
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "clean",
+                            "modified",
+                            "missing"
+                        ],
+                        "title": "Status",
+                        "description": "'clean' \u2014 no files changed after the step finished. 'modified' \u2014 at least one file was written after the step's generated_at timestamp. 'missing' \u2014 the path no longer exists."
+                    },
+                    "modified_count": {
+                        "type": "integer",
+                        "title": "Modified Count",
+                        "description": "Number of files within the path that have been modified. Zero for 'clean' or 'missing' entries.",
+                        "default": 0
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "label",
+                    "path",
+                    "status"
+                ],
+                "title": "ProvenanceInputCheck",
+                "description": "Staleness check for one input path recorded in a provenance file."
+            },
+            "ProvenanceReport": {
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "title": "Project Id",
+                        "description": "Project that was scanned."
+                    },
+                    "entries": {
+                        "items": {
+                            "$ref": "#/components/schemas/ProvenanceEntry"
+                        },
+                        "type": "array",
+                        "title": "Entries",
+                        "description": "One entry per _provenance.json file found in the project tree."
+                    },
+                    "summary": {
+                        "type": "string",
+                        "enum": [
+                            "all_clean",
+                            "some_dirty",
+                            "no_provenance"
+                        ],
+                        "title": "Summary",
+                        "description": "'all_clean' \u2014 every step's inputs are unchanged. 'some_dirty' \u2014 at least one step has stale or missing inputs. 'no_provenance' \u2014 no _provenance.json files found (no steps have completed yet)."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "project_id",
+                    "entries",
+                    "summary"
+                ],
+                "title": "ProvenanceReport",
+                "description": "Provenance verification report for a project."
+            },
             "ReadinessReport": {
                 "properties": {
                     "pipeline_id": {
@@ -4014,7 +4419,7 @@
                     "satisfied": {
                         "type": "boolean",
                         "title": "Satisfied",
-                        "description": "True if all checks pass."
+                        "description": "True if all hard requirements pass."
                     },
                     "imaging": {
                         "items": {
@@ -4034,6 +4439,17 @@
                             }
                         ],
                         "description": "CSV column checks, present only when the pipeline has csv_has_columns requirements."
+                    },
+                    "subject_count": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/SubjectCountRequirement"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "description": "Subject count check, present only for pipelines with min_subjects requirements (e.g. harmonized pipelines). satisfied=False blocks running; recommended_met=False should surface a warning to the user."
                     }
                 },
                 "type": "object",
@@ -4240,6 +4656,18 @@
                         "title": "Job Id",
                         "description": "Backend job ID (Docker container name or AWS Batch job ID)."
                     },
+                    "container_image": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Container Image",
+                        "description": "Container image used for this step (e.g. 'cbica/nichart_dlmuse:1.0.10-wrapped')."
+                    },
                     "error": {
                         "anyOf": [
                             {
@@ -4284,6 +4712,45 @@
                 ],
                 "title": "SubjectCompleteness",
                 "description": "Overall completeness of a subject's pipeline outputs."
+            },
+            "SubjectCountRequirement": {
+                "properties": {
+                    "actual": {
+                        "type": "integer",
+                        "title": "Actual",
+                        "description": "Unique MRIDs detected across all modality directories."
+                    },
+                    "required": {
+                        "type": "integer",
+                        "title": "Required",
+                        "description": "Minimum subjects needed to run the pipeline at all."
+                    },
+                    "recommended": {
+                        "type": "integer",
+                        "title": "Recommended",
+                        "description": "Recommended number of subjects for reliable results."
+                    },
+                    "satisfied": {
+                        "type": "boolean",
+                        "title": "Satisfied",
+                        "description": "True if actual >= required."
+                    },
+                    "recommended_met": {
+                        "type": "boolean",
+                        "title": "Recommended Met",
+                        "description": "True if actual >= recommended."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "actual",
+                    "required",
+                    "recommended",
+                    "satisfied",
+                    "recommended_met"
+                ],
+                "title": "SubjectCountRequirement",
+                "description": "Readiness check for a minimum subject count, used by harmonized pipelines."
             },
             "ToolDetail": {
                 "properties": {

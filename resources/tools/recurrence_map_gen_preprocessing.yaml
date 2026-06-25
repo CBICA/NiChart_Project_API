@@ -1,0 +1,51 @@
+name: recurrence_map_gen_preprocessing
+description: Preprocesses T1/T1CE/T2/FLAIR/ADC multi-modal scan sets for glioblastoma recurrence map generation.
+
+inputs:
+  t1_img:
+    type: directory
+  t1ce_img:
+    type: directory
+  t2_img:
+    type: directory
+  fl_img:
+    type: directory
+  adc_img:
+    type: directory
+
+outputs:
+  preprocessing_results:
+    type: directory
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  t1ce_img:
+    path_in_container: /input/t1ce
+    mode: ro
+  t2_img:
+    path_in_container: /input/t2
+    mode: ro
+  fl_img:
+    path_in_container: /input/fl
+    mode: ro
+  adc_img:
+    path_in_container: /input/adc
+    mode: ro
+  preprocessing_results:
+    path_in_container: /output
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 28000
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: cbica/recurrence_map_gen_pipeline_preprocess:0.0.1
+  command: --t1 {t1_img} --t1ce {t1ce_img} --t2 {t2_img} --flair {fl_img} --adc {adc_img} --out {preprocessing_results} --allow-partial
