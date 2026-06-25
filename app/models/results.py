@@ -20,6 +20,13 @@ class PerSubjectOutput(BaseModel):
 
     id: str = Field(description="Output identifier as declared in the pipeline results spec.")
     type: str = Field(description="Output type, e.g. 'segmentation_nifti'.")
+    display_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable label for this overlay, e.g. 'DLMUSE segmentation'. "
+            "Use as a subtitle in the MRI panel (fall back to id when absent)."
+        ),
+    )
     subjects: dict[str, PerSubjectFileStatus] = Field(
         description="Map of MRID → file availability and download path."
     )

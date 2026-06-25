@@ -141,9 +141,17 @@ class SingularityBackend(JobBackend):
                 continue
             mount = tool_spec.mounts[label]
             host_path = Path(container_path_str)
-            host_path.mkdir(parents=True, exist_ok=True)
             mode = "ro" if mount.mode == "ro" else "rw"
-            bind_args += ["--bind", f"{host_path}:{mount.path_in_container}:{mode}"]
+            if mount.mount_type == "output_file":
+                host_dir = host_path.parent
+                container_dir = str(Path(mount.path_in_container).parent)
+                host_dir.mkdir(parents=True, exist_ok=True)
+                bind_args += ["--bind", f"{host_dir}:{container_dir}:{mode}"]
+            elif mount.mount_type == "input_file":
+                bind_args += ["--bind", f"{host_path}:{mount.path_in_container}:{mode}"]
+            else:
+                host_path.mkdir(parents=True, exist_ok=True)
+                bind_args += ["--bind", f"{host_path}:{mount.path_in_container}:{mode}"]
 
         gpus = (tool_spec.resources or {}).get("gpus", 0)
         gpu_args = ["--nv"] if gpus else []

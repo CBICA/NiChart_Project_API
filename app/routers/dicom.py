@@ -10,6 +10,7 @@ DICOM → NIfTI conversion is a three-step interactive flow:
 """
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import File as FastAPIFile
 
 from app.auth.dependencies import CurrentUser, require_auth
 from app.backends import get_backend
@@ -54,6 +55,31 @@ async def upload_dicom(
     pdir = file_service.resolve_project(settings, user, project_id)
     contents = await file.read()
     staging_id = dicom_service.stage_dicom_upload(pdir, contents, file.filename or "")
+    return DicomStagingResult(staging_id=staging_id)
+
+
+@router.post(
+    "/upload/files",
+    summary="Upload individual DICOM files to staging",
+    description=(
+        "Accepts one or more raw DICOM files as multipart form data. "
+        "Each filename is validated (no path traversal, no directory separators). "
+        "Files are staged identically to the ZIP upload — use the returned "
+        "``staging_id`` with the inspect and convert endpoints."
+    ),
+    response_model=DicomStagingResult,
+    status_code=202,
+    responses={**_AUTH_ERRORS, 400: {"model": ErrorDetail}},
+)
+async def upload_dicom_files(
+    project_id: str,
+    files: list[UploadFile] = FastAPIFile(...),
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> DicomStagingResult:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    pairs = [(f.filename or "", await f.read()) for f in files]
+    staging_id = dicom_service.stage_dicom_files(pdir, pairs)
     return DicomStagingResult(staging_id=staging_id)
 
 

@@ -34,6 +34,18 @@ class ProvenanceEntry(BaseModel):
     step_id: str = Field(description="Step within that pipeline.")
     container_image: str = Field(description="Container image used.")
     generated_at: str = Field(description="ISO timestamp when the step finished.")
+    execution_mode: str = Field(
+        default="",
+        description="Execution mode at time of run: 'local' or 'cloud'.",
+    )
+    user_id: str = Field(
+        default="",
+        description="Cognito sub (cloud) or local user identifier of the user who ran the step.",
+    )
+    backend: str = Field(
+        default="",
+        description="Job backend used: 'docker', 'singularity', 'slurm', or 'batch'.",
+    )
     inputs: list[ProvenanceInputCheck] = Field(
         description="Staleness check for each input path recorded at run time."
     )

@@ -2,6 +2,8 @@ pipeline_name: DLMUSE Brain Segmentation (Harmonized)
 description: |
   Segmentation pipeline starting from T1-weighted MRI brain scans, with harmonization to the NiChart reference dataset.
 
+base_variant: run_dlmuse
+
 categories:
   - image-processing
   - segmentation
@@ -63,5 +65,6 @@ results:
     - id: "segmentation"
       pattern: "dlmuse_seg/{MRID}_DLMUSE.nii.gz"
       type: "segmentation_nifti"
+      display_name: "DLMUSE segmentation"
   atlas: "atlases/muse/MNI152_1mm_LPS.nii.gz"
   atlas_segmentation: "atlases/muse/MNI152_1mm_LPS_DLMUSE.nii.gz"

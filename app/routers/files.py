@@ -4,7 +4,7 @@ File management within a project — authenticated.
 All paths from the client are validated against the project root before any I/O.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.auth.dependencies import CurrentUser, require_auth
@@ -232,6 +232,29 @@ async def upload_bids(
     file_service.store_bids_upload(pdir, contents, file.filename or "")
 
 
+@router.post(
+    "/files/upload/bids/files",
+    summary="Upload individual BIDS files",
+    description=(
+        "Accepts one or more files as multipart form data representing a BIDS dataset. "
+        "Filenames may include relative sub-paths (e.g. ``sub-01/anat/sub-01_T1w.nii.gz``) "
+        "and are validated for path traversal before writing. "
+        "Reorganisation into the NiChart project layout is identical to the ZIP upload."
+    ),
+    status_code=202,
+    responses=_AUTH_ERRORS,
+)
+async def upload_bids_files(
+    project_id: str,
+    files: list[UploadFile] = FastAPIFile(...),
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    pairs = [(f.filename or "", await f.read()) for f in files]
+    file_service.store_bids_files(pdir, pairs)
+
+
 # ── IDAT upload ───────────────────────────────────────────────────────────────
 
 @router.post(
@@ -250,6 +273,28 @@ async def upload_idat(
     pdir = file_service.resolve_project(settings, user, project_id)
     contents = await file.read()
     file_service.store_idat_upload(pdir, contents, file.filename or "")
+
+
+@router.post(
+    "/files/upload/idat/files",
+    summary="Upload individual IDAT files",
+    description=(
+        "Accepts one or more ``.idat`` files as multipart form data. "
+        "Filenames must be flat (no directory separators) and end with ``.idat``. "
+        "Each filename is validated before any file is written to ``idat/``."
+    ),
+    status_code=204,
+    responses=_AUTH_ERRORS,
+)
+async def upload_idat_files(
+    project_id: str,
+    files: list[UploadFile] = FastAPIFile(...),
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    pairs = [(f.filename or "", await f.read()) for f in files]
+    file_service.store_idat_files(pdir, pairs)
 
 
 # ── Participants ──────────────────────────────────────────────────────────────

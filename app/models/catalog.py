@@ -78,6 +78,26 @@ class PipelineSummary(BaseModel):
         default_factory=list,
         description="Data prerequisites (e.g. 'needs_T1', 'needs_demographics').",
     )
+    is_harmonized: bool = Field(
+        default=False,
+        description="True if this pipeline applies harmonization to its inputs.",
+    )
+    harmonized_variant: str | None = Field(
+        default=None,
+        description=(
+            "Pipeline ID of the harmonized version of this pipeline. "
+            "Present on base pipelines only; null on harmonized pipelines and those "
+            "with no harmonized counterpart. Use to render a 'Switch to harmonized' action."
+        ),
+    )
+    base_variant: str | None = Field(
+        default=None,
+        description=(
+            "Pipeline ID of the standard (non-harmonized) version of this pipeline. "
+            "Present on harmonized pipelines only; null on base pipelines and those "
+            "with no base counterpart. Use to render a 'Switch to standard' action."
+        ),
+    )
 
 
 class ColumnSpec(BaseModel):

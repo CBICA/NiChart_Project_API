@@ -16,7 +16,12 @@ import pydicom
 from fastapi import HTTPException
 
 from app.models.dicom import SeriesInfo
-from app.services.path_security import PathEscapeError, assert_safe_path, safe_unzip
+from app.services.path_security import (
+    PathEscapeError,
+    assert_safe_path,
+    assert_safe_upload_filename,
+    safe_unzip,
+)
 
 _STAGING_SUBDIR = Path("_upload") / "dicoms"
 
@@ -43,6 +48,29 @@ def stage_dicom_upload(project_path: Path, contents: bytes, filename: str) -> st
         raise
     finally:
         tmp_path.unlink(missing_ok=True)
+
+    return staging_id
+
+
+def stage_dicom_files(project_path: Path, files: list[tuple[str, bytes]]) -> str:
+    """Stage a batch of DICOM files supplied as (filename, content) pairs.
+
+    Each filename is validated to be flat (no directory separators or traversal).
+    Returns the staging_id exactly as ``stage_dicom_upload`` does.
+    """
+    staging_id = uuid.uuid4().hex
+    staging_dir = project_path / _STAGING_SUBDIR / staging_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        for filename, content in files:
+            assert_safe_upload_filename(filename, allow_subdirs=False)
+            dest = staging_dir / Path(filename).name
+            assert_safe_path(staging_dir, dest)
+            dest.write_bytes(content)
+    except (PathEscapeError, Exception):
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     return staging_id
 

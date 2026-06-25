@@ -18,6 +18,10 @@ class MountSpec:
     """One mount entry from a tool YAML's ``mounts`` section."""
     path_in_container: str
     mode: str = "ro"
+    # "directory" | "input_file" | "output_file" — drives how backends prepare the host path
+    # and construct the bind-mount (parent-dir mount for output files to avoid Docker
+    # auto-creating a directory at the file path when the host file doesn't exist yet).
+    mount_type: str = "directory"
 
 
 @dataclass

@@ -22,6 +22,7 @@ Setup requirements
 """
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -102,8 +103,19 @@ class DockerBackend(JobBackend):
                 continue
             mount = tool_spec.mounts[label]
             host_path = self._host_path(container_path_str)
-            Path(host_path).mkdir(parents=True, exist_ok=True)
-            volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
+            if mount.mount_type == "output_file":
+                # Mount the parent directory so Docker doesn't auto-create a directory
+                # at the file path when the output file doesn't exist yet.
+                host_dir = str(Path(host_path).parent)
+                container_dir = str(Path(mount.path_in_container).parent)
+                Path(host_dir).mkdir(parents=True, exist_ok=True)
+                volumes[host_dir] = {"bind": container_dir, "mode": mount.mode}
+            elif mount.mount_type == "input_file":
+                # File already exists; bind it directly.
+                volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
+            else:
+                Path(host_path).mkdir(parents=True, exist_ok=True)
+                volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
 
         gpus = (tool_spec.resources or {}).get("gpus", 0)
         device_requests = (
@@ -112,6 +124,9 @@ class DockerBackend(JobBackend):
         )
 
         name = f"nichart-{tool_spec.tool_id}-{uuid.uuid4().hex[:8]}"
+        # Run sibling containers as the same user as the API server so that
+        # output files are owned by the host user, not root.
+        run_user = f"{os.getuid()}:{os.getgid()}"
         container = await asyncio.to_thread(
             self._client.containers.run,
             image=tool_spec.image,
@@ -121,6 +136,7 @@ class DockerBackend(JobBackend):
             remove=False,
             name=name,
             ipc_mode="host",
+            user=run_user,
             device_requests=device_requests or None,
         )
         return DockerJobHandle(container)

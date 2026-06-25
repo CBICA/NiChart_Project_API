@@ -105,7 +105,7 @@ def _build_batch_features(
     spec: BatchFeaturesSpec,
 ) -> BatchFeaturesResult:
     features_path = project_path / spec.file
-    if not features_path.exists():
+    if not features_path.is_file():
         return BatchFeaturesResult(available=False)
 
     try:
@@ -147,7 +147,7 @@ def _build_per_subject(
             available=available,
             download_path=rel_path if available else None,
         )
-    return PerSubjectOutput(id=spec.id, type=spec.type, subjects=subjects)
+    return PerSubjectOutput(id=spec.id, type=spec.type, display_name=spec.display_name, subjects=subjects)
 
 
 def _resource_path_if_exists(resources_path: Path, rel_path: str | None) -> str | None:
@@ -224,7 +224,7 @@ def list_pipeline_results(
 
         has_batch = spec.batch_features is not None and (
             project_path / spec.batch_features.file
-        ).exists()
+        ).is_file()
 
         summaries.append(PipelineResultSummary(
             pipeline_id=pipeline_summary.id,

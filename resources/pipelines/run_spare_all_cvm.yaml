@@ -2,6 +2,8 @@ pipeline_name: SPARE Scores - All-Inclusive (T1 + FLAIR)
 description: |
   Pipeline which uses DLMUSE and DLWMLS features to produce all available CVM SPARE scores from T1 + FLAIR data.
 
+harmonized_variant: run_spare_all_cvm_harmonized
+
 categories:
   - spare
   - inference
@@ -58,3 +60,8 @@ steps:
       demog_csv: ${STUDY}/participants/participants.csv
     outputs:
       spare_all_cvm_csv: ${STUDY}/ml_biomarkers/SPARE_ALL_CVM.csv
+
+results:
+  batch_features:
+    file: "ml_biomarkers/SPARE_ALL_CVM.csv"
+    mrid_column: "MRID"

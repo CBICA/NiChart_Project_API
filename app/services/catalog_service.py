@@ -205,12 +205,16 @@ def get_pipeline(
         label_map, feature_groups = _build_catalog_features(resources_path, batch_spec)
 
     raw_requires = data.get("requires")
+    cats = data.get("categories") or []
     return PipelineDetail(
         id=pipeline_id,
         name=data["pipeline_name"],
         description=data.get("description"),
-        categories=data.get("categories") or [],
+        categories=cats,
         requires=_parse_requires(raw_requires),
+        is_harmonized="harmonized" in cats,
+        harmonized_variant=data.get("harmonized_variant"),
+        base_variant=data.get("base_variant"),
         steps=[
             PipelineStep(
                 id=s["id"],
@@ -239,12 +243,30 @@ def load_tool_spec(tools_path: Path, tool_id: str) -> ToolSpec:
     if not yaml_path.exists():
         raise FileNotFoundError(f"Tool '{tool_id}' not found at {yaml_path}")
     data = _load_yaml(yaml_path)
+
+    input_types = {k: v.get("type", "directory") for k, v in (data.get("inputs") or {}).items()}
+    output_types = {k: v.get("type", "directory") for k, v in (data.get("outputs") or {}).items()}
+
+    mounts: dict[str, MountSpec] = {}
+    for k, v in (data.get("mounts") or {}).items():
+        if k in output_types:
+            mount_type = "output_file" if output_types[k] == "file" else "directory"
+        elif k in input_types:
+            mount_type = "input_file" if input_types[k] == "file" else "directory"
+        else:
+            mount_type = "directory"
+        mounts[k] = MountSpec(
+            path_in_container=v["path_in_container"],
+            mode=v.get("mode", "ro"),
+            mount_type=mount_type,
+        )
+
     return ToolSpec(
         tool_id=tool_id,
         name=data["name"],
         image=data["container"]["image"],
         command_template=data["container"]["command"],
-        mounts={k: MountSpec(**v) for k, v in (data.get("mounts") or {}).items()},
+        mounts=mounts,
         parameters=data.get("parameters") or {},
         resources=data.get("resources") or {},
         time_per_subject_seconds=data.get("time_per_subject_seconds"),
@@ -282,6 +304,7 @@ class PerSubjectSpec:
     id: str
     pattern: str
     type: str = "nifti"
+    display_name: str | None = None
 
 
 @dataclass
@@ -318,6 +341,7 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             id=s["id"],
             pattern=s["pattern"],
             type=s.get("type", "nifti"),
+            display_name=s.get("display_name"),
         )
         for s in (raw.get("per_subject") or [])
     ]
@@ -338,12 +362,16 @@ def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:
             continue
         try:
             data = _load_yaml(yaml_path)
+            cats = data.get("categories") or []
             result.append(PipelineSummary(
                 id=yaml_path.stem,
                 name=data["pipeline_name"],
                 description=data.get("description"),
-                categories=data.get("categories") or [],
+                categories=cats,
                 requires=_parse_requires(data.get("requires")),
+                is_harmonized="harmonized" in cats,
+                harmonized_variant=data.get("harmonized_variant"),
+                base_variant=data.get("base_variant"),
             ))
         except Exception:
             continue

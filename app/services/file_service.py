@@ -29,7 +29,12 @@ from app.models.files import (
     ParticipantsList,
 )
 from app.models.projects import Project
-from app.services.path_security import PathEscapeError, assert_safe_path, safe_unzip
+from app.services.path_security import (
+    PathEscapeError,
+    assert_safe_path,
+    assert_safe_upload_filename,
+    safe_unzip,
+)
 
 
 # ── Project helpers ───────────────────────────────────────────────────────────
@@ -497,3 +502,68 @@ def store_idat_upload(project_path: Path, contents: bytes, filename: str) -> Non
         safe_unzip(tmp_path, idat_dir)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
+    """
+    Stage a batch of BIDS files supplied as (relative_path, content) pairs,
+    then reorganise NIfTIs into the NiChart project layout.
+
+    Filenames may contain relative sub-paths (e.g. ``sub-01/anat/sub-01_T1w.nii.gz``).
+    Each is validated for containment within the temporary extraction directory.
+    Returns the number of NIfTI files committed.
+    """
+    committed = 0
+    with tempfile.TemporaryDirectory() as tmpdir:
+        extract_dir = Path(tmpdir)
+
+        for rel_path, content in files:
+            assert_safe_upload_filename(rel_path, allow_subdirs=True)
+            dest = extract_dir / rel_path
+            assert_safe_path(extract_dir, dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+
+        for nifti in extract_dir.rglob("*.nii.gz"):
+            m = _BIDS_SUB_RE.match(nifti.name)
+            if not m:
+                continue
+            mrid = m.group(1)
+            modality = None
+            for mod, pat in _BIDS_MODALITY_PATTERNS:
+                if pat.search(nifti.name):
+                    modality = mod
+                    break
+            if not modality:
+                continue
+            target_dir = project_path / modality
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(nifti, target_dir / f"{mrid}.nii.gz")
+            committed += 1
+
+        for tsv in extract_dir.rglob("participants.tsv"):
+            _convert_bids_participants_tsv(tsv, project_path)
+            break
+
+    return committed
+
+
+def store_idat_files(project_path: Path, files: list[tuple[str, bytes]]) -> None:
+    """
+    Store a batch of IDAT files supplied as (filename, content) pairs.
+
+    Filenames must be flat (no directory separators) and end with ``.idat``.
+    Each filename is validated before any file is written.
+    """
+    for filename, _ in files:
+        assert_safe_upload_filename(filename, allow_subdirs=False)
+        if not filename.lower().endswith(".idat"):
+            raise HTTPException(400, f"Only .idat files are accepted; got {filename!r}")
+
+    idat_dir = project_path / "idat"
+    idat_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename, content in files:
+        dest = idat_dir / Path(filename).name
+        assert_safe_path(idat_dir, dest)
+        dest.write_bytes(content)

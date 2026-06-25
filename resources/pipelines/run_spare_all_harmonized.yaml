@@ -2,6 +2,8 @@ pipeline_name: SPARE Scores - All-Inclusive (T1 only, Harmonized)
 description: |
   Pipeline which uses harmonized DLMUSE features to produce all available SPARE scores using T1 scans.
 
+base_variant: run_spare_all
+
 categories:
   - spare
   - inference
@@ -49,4 +51,9 @@ steps:
       dlmuse_vol_harmonized: ${STUDY}/dlmuse_vol_harmonized/DLMUSE_Volumes.csv
       demog_csv: ${STUDY}/participants/participants.csv
     outputs:
-      spare_all_csv: ${STUDY}/ml_biomarkers/SPARE_ALL.csv
+      spare_all_csv: ${STUDY}/ml_biomarkers_harmonized/SPARE_ALL.csv
+
+results:
+  batch_features:
+    file: "ml_biomarkers_harmonized/SPARE_ALL.csv"
+    mrid_column: "MRID"

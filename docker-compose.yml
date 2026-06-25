@@ -3,6 +3,13 @@ services:
     build:
       context: .
       target: dev
+    # Run as the host user so files written into the bind-mounted data directory
+    # are owned by the current user, not root. Set UID/GID in .env (see .env.example).
+    # DOCKER_GID must match the GID of /var/run/docker.sock on the host so the
+    # non-root user can still reach the Docker socket.
+    user: "${UID:-0}:${GID:-0}"
+    group_add:
+      - "${DOCKER_GID:-0}"
     ports:
       - "${NICHART_PORT:-8000}:8000"
     volumes:

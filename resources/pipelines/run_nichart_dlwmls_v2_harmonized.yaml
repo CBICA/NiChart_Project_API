@@ -2,6 +2,8 @@ pipeline_name: DLWMLS Deep Learning White Matter Lesion Segmentation (Harmonized
 description: |
   White matter lesion segmentation pipeline starting from FLAIR-weighted and T1-weighted brain scans, with DLMUSE harmonization.
 
+base_variant: run_nichart_dlwmls_v2
+
 categories:
   - image-processing
   - segmentation

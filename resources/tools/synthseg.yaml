@@ -1,0 +1,38 @@
+name: synthseg
+description: >
+  Performs whole-brain MRI segmentation using SynthSeg, producing segmentation
+  label maps and a CSV of regional volumes (mm3) for all subjects.
+
+inputs:
+  t1_img:
+    type: directory
+
+outputs:
+  synthseg_seg:
+    type: directory
+  synthseg_vol:
+    type: directory
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  synthseg_seg:
+    path_in_container: /output/synthseg_seg
+    mode: rw
+  synthseg_vol:
+    path_in_container: /output/synthseg_vol
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 8192
+  gpus: 1
+
+time_per_subject_seconds: null
+
+container:
+  image: nichart_synthseg:conda-0.2-wrapped
+  command: "{t1_img} {synthseg_seg} {synthseg_vol}"

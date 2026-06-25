@@ -162,6 +162,9 @@ def _write_provenance(
     input_paths: dict,
     submitted_at: datetime | None,
     finished_at: datetime | None,
+    execution_mode: str = "",
+    user_id: str = "",
+    backend: str = "",
 ) -> None:
     """Write _provenance.json into each output directory after a successful step.
 
@@ -174,6 +177,9 @@ def _write_provenance(
         "step_id": step_id,
         "container_image": container_image,
         "submitted_at": submitted_at.isoformat() if submitted_at else None,
+        "execution_mode": execution_mode,
+        "user_id": user_id,
+        "backend": backend,
         "params": params,
         "input_paths": input_paths,
     }
@@ -432,6 +438,7 @@ async def run_pipeline_task(
     user_token: str | None,
     tools_path: Path,
     s3_sync: S3SyncConfig | None = None,
+    execution_mode: str = "",
 ) -> None:
     """Background task: drive each pipeline step in order, with caching and error handling."""
     run.backend_type = backend.backend_name
@@ -519,9 +526,13 @@ async def run_pipeline_task(
         if handle is None:
             # Fresh submission path.
 
-            # Ensure output directories exist
+            # Ensure output directories exist. For file outputs (path has a
+            # suffix), mkdir the parent so Docker doesn't auto-create a
+            # directory at the file path when it doesn't exist yet.
             for path_str in resolved_outputs.values():
-                Path(path_str).mkdir(parents=True, exist_ok=True)
+                p = Path(path_str)
+                target = p.parent if p.suffix else p
+                target.mkdir(parents=True, exist_ok=True)
 
             # Load tool spec (also used for provenance after success)
             try:
@@ -632,6 +643,9 @@ async def run_pipeline_task(
                 input_paths=resolved_inputs,
                 submitted_at=step.submitted_at,
                 finished_at=step.finished_at,
+                execution_mode=execution_mode,
+                user_id=run.user_id,
+                backend=run.backend_type,
             )
         _mark_cached(metadata, key)
         _save_metadata(study_dir, metadata)

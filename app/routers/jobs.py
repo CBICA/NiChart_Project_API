@@ -184,6 +184,7 @@ async def submit_pipeline(
         user_token=user.token,
         tools_path=settings.tools_path,
         s3_sync=s3_sync,
+        execution_mode=settings.execution_mode,
     )
     return job_service.get_run_detail(run.run_id, user.sub)
 

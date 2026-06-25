@@ -105,6 +105,9 @@ def _entry_from_file(project_path: Path, prov_file: Path) -> ProvenanceEntry:
         step_id=data.get("step_id", ""),
         container_image=data.get("container_image", ""),
         generated_at=generated_at,
+        execution_mode=data.get("execution_mode", ""),
+        user_id=data.get("user_id", ""),
+        backend=data.get("backend", ""),
         inputs=input_checks,
         overall=overall,
     )

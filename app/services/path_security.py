@@ -10,7 +10,7 @@ going through these primitives.
 import os
 import stat
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class PathEscapeError(ValueError):
@@ -38,6 +38,37 @@ def assert_safe_path(base: Path, target: Path) -> None:
         raise PathEscapeError(
             f"Path escapes allowed base: {candidate!r} is not under {base_resolved!r}"
         )
+
+
+def assert_safe_upload_filename(filename: str, *, allow_subdirs: bool = False) -> None:
+    """
+    Validate a filename supplied via multipart upload.
+
+    Rejects:
+    - Empty or missing filenames.
+    - Absolute paths (``/foo`` or Windows ``C:\\foo``).
+    - Path traversal via ``..`` components.
+    - Directory separators when *allow_subdirs* is False (flat uploads only).
+
+    Does not touch the filesystem — purely lexical.
+    """
+    if not filename:
+        raise PathEscapeError("Empty filename in upload")
+
+    # Normalise backslashes so Windows paths are caught uniformly
+    normalised = filename.replace("\\", "/")
+
+    if os.path.isabs(normalised):
+        raise PathEscapeError(f"Absolute filename not permitted: {filename!r}")
+
+    if not allow_subdirs and "/" in normalised:
+        raise PathEscapeError(
+            f"Directory separators not permitted in filename: {filename!r}"
+        )
+
+    for part in PurePosixPath(normalised).parts:
+        if part == "..":
+            raise PathEscapeError(f"Path traversal in filename: {filename!r}")
 
 
 def safe_unzip(archive: Path, dest: Path) -> None:
