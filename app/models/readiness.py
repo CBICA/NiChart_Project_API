@@ -10,6 +10,10 @@ class ImagingRequirement(BaseModel):
 
     modality: str = Field(description="Imaging modality directory (t1, fl, t2, t1ce, adc).")
     subject_count: int = Field(description="Number of NIfTI files found in the modality directory.")
+    mrids: list[str] = Field(
+        default_factory=list,
+        description="MRIDs (filename stems) found in this modality directory.",
+    )
     satisfied: bool = Field(description="True if at least one subject's file is present.")
 
 
@@ -51,6 +55,41 @@ class SubjectCountRequirement(BaseModel):
     recommended_met: bool = Field(description="True if actual >= recommended.")
 
 
+class CompleteSetsRequirement(BaseModel):
+    """Cross-modality check: each subject must have files in every required modality."""
+
+    required_modalities: list[str] = Field(
+        description="Modalities that must all be present for a subject to be considered complete."
+    )
+    complete_mrids: list[str] = Field(
+        description="MRIDs that have files in every required modality."
+    )
+    incomplete_mrids: dict[str, list[str]] = Field(
+        description=(
+            "MRIDs that are missing at least one modality. "
+            "Maps MRID → list of modalities it is missing."
+        )
+    )
+    complete_count: int = Field(description="Number of subjects with a complete set of modalities.")
+    satisfied: bool = Field(description="True if at least one subject has a complete set.")
+
+
+class IdatRequirement(BaseModel):
+    """Readiness check for paired IDAT files ({MRID}_Red.idat + {MRID}_Grn.idat)."""
+
+    complete_mrids: list[str] = Field(
+        description="MRIDs with both _Red.idat and _Grn.idat present."
+    )
+    missing_red: list[str] = Field(
+        description="MRIDs that have _Grn.idat but are missing _Red.idat."
+    )
+    missing_grn: list[str] = Field(
+        description="MRIDs that have _Red.idat but are missing _Grn.idat."
+    )
+    complete_count: int = Field(description="Number of MRIDs with both files present.")
+    satisfied: bool = Field(description="True if at least one complete MRID pair exists.")
+
+
 class ReadinessReport(BaseModel):
     """Project readiness check result for a specific pipeline."""
 
@@ -59,6 +98,17 @@ class ReadinessReport(BaseModel):
     imaging: list[ImagingRequirement] = Field(
         default_factory=list,
         description="One entry per imaging modality required by the pipeline.",
+    )
+    complete_sets: CompleteSetsRequirement | None = Field(
+        default=None,
+        description=(
+            "Cross-modality completeness check. Present when the pipeline requires two or more "
+            "imaging modalities. Reports which subjects have a full complement of required images."
+        ),
+    )
+    idat: IdatRequirement | None = Field(
+        default=None,
+        description="IDAT paired-file check. Present when the pipeline has a needs_idat requirement.",
     )
     csv: CsvRequirement | None = Field(
         default=None,

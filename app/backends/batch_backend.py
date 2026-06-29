@@ -129,6 +129,7 @@ class BatchBackend(JobBackend):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,  # ignored: FSx shared across Batch nodes
     ) -> BatchJobHandle:
         payload = {
             "id_token": user_token or "",

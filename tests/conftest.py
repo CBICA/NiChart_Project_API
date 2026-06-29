@@ -64,6 +64,7 @@ class MockBackend(JobBackend):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,
     ) -> _MockJobHandle:
         return _MockJobHandle()
 
@@ -209,9 +210,12 @@ def cloud_client(rsa_key, jwks):
     """
     TestClient with NICHART_EXECUTION_MODE=cloud and a pre-seeded test verifier.
 
-    The verifier's JWKS cache is populated before the first request so no
-    network calls are made. Send JWTs created by ``make_id_token`` to exercise
-    the full auth path.
+    Auth is cookie-based (BFF pattern). Pass a session cookie per request:
+
+        token = make_id_token(sub="alice")
+        resp = cloud_client.get("/projects", cookies={"session": token})
+
+    The verifier's JWKS cache is pre-populated so no network calls are made.
     """
     from app.auth.cognito import CognitoVerifier
     from app.auth.dependencies import get_verifier
@@ -219,7 +223,12 @@ def cloud_client(rsa_key, jwks):
     from app.main import create_app
 
     app = create_app()
-    app.dependency_overrides[get_settings] = lambda: Settings(execution_mode="cloud")
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        execution_mode="cloud",
+        cognito_domain="https://test.auth.us-east-1.amazoncognito.com",
+        cognito_client_id=TEST_CLIENT_ID,
+        cookie_secure=False,  # allow plain-HTTP test requests
+    )
 
     verifier = CognitoVerifier(jwks_url="http://unused-in-tests", issuer=TEST_ISSUER, client_id=TEST_CLIENT_ID)
     verifier._cache.update(jwks)

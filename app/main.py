@@ -17,9 +17,11 @@ from fastapi.responses import JSONResponse
 
 from app.auth.dependencies import public
 from app.config import Settings, get_settings
+from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
 from app.routers.cloud import router as cloud_router
 from app.routers.dicom import router as dicom_router
+from app.routers.docs import router as docs_router
 from app.routers.files import router as files_router
 from app.routers.jobs import jobs_router, project_router as jobs_project_router
 from app.routers.projects import router as projects_router
@@ -99,7 +101,9 @@ def create_app() -> FastAPI:
     )
 
     # ── Routers ───────────────────────────────────────────────────────────────
+    app.include_router(auth_router)
     app.include_router(catalog_router)
+    app.include_router(docs_router)
     app.include_router(cloud_router)
     app.include_router(projects_router)
     app.include_router(files_router)

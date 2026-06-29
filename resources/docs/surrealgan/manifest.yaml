@@ -1,0 +1,11 @@
+title: "SurrealGAN Disease Subtypes"
+description: "Unsupervised disease subtype identification from structural MRI features using SurrealGAN."
+pipelines:
+  - run_predcrd_surrealgan
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

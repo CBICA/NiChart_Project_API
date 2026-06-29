@@ -23,6 +23,18 @@ class IOField(BaseModel):
 
     type: Literal["file", "directory"] = Field(description="Whether this slot is a single file or a directory.")
     description: str | None = Field(default=None, description="Human-readable description of this slot.")
+    merge: Literal["directory_union", "directory_union_csv_concat", "csv_concat"] | None = Field(
+        default=None,
+        description=(
+            "Output merge strategy used when the tool runs in parallel chunks. "
+            "Omit (or null) for input slots. "
+            "'directory_union': copy all files from each chunk output into the final directory — "
+            "NIfTI filenames must be unique across chunks (MRID-keyed). "
+            "'directory_union_csv_concat': same as directory_union, but CSV files with matching "
+            "names across chunks are row-concatenated (header kept once). "
+            "'csv_concat': concatenate a single CSV file output."
+        ),
+    )
 
 
 class ResourceSpec(BaseModel):
@@ -54,6 +66,25 @@ class ToolDetail(ToolSummary):
             "Expected wall-clock seconds to process one subject. "
             "Used by GET /cloud/status to estimate queue-drain time."
         ),
+    )
+    parallelizable: bool = Field(
+        default=False,
+        description=(
+            "When True, the pipeline orchestrator may split directory inputs into subject chunks "
+            "and run them as parallel backend jobs, then merge the results."
+        ),
+    )
+    subjects_per_chunk: int | None = Field(
+        default=None,
+        description=(
+            "Default number of subjects per parallel chunk for this tool. "
+            "Null means use the server global default (10). "
+            "Only meaningful when parallelizable is True."
+        ),
+    )
+    github_url: str | None = Field(
+        default=None,
+        description="Link to the tool's source code repository on GitHub.",
     )
 
 
@@ -96,6 +127,15 @@ class PipelineSummary(BaseModel):
             "Pipeline ID of the standard (non-harmonized) version of this pipeline. "
             "Present on harmonized pipelines only; null on base pipelines and those "
             "with no base counterpart. Use to render a 'Switch to standard' action."
+        ),
+    )
+    docs_id: str | None = Field(
+        default=None,
+        description=(
+            "Documentation topic identifier for this pipeline. "
+            "Use with GET /catalog/docs/{docs_id} to retrieve the manifest, and "
+            "GET /catalog/docs/{docs_id}/{file} to fetch individual sections. "
+            "Multiple pipelines may share the same docs_id (e.g. harmonized variants)."
         ),
     )
 
@@ -147,6 +187,13 @@ class LabelInfo(BaseModel):
         description=(
             "Voxel values in the segmentation NIfTI that together form this region. "
             "Null for pipelines that do not produce a segmentation output."
+        ),
+    )
+    unit: str | None = Field(
+        default=None,
+        description=(
+            "Physical unit for this column's values, e.g. 'mm³', 'years'. "
+            "Null when no unit is declared for this pipeline."
         ),
     )
 

@@ -273,6 +273,29 @@ async def get_pipeline_logs(
     return await job_service.get_run_logs(run_id=run_id, user_id=user.sub)
 
 
+@jobs_router.get(
+    "/pipelines/{run_id}/steps/{step_id}/chunks/{chunk_idx}/logs",
+    summary="Get logs for a single parallel chunk",
+    description=(
+        "Returns the captured log output for one chunk of a parallelised pipeline step. "
+        "Only available after the chunk has started executing. "
+        "Use ``GET /jobs/pipelines/{run_id}/logs`` to retrieve all chunks concatenated."
+    ),
+    responses={
+        **_AUTH_ERRORS,
+        400: {"model": ErrorDetail, "description": "Step was not run in parallel chunks."},
+        404: {"model": ErrorDetail, "description": "Run, step, or chunk not found."},
+    },
+)
+async def get_chunk_logs(
+    run_id: str,
+    step_id: str,
+    chunk_idx: int,
+    user: CurrentUser = Depends(require_auth),
+) -> str:
+    return job_service.get_chunk_logs(run_id, user.sub, step_id, chunk_idx)
+
+
 @jobs_router.delete(
     "/pipelines/{run_id}",
     summary="Cancel a pipeline run",

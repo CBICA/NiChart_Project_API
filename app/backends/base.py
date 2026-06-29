@@ -47,6 +47,21 @@ class ToolSpec:
     # None   → auto-detect: use "run" if rendered command starts with '-', else "exec"
     singularity_run_mode: str | None = None
 
+    # ── Parallelization ───────────────────────────────────────────────────────
+    # When True, the orchestrator may split directory inputs into subject chunks
+    # and submit them as parallel backend jobs, then merge results.
+    parallelizable: bool = False
+    # Default chunk size (subjects per backend job). None → use global default (10).
+    subjects_per_chunk: int | None = None
+    # Per-output merge strategy keyed by output label.
+    # "directory_union"            — merge all files; NIfTI filenames must be unique (MRID-keyed)
+    # "directory_union_csv_concat" — same, but CSVs with matching names are row-concatenated
+    # "csv_concat"                 — concatenate a single CSV file output (header once, rows appended)
+    output_merge: dict[str, str] = field(default_factory=dict)
+
+    # ── Metadata ──────────────────────────────────────────────────────────────
+    github_url: str | None = None
+
     def render_command(self, params: dict[str, Any]) -> str:
         """Substitute mount container paths and resolved params into the command template."""
         cmd = self.command_template
@@ -133,6 +148,7 @@ class JobBackend(ABC):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,
     ) -> JobHandle:
         """
         Submit a containerised tool job and return a handle immediately.
@@ -150,4 +166,9 @@ class JobBackend(ABC):
             Hint for cloud queue-drain estimation; passed to the Lambda as ``num_subjects``.
         user_token:
             Cognito ID token forwarded to the Lambda (cloud mode only).
+        extra_readonly_mounts:
+            Additional host paths to bind-mount read-only at the same container path.
+            Used when chunk input directories contain absolute symlinks into the study
+            directory — the study directory must also be mounted so the symlinks resolve
+            inside the container.  Batch backend ignores this (FSx is shared across nodes).
         """

@@ -24,6 +24,7 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -41,6 +42,7 @@ from fastapi import HTTPException
 
 from app.backends.base import JobBackend, JobHandle
 from app.models.jobs import (
+    ChunkStatus,
     PipelineRunDetail,
     PipelineRunLogs,
     PipelineRunSummary,
@@ -54,6 +56,18 @@ _log = logging.getLogger(__name__)
 # ── Run store ──────────────────────────────────────────────────────────────────
 
 @dataclass
+class _ChunkRecord:
+    chunk_idx: int
+    status: str = "pending"     # pending | running | succeeded | failed
+    subjects: list[str] = field(default_factory=list)
+    job_id: str | None = None
+    submitted_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: str | None = None
+    logs: str = ""
+
+
+@dataclass
 class _StepRecord:
     step_id: str
     tool_id: str
@@ -65,6 +79,8 @@ class _StepRecord:
     container_image: str | None = None
     error: str | None = None
     logs: str = ""
+    cached_from_run_id: str | None = None
+    chunks: list[_ChunkRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -135,20 +151,230 @@ def _cache_key(tool_id: str, inputs: dict, params: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _is_cached(metadata: dict, key: str, inputs: dict) -> bool:
+def _is_cached(metadata: dict, key: str, inputs: dict) -> str | None:
+    """Return the originating run_id if the step is validly cached, else None."""
     entry = metadata.get(key)
     if not entry or entry.get("status") != "success":
-        return False
+        return None
     finished = entry.get("finished_time", 0)
     for path_str in inputs.values():
         p = Path(path_str)
         if not p.exists() or p.stat().st_mtime > finished:
-            return False
-    return True
+            return None
+    return entry.get("run_id")
 
 
-def _mark_cached(metadata: dict, key: str) -> None:
-    metadata[key] = {"status": "success", "finished_time": time.time()}
+def _mark_cached(metadata: dict, key: str, run_id: str) -> None:
+    metadata[key] = {"status": "success", "finished_time": time.time(), "run_id": run_id}
+
+
+# ── Parallel chunk helpers ────────────────────────────────────────────────────
+
+_DEFAULT_SUBJECTS_PER_CHUNK = 10
+_NIFTI_SUFFIXES = {".nii", ".gz"}  # .nii.gz ends with .gz; .nii ends with .nii
+
+
+def _collect_subjects_from_path(path_str: str) -> list[str]:
+    """Return sorted MRID stems from NIfTI files in a directory, or [] for file paths."""
+    p = Path(path_str)
+    if not p.is_dir():
+        return []
+    mrids = []
+    for f in p.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.endswith(".nii.gz"):
+            mrids.append(f.name[:-7])
+        elif f.suffix == ".nii":
+            mrids.append(f.name[:-4])
+    return sorted(mrids)
+
+
+def _compute_chunk_count(tool_spec, n_subjects: int) -> int:
+    """Return how many chunks to split into, bounded by [1, n_subjects]."""
+    spc = tool_spec.subjects_per_chunk or _DEFAULT_SUBJECTS_PER_CHUNK
+    return max(1, min(n_subjects, math.ceil(n_subjects / spc)))
+
+
+def _create_fragment_dirs(
+    study_dir: Path,
+    run_id: str,
+    step_id: str,
+    resolved_inputs: dict[str, str],
+    resolved_outputs: dict[str, str],
+    n_chunks: int,
+) -> tuple[list[list[str]], list[dict[str, str]], list[dict[str, str]]]:
+    """
+    Create per-chunk fragment directories for a parallelised step.
+
+    For each input that is a NIfTI directory, splits subjects across n_chunks and
+    populates each chunk's input dir with absolute symlinks to the source files.
+    File inputs (CSV, etc.) are passed through unchanged to all chunks.
+    Each chunk gets its own output directories.
+
+    Returns
+    -------
+    chunk_subjects  : list of MRID lists (one per chunk)
+    chunk_inputs    : list of {label: path} dicts for backend mount_paths (one per chunk)
+    chunk_outputs   : list of {label: path} dicts for backend mount_paths (one per chunk)
+    """
+    # Determine which input labels are NIfTI directories and collect subjects.
+    dir_inputs: dict[str, list[str]] = {}
+    for label, path_str in resolved_inputs.items():
+        subjects = _collect_subjects_from_path(path_str)
+        if subjects:
+            dir_inputs[label] = subjects
+
+    # Use the intersection of MRIDs across all NIfTI inputs so every chunk has
+    # complete data regardless of which modality is listed as the input.
+    if dir_inputs:
+        complete_mrids = sorted(
+            set.intersection(*[set(v) for v in dir_inputs.values()])
+        )
+    else:
+        complete_mrids = []
+
+    n = len(complete_mrids)
+    actual_chunks = max(1, min(n_chunks, n)) if n > 0 else 1
+
+    # Distribute subjects evenly across chunks.
+    chunk_size = math.ceil(n / actual_chunks) if n > 0 else 0
+    chunk_subjects: list[list[str]] = []
+    for i in range(actual_chunks):
+        start = i * chunk_size
+        chunk_subjects.append(complete_mrids[start: start + chunk_size])
+
+    frag_base = study_dir / "_working" / "fragments" / run_id / step_id
+
+    chunk_inputs: list[dict[str, str]] = []
+    chunk_outputs: list[dict[str, str]] = []
+
+    for i, subjects in enumerate(chunk_subjects):
+        ci: dict[str, str] = {}
+        for label, path_str in resolved_inputs.items():
+            src = Path(path_str)
+            if label in dir_inputs:
+                # Create a fragment input dir with symlinks to this chunk's subjects.
+                frag_in = frag_base / f"chunk_{i}" / f"in_{label}"
+                frag_in.mkdir(parents=True, exist_ok=True)
+                for mrid in subjects:
+                    # Detect whether source file has .nii.gz or .nii extension.
+                    for ext in (".nii.gz", ".nii"):
+                        src_file = src / f"{mrid}{ext}"
+                        if src_file.exists():
+                            link = frag_in / f"{mrid}{ext}"
+                            if not link.exists():
+                                link.symlink_to(src_file)
+                            break
+                ci[label] = str(frag_in)
+            else:
+                # File or non-NIfTI dir: pass through unchanged.
+                ci[label] = path_str
+        chunk_inputs.append(ci)
+
+        co: dict[str, str] = {}
+        for label, path_str in resolved_outputs.items():
+            src_p = Path(path_str)
+            if src_p.suffix:
+                # File output — use a chunk-specific temp file in a staging dir.
+                frag_out = frag_base / f"chunk_{i}" / f"out_{label}"
+                frag_out.mkdir(parents=True, exist_ok=True)
+                co[label] = str(frag_out / src_p.name)
+            else:
+                frag_out = frag_base / f"chunk_{i}" / f"out_{label}"
+                frag_out.mkdir(parents=True, exist_ok=True)
+                co[label] = str(frag_out)
+        chunk_outputs.append(co)
+
+    return chunk_subjects, chunk_inputs, chunk_outputs
+
+
+def _merge_chunk_outputs(
+    chunk_output_dicts: list[dict[str, str]],
+    final_outputs: dict[str, str],
+    output_merge: dict[str, str],
+) -> None:
+    """
+    Merge per-chunk output directories/files into the final output paths.
+
+    Merge strategies per output label (from tool_spec.output_merge):
+      "directory_union"            — copy all files into final dir (NIfTI names must be unique)
+      "directory_union_csv_concat" — same, but CSVs with matching names are row-concatenated
+      "csv_concat"                 — concatenate a single CSV file (header once, rows appended)
+    Default for directory outputs: "directory_union".
+    """
+    import csv as csv_mod
+    import shutil
+
+    for label, final_path_str in final_outputs.items():
+        final_path = Path(final_path_str)
+        strategy = output_merge.get(label, "directory_union")
+        chunk_paths = [Path(d[label]) for d in chunk_output_dicts if label in d]
+
+        if strategy == "csv_concat":
+            # Concatenate CSV files: header from first chunk, rows from all.
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            header_written = False
+            with final_path.open("w", newline="") as fout:
+                writer = csv_mod.writer(fout)
+                for cp in chunk_paths:
+                    if not cp.exists():
+                        continue
+                    with cp.open(newline="") as fin:
+                        reader = csv_mod.reader(fin)
+                        rows = list(reader)
+                    if not rows:
+                        continue
+                    if not header_written:
+                        writer.writerows(rows)
+                        header_written = True
+                    else:
+                        writer.writerows(rows[1:])  # skip header
+
+        elif strategy in ("directory_union", "directory_union_csv_concat"):
+            final_path.mkdir(parents=True, exist_ok=True)
+            # Collect all CSV files that appear in multiple chunks (same name → concat).
+            csv_files: dict[str, list[Path]] = {}
+            for cp in chunk_paths:
+                if not cp.is_dir():
+                    continue
+                for f in cp.iterdir():
+                    if not f.is_file():
+                        continue
+                    if strategy == "directory_union_csv_concat" and f.suffix == ".csv":
+                        csv_files.setdefault(f.name, []).append(f)
+                    else:
+                        dest = final_path / f.name
+                        shutil.copy2(str(f), str(dest))
+
+            if strategy == "directory_union_csv_concat":
+                for fname, sources in csv_files.items():
+                    dest = final_path / fname
+                    header_written = False
+                    with dest.open("w", newline="") as fout:
+                        writer = csv_mod.writer(fout)
+                        for src in sources:
+                            with src.open(newline="") as fin:
+                                reader = csv_mod.reader(fin)
+                                rows = list(reader)
+                            if not rows:
+                                continue
+                            if not header_written:
+                                writer.writerows(rows)
+                                header_written = True
+                            else:
+                                writer.writerows(rows[1:])
+
+
+def _cleanup_fragment_dirs(study_dir: Path, run_id: str, step_id: str) -> None:
+    """Remove fragment directories after a successful merge."""
+    import shutil
+    frag_dir = study_dir / "_working" / "fragments" / run_id / step_id
+    if frag_dir.exists():
+        try:
+            shutil.rmtree(frag_dir)
+        except Exception as exc:
+            _log.warning("Could not clean up fragment dir %s: %s", frag_dir, exc)
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -224,6 +450,20 @@ def _run_to_dict(run: _RunRecord) -> dict:
                 "container_image": s.container_image,
                 "error": s.error,
                 "logs": s.logs,
+                "cached_from_run_id": s.cached_from_run_id,
+                "chunks": [
+                    {
+                        "chunk_idx": c.chunk_idx,
+                        "status": c.status,
+                        "subjects": c.subjects,
+                        "job_id": c.job_id,
+                        "submitted_at": c.submitted_at.isoformat() if c.submitted_at else None,
+                        "finished_at": c.finished_at.isoformat() if c.finished_at else None,
+                        "error": c.error,
+                        "logs": c.logs,
+                    }
+                    for c in s.chunks
+                ],
             }
             for s in run.steps
         ],
@@ -260,6 +500,20 @@ def _run_from_dict(d: dict) -> _RunRecord:
             container_image=s.get("container_image"),
             error=s.get("error"),
             logs=s.get("logs", ""),
+            cached_from_run_id=s.get("cached_from_run_id"),
+            chunks=[
+                _ChunkRecord(
+                    chunk_idx=c["chunk_idx"],
+                    status=c["status"],
+                    subjects=c.get("subjects", []),
+                    job_id=c.get("job_id"),
+                    submitted_at=_dt(c.get("submitted_at")),
+                    finished_at=_dt(c.get("finished_at")),
+                    error=c.get("error"),
+                    logs=c.get("logs", ""),
+                )
+                for c in s.get("chunks", [])
+            ],
         )
         for s in d.get("steps", [])
     ]
@@ -490,12 +744,15 @@ async def run_pipeline_task(
         key = _cache_key(step_def.tool, resolved_inputs, merged_params)
 
         # Check step cache (only for freshly-pending steps, not in-progress reconnects).
-        if step.status == "pending" and reuse_cached_steps and _is_cached(metadata, key, resolved_inputs):
-            step.status = "skipped"
-            step.finished_at = datetime.now(timezone.utc)
-            step_outputs[step_def.id] = resolved_outputs
-            _persist_run(run, study_dir)
-            continue
+        if step.status == "pending" and reuse_cached_steps:
+            cached_run_id = _is_cached(metadata, key, resolved_inputs)
+            if cached_run_id is not None:
+                step.status = "skipped"
+                step.finished_at = datetime.now(timezone.utc)
+                step.cached_from_run_id = cached_run_id
+                step_outputs[step_def.id] = resolved_outputs
+                _persist_run(run, study_dir)
+                continue
 
         # Determine the job handle — either reconnect to an in-progress SLURM job
         # (restart recovery) or submit a fresh job.
@@ -547,7 +804,6 @@ async def run_pipeline_task(
                 return
 
             # Estimate subject count for cloud queue-drain metric and SLURM time limits.
-            # Count NIfTI files in directory inputs; count file inputs as 1 each.
             def _count_subjects(p: Path) -> int:
                 if p.is_dir():
                     return sum(1 for f in p.iterdir() if f.suffix in (".gz", ".nii"))
@@ -578,6 +834,177 @@ async def run_pipeline_task(
                     _persist_run(run, study_dir)
                     return
 
+            # ── Parallel chunk path ───────────────────────────────────────────
+            if tool_spec.parallelizable and num_subjects > 1:
+                n_chunks = _compute_chunk_count(tool_spec, num_subjects)
+                chunk_subjects, chunk_input_dicts, chunk_output_dicts = _create_fragment_dirs(
+                    study_dir=study_dir,
+                    run_id=run.run_id,
+                    step_id=step_def.id,
+                    resolved_inputs=resolved_inputs,
+                    resolved_outputs=resolved_outputs,
+                    n_chunks=n_chunks,
+                )
+
+                # Initialise chunk records.
+                step.chunks = [
+                    _ChunkRecord(chunk_idx=idx, subjects=subs)
+                    for idx, subs in enumerate(chunk_subjects)
+                ]
+                _persist_run(run, study_dir)
+
+                # Submit all chunks concurrently.
+                handles: list[JobHandle | None] = []
+                for idx, (ci, co, subs) in enumerate(
+                    zip(chunk_input_dicts, chunk_output_dicts, chunk_subjects)
+                ):
+                    chunk = step.chunks[idx]
+                    chunk_mount = {**ci, **co}
+                    try:
+                        h = await backend.submit(
+                            tool_spec=tool_spec,
+                            mount_paths=chunk_mount,
+                            params=merged_params,
+                            num_subjects=len(subs),
+                            user_token=user_token,
+                            extra_readonly_mounts=[str(study_dir)],
+                        )
+                        chunk.job_id = h.job_id
+                        chunk.submitted_at = datetime.now(timezone.utc)
+                        chunk.status = "running"
+                        handles.append(h)
+                    except Exception as e:
+                        chunk.status = "failed"
+                        chunk.error = str(e)
+                        chunk.finished_at = datetime.now(timezone.utc)
+                        handles.append(None)
+                _persist_run(run, study_dir)
+
+                # Poll all chunks to completion concurrently.
+                async def _poll_chunk(h: JobHandle, chunk: _ChunkRecord) -> bool:
+                    if h is None:
+                        return False
+                    job_status = "running"
+                    while job_status == "running":
+                        if run.cancelled:
+                            await h.cancel()
+                            chunk.status = "failed"
+                            chunk.error = "Cancelled"
+                            chunk.finished_at = datetime.now(timezone.utc)
+                            return False
+                        await asyncio.sleep(5)
+                        try:
+                            job_status = await h.status()
+                        except Exception:
+                            break
+                    chunk.logs = await h.logs()
+                    chunk.finished_at = datetime.now(timezone.utc)
+                    if job_status == "succeeded":
+                        chunk.status = "succeeded"
+                        return True
+                    chunk.status = "failed"
+                    chunk.error = "Job exited with non-zero status"
+                    return False
+
+                results = await asyncio.gather(
+                    *[
+                        _poll_chunk(h, step.chunks[idx])
+                        for idx, h in enumerate(handles)
+                        if h is not None
+                    ],
+                    return_exceptions=True,
+                )
+
+                # For chunks that had None handles (submission failed), already marked failed.
+                succeeded_chunks = [c for c in step.chunks if c.status == "succeeded"]
+                failed_chunks = [c for c in step.chunks if c.status == "failed"]
+
+                step.finished_at = datetime.now(timezone.utc)
+
+                if failed_chunks:
+                    # S3 sync after all chunks (best-effort; pull whatever succeeded).
+                    if _s3_project_prefix:
+                        try:
+                            await s3_sync_service.sync_from_s3(
+                                s3_sync.bucket, _s3_project_prefix, study_dir  # type: ignore[union-attr]
+                            )
+                        except Exception as exc:
+                            _log.warning("S3 post-chunk sync failed: %s", exc)
+
+                    if succeeded_chunks:
+                        step.status = "partially_failed"
+                        step.error = (
+                            f"{len(failed_chunks)}/{len(step.chunks)} chunks failed"
+                        )
+                    else:
+                        step.status = "failed"
+                        step.error = "All chunks failed"
+                    run.status = "failed"
+                    run.error = f"Step '{step_def.id}': {step.error}"
+                    run.finished_at = datetime.now(timezone.utc)
+                    _persist_run(run, study_dir)
+                    return
+
+                # All chunks succeeded — S3 sync then merge.
+                if _s3_project_prefix:
+                    for direction, fn, args in [
+                        ("down", s3_sync_service.sync_from_s3,
+                         (s3_sync.bucket, _s3_project_prefix, study_dir)),  # type: ignore[union-attr]
+                        ("up",   s3_sync_service.sync_to_s3,
+                         (study_dir, s3_sync.bucket, _s3_project_prefix)),  # type: ignore[union-attr]
+                    ]:
+                        try:
+                            await fn(*args)
+                        except Exception as exc:
+                            _log.warning("S3 post-chunk sync (%s) failed: %s", direction, exc)
+
+                try:
+                    await asyncio.to_thread(
+                        _merge_chunk_outputs,
+                        chunk_output_dicts,
+                        resolved_outputs,
+                        tool_spec.output_merge,
+                    )
+                except Exception as exc:
+                    step.status = "failed"
+                    step.error = f"Output merge failed: {exc}"
+                    run.status = "failed"
+                    run.error = f"Step '{step_def.id}': output merge failed: {exc}"
+                    run.finished_at = datetime.now(timezone.utc)
+                    _persist_run(run, study_dir)
+                    return
+
+                _cleanup_fragment_dirs(study_dir, run.run_id, step_def.id)
+                step.status = "succeeded"
+                step_outputs[step_def.id] = resolved_outputs
+
+                subjects_complete = sum(len(c.subjects) for c in succeeded_chunks)
+                _log.info(
+                    "Step '%s' completed (%d/%d chunks, %d subjects) for run %s",
+                    step_def.id, len(succeeded_chunks), len(step.chunks),
+                    subjects_complete, run.run_id,
+                )
+
+                if tool_spec:
+                    _write_provenance(
+                        resolved_outputs=resolved_outputs,
+                        step_id=step_def.id,
+                        pipeline_id=run.pipeline_id,
+                        container_image=tool_spec.image,
+                        params=merged_params,
+                        input_paths=resolved_inputs,
+                        submitted_at=step.submitted_at,
+                        finished_at=step.finished_at,
+                        execution_mode=execution_mode,
+                        user_id=run.user_id,
+                        backend=run.backend_type,
+                    )
+                _mark_cached(metadata, key, run.run_id)
+                _save_metadata(study_dir, metadata)
+                _persist_run(run, study_dir)
+                continue  # advance to next pipeline step
+
+            # ── Single-job (non-parallel) path ────────────────────────────────
             try:
                 handle = await backend.submit(
                     tool_spec=tool_spec,
@@ -647,7 +1074,7 @@ async def run_pipeline_task(
                 user_id=run.user_id,
                 backend=run.backend_type,
             )
-        _mark_cached(metadata, key)
+        _mark_cached(metadata, key, run.run_id)
         _save_metadata(study_dir, metadata)
         _persist_run(run, study_dir)
 
@@ -799,16 +1226,7 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
         total_steps=run.total_steps,
         error=run.error,
         steps=[
-            StepStatus(
-                step_id=s.step_id,
-                tool_id=s.tool_id,
-                status=s.status,
-                submitted_at=s.submitted_at,
-                finished_at=s.finished_at,
-                job_id=s.job_id,
-                container_image=s.container_image,
-                error=s.error,
-            )
+            _step_record_to_status(s)
             for s in run.steps
         ],
     )
@@ -826,6 +1244,47 @@ def list_runs(
     ]
     runs.sort(key=lambda r: r.submitted_at, reverse=True)
     return [_to_summary(r) for r in runs[:limit]]
+
+
+def _step_record_to_status(s: _StepRecord) -> StepStatus:
+    """Convert an internal _StepRecord to the API-facing StepStatus model."""
+    chunk_statuses = [
+        ChunkStatus(
+            chunk_idx=c.chunk_idx,
+            status=c.status,
+            subjects=c.subjects,
+            job_id=c.job_id,
+            submitted_at=c.submitted_at,
+            finished_at=c.finished_at,
+            error=c.error,
+        )
+        for c in s.chunks
+    ]
+    total_chunks = len(s.chunks) if s.chunks else None
+    completed_chunks = sum(1 for c in s.chunks if c.status == "succeeded") if s.chunks else None
+    failed_chunks = sum(1 for c in s.chunks if c.status == "failed") if s.chunks else None
+    total_subjects = sum(len(c.subjects) for c in s.chunks) if s.chunks else None
+    subjects_complete = (
+        sum(len(c.subjects) for c in s.chunks if c.status == "succeeded")
+        if s.chunks else None
+    )
+    return StepStatus(
+        step_id=s.step_id,
+        tool_id=s.tool_id,
+        status=s.status,
+        submitted_at=s.submitted_at,
+        finished_at=s.finished_at,
+        job_id=s.job_id,
+        container_image=s.container_image,
+        error=s.error,
+        cached_from_run_id=s.cached_from_run_id,
+        total_chunks=total_chunks,
+        completed_chunks=completed_chunks,
+        failed_chunks=failed_chunks,
+        total_subjects=total_subjects,
+        subjects_complete=subjects_complete,
+        chunks=chunk_statuses,
+    )
 
 
 def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
@@ -847,17 +1306,44 @@ async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
     parts: list[str] = []
     active_handle = _active_handles.get(run_id)
     for s in run.steps:
-        if s.status == "running" and active_handle is not None:
-            try:
-                live_logs = await active_handle.logs()
-            except Exception:
-                live_logs = s.logs
+        if s.chunks:
+            # Parallelized step — concatenate per-chunk logs with headers.
+            chunk_parts: list[str] = []
+            for c in s.chunks:
+                if c.logs:
+                    chunk_parts.append(f"  --- chunk {c.chunk_idx}/{len(s.chunks)-1} ---\n{c.logs}")
+            if chunk_parts:
+                parts.append(f"=== Step {s.step_id} ===\n" + "\n".join(chunk_parts))
         else:
-            live_logs = s.logs
-        if live_logs:
-            parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
+            if s.status == "running" and active_handle is not None:
+                try:
+                    live_logs = await active_handle.logs()
+                except Exception:
+                    live_logs = s.logs
+            else:
+                live_logs = s.logs
+            if live_logs:
+                parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
 
     return PipelineRunLogs(run_id=run_id, logs="\n".join(parts))
+
+
+def get_chunk_logs(run_id: str, user_id: str, step_id: str, chunk_idx: int) -> str:
+    """Return logs for a specific chunk of a parallelized step."""
+    run = _runs.get(run_id)
+    if not run:
+        raise HTTPException(404, f"Run '{run_id}' not found")
+    if run.user_id != user_id:
+        raise HTTPException(403, "Access denied")
+    step = next((s for s in run.steps if s.step_id == step_id), None)
+    if step is None:
+        raise HTTPException(404, f"Step '{step_id}' not found in run '{run_id}'")
+    if not step.chunks:
+        raise HTTPException(400, f"Step '{step_id}' was not run in parallel chunks")
+    chunk = next((c for c in step.chunks if c.chunk_idx == chunk_idx), None)
+    if chunk is None:
+        raise HTTPException(404, f"Chunk {chunk_idx} not found in step '{step_id}'")
+    return chunk.logs
 
 
 def cancel_run(run_id: str, user_id: str) -> None:

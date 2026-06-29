@@ -2,6 +2,7 @@ pipeline_name: SPARE Scores - All-Inclusive (T1 only)
 description: |
   Pipeline which uses DLMUSE features to produce all available SPARE scores using T1 scans.
 
+docs_id: spare
 harmonized_variant: run_spare_all_harmonized
 
 categories:

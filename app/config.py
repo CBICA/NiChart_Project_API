@@ -58,6 +58,53 @@ class Settings(BaseSettings):
         description="Name of the Lambda function used to submit Batch jobs.",
     )
 
+    # ── BFF OAuth / Cognito Hosted UI ────────────────────────────────────────────
+    # Only required in cloud mode when the BFF auth flow is used.
+    cognito_domain: str = Field(
+        default="",
+        description=(
+            "Cognito Hosted UI domain (no trailing slash). "
+            "e.g. 'https://myapp.auth.us-east-1.amazoncognito.com'. "
+            "Required for GET /auth/login and GET /auth/callback."
+        ),
+    )
+    cognito_client_secret: str = Field(
+        default="",
+        description=(
+            "Cognito app client secret. Never commit this value — "
+            "pass via NICHART_COGNITO_CLIENT_SECRET environment variable "
+            "or inject from AWS Secrets Manager at startup."
+        ),
+    )
+    frontend_url: str = Field(
+        default="http://localhost:3000",
+        description="Frontend origin to redirect to after successful login or logout.",
+    )
+    api_base_url: str = Field(
+        default="http://localhost:8000",
+        description=(
+            "Public base URL of this API server. Used to construct the OAuth "
+            "redirect_uri that Cognito calls back to. Must exactly match one of the "
+            "registered callback URLs in the Cognito app client."
+        ),
+    )
+    cookie_domain: str | None = Field(
+        default=None,
+        description=(
+            "Domain attribute for auth cookies. Set to '.myapp.com' when the API "
+            "and frontend share an eTLD+1 (e.g. api.myapp.com + myapp.com). "
+            "Leave unset for localhost development."
+        ),
+    )
+    cookie_secure: bool = Field(
+        default=True,
+        description=(
+            "Set the Secure flag on auth cookies. "
+            "Must be False for plain-HTTP local development (http://localhost). "
+            "Always True in production."
+        ),
+    )
+
     cors_origins: list[str] = Field(
         default=["http://localhost:3000"],
         description=(
@@ -181,12 +228,21 @@ class Settings(BaseSettings):
         )
 
     @property
+    def auth_callback_url(self) -> str:
+        """Absolute redirect_uri for the OAuth callback. Must match the Cognito app client registration."""
+        return f"{self.api_base_url.rstrip('/')}/auth/callback"
+
+    @property
     def pipelines_path(self) -> Path:
         return self.resources_path / "pipelines"
 
     @property
     def tools_path(self) -> Path:
         return self.resources_path / "tools"
+
+    @property
+    def docs_path(self) -> Path:
+        return self.resources_path / "docs"
 
 
 @lru_cache

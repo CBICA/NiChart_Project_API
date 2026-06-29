@@ -44,6 +44,16 @@ def _load_disabled_pipelines(pipelines_path: Path) -> set[str]:
     return disabled
 
 
+def _parse_io_fields(raw: dict | None) -> dict[str, IOField]:
+    result = {}
+    for k, v in (raw or {}).items():
+        if isinstance(v, dict):
+            result[k] = IOField(**{fk: fv for fk, fv in v.items() if fk in IOField.model_fields})
+        else:
+            result[k] = IOField(type=str(v))
+    return result
+
+
 def get_tool(tools_path: Path, tool_id: str) -> ToolDetail:
     yaml_path = tools_path / f"{tool_id}.yaml"
     if not yaml_path.exists():
@@ -53,11 +63,14 @@ def get_tool(tools_path: Path, tool_id: str) -> ToolDetail:
         id=tool_id,
         name=data["name"],
         description=data.get("description"),
-        inputs={k: IOField(**v) for k, v in (data.get("inputs") or {}).items()},
-        outputs={k: IOField(**v) for k, v in (data.get("outputs") or {}).items()},
+        inputs=_parse_io_fields(data.get("inputs")),
+        outputs=_parse_io_fields(data.get("outputs")),
         resources=ResourceSpec(**data["resources"]),
         parameters={k: ParameterSpec(**v) for k, v in (data.get("parameters") or {}).items()},
         time_per_subject_seconds=data.get("time_per_subject_seconds"),
+        parallelizable=bool(data.get("parallelizable", False)),
+        subjects_per_chunk=data.get("subjects_per_chunk"),
+        github_url=data.get("github_url"),
     )
 
 
@@ -142,7 +155,10 @@ def _build_catalog_features(
                 if not constituents:
                     constituents = [label_id]
                 col_name = batch_spec.column_template.replace("{id}", str(label_id))
-                label_map[col_name] = LabelInfo(display_name=display_name, label_ids=constituents)
+                unit = (batch_spec.column_units or {}).get(col_name, batch_spec.default_unit)
+                label_map[col_name] = LabelInfo(
+                    display_name=display_name, label_ids=constituents, unit=unit
+                )
                 primary_ids[col_name] = label_id
     except Exception:
         return None, None
@@ -201,6 +217,8 @@ def get_pipeline(
             label_map=bf_raw.get("label_map"),
             column_template=bf_raw.get("column_template", "{id}"),
             feature_groups=bf_raw.get("feature_groups"),
+            column_units=bf_raw.get("column_units"),
+            default_unit=bf_raw.get("default_unit"),
         )
         label_map, feature_groups = _build_catalog_features(resources_path, batch_spec)
 
@@ -234,6 +252,7 @@ def get_pipeline(
         label_map=label_map,
         feature_groups=feature_groups,
         column_schemas=_parse_column_schemas(raw_requires),
+        docs_id=data.get("docs_id"),
     )
 
 
@@ -261,6 +280,12 @@ def load_tool_spec(tools_path: Path, tool_id: str) -> ToolSpec:
             mount_type=mount_type,
         )
 
+    output_merge = {
+        k: v["merge"]
+        for k, v in (data.get("outputs") or {}).items()
+        if isinstance(v, dict) and v.get("merge")
+    }
+
     return ToolSpec(
         tool_id=tool_id,
         name=data["name"],
@@ -271,6 +296,10 @@ def load_tool_spec(tools_path: Path, tool_id: str) -> ToolSpec:
         resources=data.get("resources") or {},
         time_per_subject_seconds=data.get("time_per_subject_seconds"),
         singularity_run_mode=data.get("container", {}).get("singularity_run_mode"),
+        parallelizable=bool(data.get("parallelizable", False)),
+        subjects_per_chunk=data.get("subjects_per_chunk"),
+        output_merge=output_merge,
+        github_url=data.get("github_url"),
     )
 
 
@@ -297,6 +326,8 @@ class BatchFeaturesSpec:
     label_map: str | None = None
     column_template: str = "{id}"
     feature_groups: list[dict] | None = None  # [{name, label_id_range: [lo, hi]}]
+    column_units: dict[str, str] | None = None  # per-column unit overrides, keyed by column name
+    default_unit: str | None = None             # unit for columns not in column_units
 
 
 @dataclass
@@ -334,6 +365,8 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             label_map=bf_raw.get("label_map"),
             column_template=bf_raw.get("column_template", "{id}"),
             feature_groups=bf_raw.get("feature_groups"),
+            column_units=bf_raw.get("column_units"),
+            default_unit=bf_raw.get("default_unit"),
         )
 
     per_subject = [
@@ -372,6 +405,7 @@ def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:
                 is_harmonized="harmonized" in cats,
                 harmonized_variant=data.get("harmonized_variant"),
                 base_variant=data.get("base_variant"),
+                docs_id=data.get("docs_id"),
             ))
         except Exception:
             continue

@@ -3,6 +3,8 @@ description: |
   Prediction of Coupled Cross-Sectional Non-negative Matrix Factorization loading coefficients
   from T1-weighted MRI using DLMUSE brain volumes.
 
+docs_id: cclnmf
+
 categories:
   - regression
   - inference

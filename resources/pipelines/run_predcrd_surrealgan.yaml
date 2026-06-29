@@ -2,6 +2,8 @@ pipeline_name: SurrealGAN R-Score Prediction
 description: |
   Prediction of SurrealGAN R-Scores along 5 disease progression dimensions using T1-weighted MRI brain scans via DLMUSE.
 
+docs_id: surrealgan
+
 categories:
   - inference
   - regression

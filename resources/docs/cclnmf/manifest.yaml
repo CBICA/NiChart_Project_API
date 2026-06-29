@@ -1,0 +1,11 @@
+title: "CCL-NMF Brain Subtypes"
+description: "Coupled Cross-Sectional and Longitudinal Non-Negative Matrix Factorization for brain subtype discovery."
+pipelines:
+  - run_cclnmf
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

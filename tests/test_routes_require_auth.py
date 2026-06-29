@@ -55,9 +55,9 @@ def test_protected_get_routes_return_401_without_token(cloud_client, path):
     "/jobs/pipelines",
 ])
 def test_protected_get_routes_return_non_401_with_valid_token(cloud_client, make_id_token, path):
-    """GET requests with a valid token must not be rejected by auth (501 stub is OK)."""
+    """GET requests with a valid session cookie must not be rejected by auth (501 stub is OK)."""
     token = make_id_token()
-    resp = cloud_client.get(path, headers={"Authorization": f"Bearer {token}"})
+    resp = cloud_client.get(path, cookies={"session": token})
     assert resp.status_code != 401, (
         f"Got unexpected 401 on GET {path} with a valid token"
     )

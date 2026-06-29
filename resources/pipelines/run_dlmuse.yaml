@@ -2,6 +2,7 @@ pipeline_name: DLMUSE Brain Segmentation
 description: |
   Segmentation pipeline starting from T1-weighted MRI brain scans.
 
+docs_id: dlmuse
 harmonized_variant: run_dlmuse_harmonized
 
 categories:
@@ -33,6 +34,7 @@ results:
     mrid_column: "MRID"
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_MUSE_Volume_{id}"
+    default_unit: "mm³"
     feature_groups:
       - name: "Global"
         label_id_range: [600, 702]

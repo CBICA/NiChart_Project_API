@@ -1,0 +1,12 @@
+title: "DLMUSE Brain Segmentation"
+description: "Deep-learning brain parcellation and regional volume extraction from T1-weighted MRI."
+pipelines:
+  - run_dlmuse
+  - run_dlmuse_harmonized
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

@@ -1,0 +1,12 @@
+title: "DLWMLS White Matter Lesion Segmentation"
+description: "Deep-learning white matter lesion segmentation and volume extraction from T1 + FLAIR MRI."
+pipelines:
+  - run_nichart_dlwmls_v2
+  - run_nichart_dlwmls_v2_harmonized
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

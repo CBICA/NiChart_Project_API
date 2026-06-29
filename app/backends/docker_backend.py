@@ -93,6 +93,7 @@ class DockerBackend(JobBackend):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,
     ) -> DockerJobHandle:
         resolved_params = tool_spec.resolve_params(params)
         command = tool_spec.render_command(resolved_params)
@@ -116,6 +117,15 @@ class DockerBackend(JobBackend):
             else:
                 Path(host_path).mkdir(parents=True, exist_ok=True)
                 volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
+
+        # Extra read-only mounts for symlink resolution in chunk jobs.
+        # Symlinks in the chunk input dir point to absolute API-server paths; mounting
+        # the study directory at the same container path makes them resolve inside the
+        # sibling container.  _host_path() translates the API-server path to the
+        # host-side path that the DooD socket expects as the volume source.
+        for api_path in (extra_readonly_mounts or []):
+            host = self._host_path(api_path)
+            volumes[host] = {"bind": api_path, "mode": "ro"}
 
         gpus = (tool_spec.resources or {}).get("gpus", 0)
         device_requests = (

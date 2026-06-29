@@ -122,6 +122,25 @@ def _build_batch_features(
             label_map = _load_label_map(
                 resources_path, spec.label_map, spec.column_template, col_set
             )
+            # Stamp units onto label_map entries if declared in the pipeline YAML.
+            if label_map and (spec.column_units or spec.default_unit):
+                label_map = {
+                    col: LabelInfo(
+                        display_name=info.display_name,
+                        label_ids=info.label_ids,
+                        unit=(spec.column_units or {}).get(col, spec.default_unit),
+                    )
+                    for col, info in label_map.items()
+                }
+
+        # Build flat column_units covering all feature columns.
+        column_units: dict[str, str] | None = None
+        if spec.column_units or spec.default_unit:
+            units = {
+                col: (spec.column_units or {}).get(col) or spec.default_unit
+                for col in feature_cols
+            }
+            column_units = {col: u for col, u in units.items() if u} or None
 
         return BatchFeaturesResult(
             available=True,
@@ -129,6 +148,7 @@ def _build_batch_features(
             columns=feature_cols,
             row_count=len(rows),
             label_map=label_map,
+            column_units=column_units,
         )
     except Exception:
         return BatchFeaturesResult(available=False)

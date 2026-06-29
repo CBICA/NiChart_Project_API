@@ -11,7 +11,9 @@ from pathlib import Path
 
 from app.models.readiness import (
     ColumnCheck,
+    CompleteSetsRequirement,
     CsvRequirement,
+    IdatRequirement,
     ImagingRequirement,
     ReadinessReport,
     SubjectCountRequirement,
@@ -32,13 +34,69 @@ _MODALITY_TOKEN: dict[str, str] = {
 _PARTICIPANTS_CSV = Path("participants") / "participants.csv"
 
 
-def _count_subjects_in_dir(project_path: Path, modality_dir: str) -> int:
+def _mrids_in_dir(project_path: Path, modality_dir: str) -> list[str]:
+    """Return sorted list of MRID stems from NIfTI files in a modality directory."""
     d = project_path / modality_dir
     if not d.is_dir():
-        return 0
-    return sum(
-        1 for f in d.iterdir()
-        if f.is_file() and (f.name.endswith(".nii.gz") or f.suffix == ".nii")
+        return []
+    mrids = []
+    for f in d.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.endswith(".nii.gz"):
+            mrids.append(f.name[:-7])
+        elif f.suffix == ".nii":
+            mrids.append(f.name[:-4])
+    return sorted(mrids)
+
+
+def _check_complete_sets(
+    modality_mrids: dict[str, list[str]],
+) -> CompleteSetsRequirement:
+    """Given {modality: [mrids]}, compute which subjects are complete across all modalities."""
+    required_modalities = sorted(modality_mrids)
+    sets = [set(v) for v in modality_mrids.values()]
+    complete = sorted(set.intersection(*sets)) if sets else []
+    all_mrids = sorted(set.union(*sets)) if sets else []
+    incomplete: dict[str, list[str]] = {}
+    complete_set = set(complete)
+    for mrid in all_mrids:
+        if mrid in complete_set:
+            continue
+        missing_mods = [mod for mod, mrids in modality_mrids.items() if mrid not in mrids]
+        incomplete[mrid] = sorted(missing_mods)
+    return CompleteSetsRequirement(
+        required_modalities=required_modalities,
+        complete_mrids=complete,
+        incomplete_mrids=incomplete,
+        complete_count=len(complete),
+        satisfied=len(complete) > 0,
+    )
+
+
+def _check_idat(project_path: Path) -> IdatRequirement:
+    """Scan idat/ for paired {MRID}_Red.idat + {MRID}_Grn.idat files."""
+    idat_dir = project_path / "idat"
+    red_mrids: set[str] = set()
+    grn_mrids: set[str] = set()
+    if idat_dir.is_dir():
+        for f in idat_dir.iterdir():
+            if not f.is_file():
+                continue
+            name = f.name
+            if name.endswith("_Red.idat"):
+                red_mrids.add(name[:-9])
+            elif name.endswith("_Grn.idat"):
+                grn_mrids.add(name[:-9])
+    complete = sorted(red_mrids & grn_mrids)
+    missing_red = sorted(grn_mrids - red_mrids)
+    missing_grn = sorted(red_mrids - grn_mrids)
+    return IdatRequirement(
+        complete_mrids=complete,
+        missing_red=missing_red,
+        missing_grn=missing_grn,
+        complete_count=len(complete),
+        satisfied=len(complete) > 0,
     )
 
 
@@ -148,6 +206,7 @@ def check_readiness(
 ) -> ReadinessReport:
     """Evaluate every requirement in ``raw_requires`` against the project directory."""
     imaging_checks: list[ImagingRequirement] = []
+    needs_idat = False
     csv_columns_required: list[str] = []
     col_schemas: dict[str, dict] = {}
     min_subjects_spec: dict | None = None
@@ -157,12 +216,15 @@ def check_readiness(
             key = item.lower()
             mod_dir = _MODALITY_TOKEN.get(key)
             if mod_dir is not None:
-                count = _count_subjects_in_dir(project_path, mod_dir)
+                mrids = _mrids_in_dir(project_path, mod_dir)
                 imaging_checks.append(ImagingRequirement(
                     modality=mod_dir,
-                    subject_count=count,
-                    satisfied=count > 0,
+                    subject_count=len(mrids),
+                    mrids=mrids,
+                    satisfied=len(mrids) > 0,
                 ))
+            elif key == "needs_idat":
+                needs_idat = True
         elif isinstance(item, dict):
             cols = item.get("csv_has_columns") or []
             if isinstance(cols, list):
@@ -175,6 +237,16 @@ def check_readiness(
                         col_schemas[name] = c
             if "min_subjects" in item:
                 min_subjects_spec = item["min_subjects"]
+
+    # Cross-modality completeness check (only meaningful when ≥2 modalities required)
+    complete_sets_check: CompleteSetsRequirement | None = None
+    if len(imaging_checks) >= 2:
+        modality_mrids = {c.modality: c.mrids for c in imaging_checks}
+        complete_sets_check = _check_complete_sets(modality_mrids)
+
+    idat_check: IdatRequirement | None = None
+    if needs_idat:
+        idat_check = _check_idat(project_path)
 
     csv_req: CsvRequirement | None = None
     if csv_columns_required:
@@ -222,6 +294,10 @@ def check_readiness(
         )
 
     all_ok = all(c.satisfied for c in imaging_checks)
+    if complete_sets_check is not None:
+        all_ok = all_ok and complete_sets_check.satisfied
+    if idat_check is not None:
+        all_ok = all_ok and idat_check.satisfied
     if csv_req is not None:
         all_ok = all_ok and csv_req.satisfied
     if subject_count_check is not None:
@@ -231,6 +307,8 @@ def check_readiness(
         pipeline_id=pipeline_id,
         satisfied=all_ok,
         imaging=imaging_checks,
+        complete_sets=complete_sets_check,
+        idat=idat_check,
         csv=csv_req,
         subject_count=subject_count_check,
     )

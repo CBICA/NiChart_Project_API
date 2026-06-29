@@ -25,23 +25,82 @@ class PipelineRunSubmit(BaseModel):
     )
 
 
+class ChunkStatus(BaseModel):
+    """Status of one parallel subject chunk within a step."""
+
+    chunk_idx: int = Field(description="Zero-based index of this chunk within the step.")
+    status: Literal["pending", "running", "succeeded", "failed"] = Field(
+        description="Execution state of this chunk."
+    )
+    subjects: list[str] = Field(
+        default_factory=list,
+        description="MRID stems assigned to this chunk.",
+    )
+    job_id: str | None = Field(
+        default=None,
+        description="Backend job ID for this chunk's container.",
+    )
+    submitted_at: datetime | None = Field(default=None)
+    finished_at: datetime | None = Field(default=None)
+    error: str | None = Field(default=None, description="Error message if this chunk failed.")
+
+
 class StepStatus(BaseModel):
     """Status record for a single pipeline step."""
 
     step_id: str = Field(description="Step identifier within the pipeline definition.")
     tool_id: str = Field(description="Tool that this step invokes.")
-    status: Literal["pending", "running", "succeeded", "failed", "skipped"] = Field(
-        description="Current execution state."
+    status: Literal["pending", "running", "succeeded", "failed", "skipped", "partially_failed"] = Field(
+        description=(
+            "Current execution state. 'partially_failed' means at least one chunk succeeded "
+            "but at least one failed; the pipeline is halted and partial output is preserved."
+        )
     )
     submitted_at: datetime | None = Field(default=None)
     finished_at: datetime | None = Field(default=None)
     job_id: str | None = Field(
-        default=None, description="Backend job ID (Docker container name or AWS Batch job ID)."
+        default=None,
+        description=(
+            "Backend job ID. For non-parallelized steps only; null when the step runs as chunks. "
+            "See 'chunks' for per-chunk job IDs."
+        ),
     )
     container_image: str | None = Field(
-        default=None, description="Container image used for this step (e.g. 'cbica/nichart_dlmuse:1.0.10-wrapped')."
+        default=None, description="Container image used for this step."
     )
     error: str | None = Field(default=None, description="Error message if the step failed.")
+    cached_from_run_id: str | None = Field(
+        default=None,
+        description=(
+            "Run ID that originally produced the cached output for this step. "
+            "Only set when status is 'skipped' and the result was reused from a prior run."
+        ),
+    )
+    # ── Parallel chunk progress ───────────────────────────────────────────────
+    total_chunks: int | None = Field(
+        default=None,
+        description="Total number of parallel chunks for this step. Null for non-parallelized steps.",
+    )
+    completed_chunks: int | None = Field(
+        default=None,
+        description="Number of chunks that have succeeded so far.",
+    )
+    failed_chunks: int | None = Field(
+        default=None,
+        description="Number of chunks that have failed.",
+    )
+    total_subjects: int | None = Field(
+        default=None,
+        description="Total subjects assigned across all chunks.",
+    )
+    subjects_complete: int | None = Field(
+        default=None,
+        description="Subjects in all succeeded chunks (guaranteed to have output).",
+    )
+    chunks: list[ChunkStatus] = Field(
+        default_factory=list,
+        description="Per-chunk breakdown. Empty for non-parallelized steps.",
+    )
 
 
 class PipelineRunSummary(BaseModel):

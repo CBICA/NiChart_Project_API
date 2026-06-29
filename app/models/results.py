@@ -53,6 +53,15 @@ class BatchFeaturesResult(BaseModel):
             "Present only when a label_map resource is declared in the pipeline YAML."
         ),
     )
+    column_units: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Maps each feature column name to its unit string (e.g. 'mm³', 'years', 'a.u.'). "
+            "Populated from ``default_unit`` / ``column_units`` in the pipeline YAML. "
+            "For segmentation pipelines the unit is also present on each ``label_map`` entry. "
+            "Null when no units are declared for this pipeline."
+        ),
+    )
 
 
 class SubjectCompleteness(BaseModel):

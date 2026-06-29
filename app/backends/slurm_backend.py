@@ -186,8 +186,9 @@ class SlurmBackend(SingularityBackend):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,
     ) -> SlurmJobHandle:
-        apptainer_argv = self._build_apptainer_argv(tool_spec, mount_paths, params)
+        apptainer_argv = self._build_apptainer_argv(tool_spec, mount_paths, params, extra_readonly_mounts)
 
         res = tool_spec.resources or {}
         vcpus = int(res.get("vcpus", 1))

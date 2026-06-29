@@ -1,6 +1,11 @@
 """
 FastAPI dependencies for authentication.
 
+Auth model: BFF (backend-for-frontend) — tokens are stored in httpOnly cookies
+and never exposed to browser JavaScript. The ``session`` cookie holds the Cognito
+ID token set by ``GET /auth/callback`` after a successful OAuth2 authorization-code
++ PKCE exchange.
+
 Usage
 -----
 Protected routes::
@@ -9,31 +14,27 @@ Protected routes::
     async def foo(user: CurrentUser = Depends(require_auth)):
         return {"sub": user.sub}
 
-Public routes (catalog, health)::
+Public routes (catalog, health, docs)::
 
     @router.get("/bar", dependencies=[Depends(public)])
     async def bar():
         return {"ok": True}
 
-In local mode every request is treated as the synthetic ``LOCAL_USER`` — no
-token is required and none is validated. In cloud mode a Cognito ID token in
-the ``Authorization: Bearer`` header is mandatory.
+In local mode every request is treated as the OS user — no cookie is required and
+none is validated. In cloud mode a valid ``session`` cookie is mandatory.
 """
 
 import getpass
 
 import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.auth.cognito import CognitoVerifier
 from app.config import Settings, get_settings
 
-_bearer = HTTPBearer(auto_error=False)
-
-# Module-level cache: one CognitoVerifier per (jwks_url, issuer) pair.
-_verifier_cache: dict[tuple[str, str], CognitoVerifier] = {}
+# Module-level cache: one CognitoVerifier per (jwks_url, issuer, client_id) triple.
+_verifier_cache: dict[tuple[str, str, str], CognitoVerifier] = {}
 
 
 class CurrentUser(BaseModel):
@@ -69,42 +70,42 @@ def get_verifier(settings: Settings = Depends(get_settings)) -> CognitoVerifier:
 
 
 async def require_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    request: Request,
     settings: Settings = Depends(get_settings),
     verifier: CognitoVerifier = Depends(get_verifier),
 ) -> CurrentUser:
     """
     Dependency that enforces authentication.
 
-    - **Local mode**: bypasses all token checks and returns the synthetic
-      ``LOCAL_USER``.
-    - **Cloud mode**: requires a valid Cognito ID token in the
-      ``Authorization: Bearer`` header.
+    - **Local mode**: bypasses all token checks and returns the OS user.
+    - **Cloud mode**: requires a valid Cognito ID token in the ``session``
+      httpOnly cookie (set by ``GET /auth/callback``).
 
-    Raises ``HTTP 401`` for missing or invalid tokens in cloud mode.
+    Raises ``HTTP 401`` for a missing or invalid session cookie in cloud mode.
     """
     if settings.execution_mode == "local":
         return _local_user()
 
-    if credentials is None:
+    token = request.cookies.get("session")
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header. Provide a Cognito ID token as 'Bearer <token>'.",
+            detail="Not authenticated. Visit /auth/login to begin the sign-in flow.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     try:
-        claims = await verifier.verify(credentials.credentials)
+        claims = await verifier.verify(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
+            detail="Session has expired. Please sign in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
+            detail=f"Invalid session: {exc}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -113,7 +114,7 @@ async def require_auth(
         email=claims.get("email"),
         username=claims.get("cognito:username"),
         groups=claims.get("cognito:groups", []),
-        token=credentials.credentials,
+        token=token,
     )
 
 

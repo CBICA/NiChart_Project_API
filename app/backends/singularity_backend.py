@@ -128,6 +128,7 @@ class SingularityBackend(JobBackend):
         tool_spec: ToolSpec,
         mount_paths: dict[str, str],
         params: dict[str, Any],
+        extra_readonly_mounts: list[str] | None = None,
     ) -> list[str]:
         """Build the full apptainer argv list for a tool invocation (shared with SlurmBackend)."""
         resolved_params = tool_spec.resolve_params(params)
@@ -153,6 +154,11 @@ class SingularityBackend(JobBackend):
                 host_path.mkdir(parents=True, exist_ok=True)
                 bind_args += ["--bind", f"{host_path}:{mount.path_in_container}:{mode}"]
 
+        # Extra read-only mounts so absolute symlinks in chunk input dirs resolve.
+        # API server runs natively here, so paths are already host paths.
+        for path_str in (extra_readonly_mounts or []):
+            bind_args += ["--bind", f"{path_str}:{path_str}:ro"]
+
         gpus = (tool_spec.resources or {}).get("gpus", 0)
         gpu_args = ["--nv"] if gpus else []
         cmd_tokens = shlex.split(command)
@@ -169,8 +175,9 @@ class SingularityBackend(JobBackend):
         params: dict[str, Any],
         num_subjects: int = 1,
         user_token: str | None = None,
+        extra_readonly_mounts: list[str] | None = None,
     ) -> SingularityJobHandle:
-        argv = self._build_apptainer_argv(tool_spec, mount_paths, params)
+        argv = self._build_apptainer_argv(tool_spec, mount_paths, params, extra_readonly_mounts)
 
         # Capture stdout + stderr to a temp file so logs() can read them at any time.
         log_fd, log_path_str = tempfile.mkstemp(

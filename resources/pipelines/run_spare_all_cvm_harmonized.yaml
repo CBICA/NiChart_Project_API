@@ -2,6 +2,7 @@ pipeline_name: SPARE Scores - All-Inclusive (T1 + FLAIR, Harmonized)
 description: |
   Pipeline which uses harmonized DLMUSE and DLWMLS features to produce all available CVM SPARE scores from T1 + FLAIR data.
 
+docs_id: spare
 base_variant: run_spare_all_cvm
 
 categories:

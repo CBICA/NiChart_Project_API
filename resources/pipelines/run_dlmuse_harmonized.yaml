@@ -2,6 +2,7 @@ pipeline_name: DLMUSE Brain Segmentation (Harmonized)
 description: |
   Segmentation pipeline starting from T1-weighted MRI brain scans, with harmonization to the NiChart reference dataset.
 
+docs_id: dlmuse
 base_variant: run_dlmuse
 
 categories:
@@ -49,7 +50,8 @@ results:
     file: "dlmuse_vol_harmonized/DLMUSE_Volumes.csv"
     mrid_column: "MRID"
     label_map: "atlases/muse/muse_mapping_derived.csv"
-    column_template: "DL_MUSE_Volume_{id}"
+    column_template: "H_DL_MUSE_Volume_{id}"
+    default_unit: "mm³"
     feature_groups:
       - name: "Global"
         label_id_range: [600, 702]

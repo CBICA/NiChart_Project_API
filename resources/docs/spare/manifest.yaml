@@ -1,0 +1,14 @@
+title: "SPARE Brain Age & Disease Scores"
+description: "Machine-learning biomarkers for brain age estimation and disease classification from structural MRI features."
+pipelines:
+  - run_spare_all
+  - run_spare_all_harmonized
+  - run_spare_all_cvm
+  - run_spare_all_cvm_harmonized
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown
