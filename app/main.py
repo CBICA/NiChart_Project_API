@@ -33,6 +33,29 @@ except importlib.metadata.PackageNotFoundError:
     _VERSION = "0.1.0"
 
 
+_REDACTED_FIELDS = {"cognito_client_secret"}
+_REDACTED_ENV_VARS = {"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+
+
+def _log_settings(settings: Settings, log: "logging.Logger") -> None:
+    """Log all configuration values at INFO level, redacting sensitive fields."""
+    import os
+
+    lines = ["NiChart API — effective configuration:"]
+    for field_name, value in settings.model_dump().items():
+        if field_name in _REDACTED_FIELDS:
+            display = "*** redacted ***"
+        else:
+            display = repr(value)
+        lines.append(f"  NICHART_{field_name.upper():<36} = {display}")
+
+    for var in sorted(_REDACTED_ENV_VARS):
+        present = var in os.environ
+        lines.append(f"  {var:<40} = {'*** redacted ***' if present else '(not set)'}")
+
+    log.info("\n".join(lines))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Startup / shutdown hook. Extend here as services are added."""
@@ -43,6 +66,7 @@ async def _lifespan(app: FastAPI):
 
     _log = logging.getLogger(__name__)
     settings = get_settings()
+    _log_settings(settings, _log)
     # Ensure data root exists (local mode); cloud FSx handles this transparently.
     if settings.execution_mode == "local":
         settings.data_root.mkdir(parents=True, exist_ok=True)
