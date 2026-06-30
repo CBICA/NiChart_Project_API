@@ -152,8 +152,7 @@ This calls `sts:AssumeRole`, writes temporary credentials to `.env.cloud-local`
 ### Step 2 — Start the server
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud-local.yml \
-  --env-file .env.cloud-local up
+docker compose -f docker-compose.yml -f docker-compose.cloud-local.yml  --env-file .env --env-file .env.cloud-local up
 ```
 
 The overlay:

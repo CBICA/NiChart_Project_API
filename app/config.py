@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -134,6 +134,23 @@ class Settings(BaseSettings):
         default=24,
         description="Hours after which uncommitted staging uploads are eligible for cleanup.",
     )
+
+    # Custom CA bundle — needed when an SSL-inspection proxy (e.g. corporate VPN)
+    # intercepts outbound HTTPS and presents a self-signed chain.
+    # Point this at the PEM file containing the extra root CA(s).
+    # Leave unset in production; the system trust store is used by default.
+    ca_bundle: Path | None = Field(
+        default=None,
+        description=(
+            "Path to a PEM CA bundle to trust for outbound HTTPS calls (e.g. Cognito token "
+            "endpoint). Only needed behind SSL-inspection proxies. Leave unset in production."
+        ),
+    )
+
+    @field_validator("ca_bundle", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, v: object) -> object:
+        return None if v == "" else v
 
     # Explicit backend override.
     # When set, this takes precedence over the execution_mode auto-selection.

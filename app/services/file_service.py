@@ -340,6 +340,58 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
     return NiftiStagingResult(staging_id=staging_id, proposals=proposals)
 
 
+def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> NiftiStagingResult:
+    """Extract a zip of NIfTI files into a new staging area and return proposals."""
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(400, "NIfTI zip upload must be a .zip file")
+
+    staging_id = str(uuid.uuid4())
+    staging_dir = project_path / "_upload" / "nifti" / staging_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive = Path(tmpdir) / "upload.zip"
+            archive.write_bytes(contents)
+            extract_dir = Path(tmpdir) / "extracted"
+            extract_dir.mkdir()
+            safe_unzip(archive, extract_dir)
+
+            proposals = []
+            for nifti in sorted(extract_dir.rglob("*")):
+                if not (nifti.name.endswith(".nii") or nifti.name.endswith(".nii.gz")):
+                    continue
+                safe_name = nifti.name
+                dest = staging_dir / safe_name
+                # Deduplicate colliding basenames across subdirectories.
+                if dest.exists():
+                    if safe_name.endswith(".nii.gz"):
+                        stem, ext = safe_name[:-7], ".nii.gz"
+                    else:
+                        stem, ext = safe_name[:-4], ".nii"
+                    counter = 1
+                    while dest.exists():
+                        safe_name = f"{stem}_{counter}{ext}"
+                        dest = staging_dir / safe_name
+                        counter += 1
+                assert_safe_path(staging_dir, dest)
+                shutil.copy2(nifti, dest)
+                # Pass the relative archive path so directory components contribute
+                # to modality inference (e.g. "fl/subject001.nii.gz").
+                rel = nifti.relative_to(extract_dir)
+                mrid, modality = infer_nifti_metadata(str(rel))
+                proposals.append(NiftiUploadProposal(
+                    filename=safe_name,
+                    inferred_mrid=mrid,
+                    inferred_modality=modality,
+                ))
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    return NiftiStagingResult(staging_id=staging_id, proposals=proposals)
+
+
 def commit_nifti_staging(
     project_path: Path,
     staging_id: str,

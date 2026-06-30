@@ -2,7 +2,8 @@ FROM python:3.12-slim AS base
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir --upgrade pip && \
+    mkdir /certs
 
 # ── dev target: includes dev deps, entire project mounted as volume ──────────
 FROM base AS dev

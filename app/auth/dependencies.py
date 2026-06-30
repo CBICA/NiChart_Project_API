@@ -91,7 +91,7 @@ async def require_auth(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated. Visit /auth/login to begin the sign-in flow.",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "Cookie"},
         )
 
     try:
@@ -100,13 +100,13 @@ async def require_auth(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has expired. Please sign in again.",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "Cookie"},
         )
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid session: {exc}",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "Cookie"},
         )
 
     return CurrentUser(

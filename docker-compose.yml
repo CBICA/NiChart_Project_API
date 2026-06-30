@@ -21,6 +21,12 @@ services:
       - ${NICHART_HOST_DATA_PATH:-./data}:/data
       # Docker socket — required for local pipeline execution (DockerBackend).
       - /var/run/docker.sock:/var/run/docker.sock
+      # Optional corporate CA bundle for SSL-inspection proxies (e.g. work VPN).
+      # Set HOST_CA_BUNDLE=/absolute/path/on/host/ca.pem in .env.
+      # The file is always mounted at /certs/ca-bundle.pem inside the container.
+      # When HOST_CA_BUNDLE is unset, /dev/null is mounted harmlessly and the
+      # code detects the empty file and skips it.
+      - ${HOST_CA_BUNDLE:-/dev/null}:/certs/ca-bundle.pem:ro
     environment:
       NICHART_EXECUTION_MODE: ${NICHART_EXECUTION_MODE:-local}
       NICHART_DATA_ROOT: /data
@@ -31,6 +37,10 @@ services:
       NICHART_COGNITO_USER_POOL_ID: ${NICHART_COGNITO_USER_POOL_ID:-us-east-1_BSBhcKA66}
       NICHART_COGNITO_IDENTITY_POOL_ID: ${NICHART_COGNITO_IDENTITY_POOL_ID:-us-east-1:12c87a16-8336-450c-bf25-b98990c7dcf8}
       NICHART_STAGING_TTL_HOURS: ${NICHART_STAGING_TTL_HOURS:-24}
+      # Fixed container-side path; only meaningful when HOST_CA_BUNDLE is set.
+      # The code checks whether the file is non-empty before trusting it.
+      NICHART_CA_BUNDLE: /certs/ca-bundle.pem
+
       # Allowed CORS origins — set to the UI's domain in production.
       # JSON array, e.g.: '["https://nichart.example.com"]'
       NICHART_CORS_ORIGINS: ${NICHART_CORS_ORIGINS:-["http://localhost:3000"]}

@@ -37,10 +37,12 @@ _REDACTED_FIELDS = {"cognito_client_secret"}
 _REDACTED_ENV_VARS = {"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
 
 
-def _log_settings(settings: Settings, log: "logging.Logger") -> None:
+def _log_settings(settings: Settings) -> None:
     """Log all configuration values at INFO level, redacting sensitive fields."""
+    import logging
     import os
 
+    log = logging.getLogger("uvicorn.error")
     lines = ["NiChart API — effective configuration:"]
     for field_name, value in settings.model_dump().items():
         if field_name in _REDACTED_FIELDS:
@@ -53,6 +55,15 @@ def _log_settings(settings: Settings, log: "logging.Logger") -> None:
         present = var in os.environ
         lines.append(f"  {var:<40} = {'*** redacted ***' if present else '(not set)'}")
 
+    if settings.ca_bundle:
+        p = settings.ca_bundle
+        if not p.exists():
+            lines.append(f"  [CA bundle] {p} — FILE NOT FOUND, falling back to system store")
+        elif p.stat().st_size == 0:
+            lines.append(f"  [CA bundle] {p} — empty (HOST_CA_BUNDLE unset?), falling back to system store")
+        else:
+            lines.append(f"  [CA bundle] {p} — OK ({p.stat().st_size} bytes)")
+
     log.info("\n".join(lines))
 
 
@@ -64,9 +75,9 @@ async def _lifespan(app: FastAPI):
     from app.backends import get_backend_instance
     from app.services import job_service
 
-    _log = logging.getLogger(__name__)
+    _log = logging.getLogger("uvicorn.error")
     settings = get_settings()
-    _log_settings(settings, _log)
+    _log_settings(settings)
     # Ensure data root exists (local mode); cloud FSx handles this transparently.
     if settings.execution_mode == "local":
         settings.data_root.mkdir(parents=True, exist_ok=True)
@@ -101,9 +112,11 @@ def create_app() -> FastAPI:
             "running containerised processing pipelines (locally via Docker or on "
             "AWS Batch), and retrieving results. "
             "\n\n"
-            "**Authentication**: In cloud mode every request requires a Cognito ID "
-            "token in the ``Authorization: Bearer`` header. In local mode "
-            "(``NICHART_EXECUTION_MODE=local``) authentication is bypassed."
+            "**Authentication**: In cloud mode the server uses a BFF OAuth2 flow with "
+            "Cognito. Tokens are stored in httpOnly cookies — never in JS-accessible "
+            "storage. Navigate the browser to ``GET /auth/login`` to begin sign-in; "
+            "all subsequent API requests carry the session cookie automatically. "
+            "In local mode (``NICHART_EXECUTION_MODE=local``) authentication is bypassed."
         ),
         version=_VERSION,
         contact={"name": "CBICA", "url": "https://github.com/CBICA/NiChart_Project"},

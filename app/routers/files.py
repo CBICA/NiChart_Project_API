@@ -142,6 +142,34 @@ async def upload_nifti(
     return file_service.stage_nifti_files(pdir, filenames, file_data)
 
 
+# ── NIfTI upload — zip ───────────────────────────────────────────────────────
+
+@router.post(
+    "/files/upload/nifti/zip",
+    summary="Upload a zip of NIfTI files to staging",
+    description=(
+        "Accepts a ``.zip`` archive containing ``.nii`` / ``.nii.gz`` files "
+        "(subdirectories are searched recursively; non-NIfTI entries are ignored). "
+        "Files land in the project staging area and the server returns its best-effort "
+        "MRID and modality inference. Directory components in the archive path contribute "
+        "to modality detection (e.g. ``fl/subject001.nii.gz`` infers modality ``fl``). "
+        "Follow up with the commit endpoint to move them into the project."
+    ),
+    response_model=NiftiStagingResult,
+    status_code=202,
+    responses=_AUTH_ERRORS,
+)
+async def upload_nifti_zip(
+    project_id: str,
+    file: UploadFile,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> NiftiStagingResult:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    contents = await file.read()
+    return file_service.stage_nifti_zip(pdir, contents, file.filename or "")
+
+
 # ── NIfTI upload — commit ─────────────────────────────────────────────────────
 
 @router.post(

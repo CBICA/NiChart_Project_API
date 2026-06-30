@@ -167,10 +167,11 @@ The Batch queue is `cbica-nichart-jobqueue-standard`. The Lambda response body c
 
 ### 2. Authentication (AWS Cognito)
 
-- **Cloud mode**: Every request must carry a Cognito `id_token` in the
-  `Authorization: Bearer <token>` header. The server verifies the JWT signature against
-  the Cognito JWKS endpoint (cached). The Cognito `sub` claim is the canonical user
-  identifier for storage isolation.
+- **Cloud mode**: The server uses a BFF OAuth2 flow with Cognito. Tokens are stored in
+  httpOnly cookies (`session` = ID token, `refresh_token` = refresh token) set by
+  `GET /auth/callback`. The browser sends the `session` cookie automatically with every
+  request; the server verifies the JWT signature against the Cognito JWKS endpoint
+  (cached). The Cognito `sub` claim is the canonical user identifier for storage isolation.
 - **Local mode**: Auth verification is bypassed; a fixed synthetic user ID is used
   (`"LOCAL_USER"`).
 - Auth is **on by default**. Endpoints safe to expose without auth (catalog, health) use

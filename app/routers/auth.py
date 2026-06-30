@@ -54,6 +54,14 @@ class UserInfo(BaseModel):
     groups: list[str] = []
 
 
+def _ssl_verify(settings: Settings) -> bool | str:
+    """Return the httpx `verify` value: cert path when a valid CA bundle is configured, True otherwise."""
+    cb = settings.ca_bundle
+    if cb and cb.exists() and cb.stat().st_size > 0:
+        return str(cb)
+    return True
+
+
 def _cookie_kwargs(settings: Settings, max_age: int) -> dict:
     """Shared httpOnly cookie attributes."""
     return dict(
@@ -167,7 +175,7 @@ async def callback(
 
     # Exchange authorization code for tokens
     try:
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(verify=_ssl_verify(settings)) as http:
             token_resp = await http.post(
                 f"{settings.cognito_domain}/oauth2/token",
                 content=urlencode({
@@ -222,6 +230,74 @@ async def callback(
     response.set_cookie(_STATE_COOKIE, "", **_delete_cookie_kwargs(settings))
     response.set_cookie(_VERIFIER_COOKIE, "", **_delete_cookie_kwargs(settings))
 
+    return response
+
+
+@router.post(
+    "/refresh",
+    summary="Refresh the session",
+    description=(
+        "Uses the ``refresh_token`` httpOnly cookie to obtain a new ID token from Cognito "
+        "and updates the ``session`` cookie. Returns updated user claims on success. "
+        "Returns 401 when there is no refresh token or it has expired — "
+        "the client should redirect to ``GET /auth/login``."
+    ),
+    response_model=UserInfo,
+    responses={
+        401: {"model": ErrorDetail, "description": "No refresh token or token expired."},
+        502: {"model": ErrorDetail, "description": "Cognito token refresh failed."},
+    },
+)
+async def refresh(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    verifier: CognitoVerifier = Depends(get_verifier),
+) -> JSONResponse:
+    refresh_token = request.cookies.get(_REFRESH_COOKIE)
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="No refresh token — please sign in again.")
+
+    try:
+        async with httpx.AsyncClient(verify=_ssl_verify(settings)) as http:
+            token_resp = await http.post(
+                f"{settings.cognito_domain}/oauth2/token",
+                content=urlencode({
+                    "grant_type": "refresh_token",
+                    "client_id": settings.cognito_client_id,
+                    "client_secret": settings.cognito_client_secret,
+                    "refresh_token": refresh_token,
+                }).encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=15.0,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Could not reach Cognito token endpoint: {exc}")
+
+    if token_resp.status_code == 400:
+        raise HTTPException(401, "Refresh token expired or invalid — please sign in again.")
+    if token_resp.status_code != 200:
+        raise HTTPException(502, f"Cognito token refresh failed ({token_resp.status_code}): {token_resp.text}")
+
+    tokens = token_resp.json()
+    id_token = tokens.get("id_token")
+    if not id_token:
+        raise HTTPException(502, "Cognito did not return an id_token.")
+
+    try:
+        claims = await verifier.verify(id_token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Received an already-expired ID token from Cognito.")
+    except jwt.PyJWTError as exc:
+        raise HTTPException(401, f"ID token validation failed: {exc}")
+
+    user_info = UserInfo(
+        sub=claims.get("sub", ""),
+        email=claims.get("email"),
+        username=claims.get("cognito:username"),
+        groups=claims.get("cognito:groups", []),
+    )
+    response = JSONResponse(content=user_info.model_dump())
+    response.set_cookie(_SESSION_COOKIE, id_token, **_cookie_kwargs(settings, _SESSION_TTL))
     return response
 
 
