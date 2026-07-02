@@ -7,7 +7,13 @@ from fastapi.responses import FileResponse
 
 from app.auth.dependencies import public
 from app.config import Settings, get_settings
-from app.models.catalog import PipelineDetail, PipelineSummary, ToolDetail, ToolSummary
+from app.models.catalog import (
+    CentileFeatureMetadataResponse,
+    PipelineDetail,
+    PipelineSummary,
+    ToolDetail,
+    ToolSummary,
+)
 from app.models.errors import ErrorDetail
 from app.services import catalog_service
 from app.services.path_security import PathEscapeError, assert_safe_path
@@ -77,6 +83,28 @@ async def get_tool(
     settings: Settings = Depends(get_settings),
 ) -> ToolDetail:
     return catalog_service.get_tool(settings.tools_path, tool_id)
+
+
+@router.get(
+    "/centiles/feature-metadata",
+    summary="Get centile feature display metadata",
+    description=(
+        "Returns per-variable display metadata that controls how variables appear in "
+        "the centile plotting variable selector. "
+        "Only variables with non-default behaviour are included in the ``features`` map; "
+        "variables absent from the map should be treated as visible and enabled. "
+        "\n\n"
+        "This metadata is maintained in a static server-side config file "
+        "(``resources/reference_data/centiles/feature_metadata.yaml``) so that "
+        "display policy is never hard-coded in the frontend."
+    ),
+    response_model=CentileFeatureMetadataResponse,
+    responses={},
+)
+async def get_centile_feature_metadata(
+    settings: Settings = Depends(get_settings),
+) -> CentileFeatureMetadataResponse:
+    return catalog_service.load_centile_feature_metadata(settings.resources_path)
 
 
 @router.get(

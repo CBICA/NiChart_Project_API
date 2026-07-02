@@ -166,6 +166,7 @@ def job_client(tmp_path):
     from app.backends import get_backend
     from app.config import Settings, get_settings
     from app.main import create_app
+    from app.services import job_service
 
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -176,6 +177,10 @@ def job_client(tmp_path):
     app.dependency_overrides[require_auth] = _override_require_auth
 
     with TestClient(app, raise_server_exceptions=True) as client:
+        # The lifespan calls get_settings() directly (bypassing DI), so _data_root
+        # may point at the real default. Override it here so _save_run/_load_run
+        # use the test-isolated tmp_path.
+        job_service._data_root = tmp_path
         yield client
 
     app.dependency_overrides.clear()

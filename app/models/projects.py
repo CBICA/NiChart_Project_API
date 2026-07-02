@@ -32,6 +32,19 @@ class ProjectCreate(BaseModel):
         return v
 
 
+class RetentionInfo(BaseModel):
+    """Retention status for a project."""
+
+    expires_at: datetime = Field(
+        description=(
+            "UTC timestamp when the project will be automatically deleted. "
+            "Computed as the S3 LastModified of the heartbeat marker object "
+            "plus PROJECT_RETENTION_DAYS. Refresh by calling "
+            "POST /projects/{project_id}/retention/refresh."
+        )
+    )
+
+
 class Project(BaseModel):
     """A user project."""
 

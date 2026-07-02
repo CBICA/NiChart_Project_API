@@ -1,0 +1,17 @@
+# Centile feature display metadata
+#
+# Controls how variables appear in the frontend variable selector on the
+# centile plotting screen. Only variables that need non-default behaviour
+# need to be listed; unlisted variables are shown and enabled.
+#
+# Fields (all optional, defaults shown):
+#   hidden:   false  — true = exclude from the selector entirely
+#   disabled: false  — true = show the variable but prevent selection
+#   label:    null   — override the display name shown in the UI (null = use variable name as-is)
+#   group:    null   — logical grouping name; the UI may use this to render nested selectors
+
+features: {}
+  SPARE_AD_Harmonized:
+    hidden: true
+  SPARE_AD_decision_function:
+    hidden: true

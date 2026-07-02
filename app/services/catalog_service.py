@@ -12,7 +12,9 @@ from fastapi import HTTPException
 
 from app.backends.base import MountSpec, ToolSpec
 from app.models.catalog import (
+    CentileFeatureMetadataResponse,
     ColumnSpec,
+    FeatureDisplayMeta,
     FeatureGroup,
     IOField,
     LabelInfo,
@@ -385,6 +387,29 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
         atlas=raw.get("atlas"),
         atlas_segmentation=raw.get("atlas_segmentation"),
     )
+
+
+_CENTILE_FEATURE_METADATA_PATH = Path("reference_data") / "centiles" / "feature_metadata.yaml"
+
+
+def load_centile_feature_metadata(resources_path: Path) -> CentileFeatureMetadataResponse:
+    """Load per-variable display metadata from the static centile feature_metadata.yaml."""
+    metadata_path = resources_path / _CENTILE_FEATURE_METADATA_PATH
+    if not metadata_path.exists():
+        return CentileFeatureMetadataResponse(features={})
+    raw = _load_yaml(metadata_path)
+    features_raw = raw.get("features") or {}
+    features: dict[str, FeatureDisplayMeta] = {}
+    for var_name, meta in features_raw.items():
+        if meta is None:
+            meta = {}
+        features[str(var_name)] = FeatureDisplayMeta(
+            hidden=bool(meta.get("hidden", False)),
+            disabled=bool(meta.get("disabled", False)),
+            label=meta.get("label"),
+            group=meta.get("group"),
+        )
+    return CentileFeatureMetadataResponse(features=features)
 
 
 def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:

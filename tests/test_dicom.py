@@ -63,9 +63,9 @@ def _create_project(client, name="dicomtest"):
 @pytest.fixture(autouse=True)
 def _clear_run_store():
     from app.services import job_service
-    job_service._runs.clear()
+    job_service._data_root = None
     yield
-    job_service._runs.clear()
+    job_service._data_root = None
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────

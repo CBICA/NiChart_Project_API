@@ -205,6 +205,39 @@ class FeatureGroup(BaseModel):
     columns: list[str] = Field(description="Feature column names belonging to this group.")
 
 
+class FeatureDisplayMeta(BaseModel):
+    """Display metadata for a single centile variable."""
+
+    hidden: bool = Field(
+        default=False,
+        description="When True, the variable is excluded from the selector entirely.",
+    )
+    disabled: bool = Field(
+        default=False,
+        description="When True, the variable is shown in the selector but cannot be selected.",
+    )
+    label: str | None = Field(
+        default=None,
+        description="Display name override. When null the variable name is used as-is.",
+    )
+    group: str | None = Field(
+        default=None,
+        description="Logical grouping name. The UI may use this to render nested/categorised selectors.",
+    )
+
+
+class CentileFeatureMetadataResponse(BaseModel):
+    """Response from GET /catalog/centiles/feature-metadata."""
+
+    features: dict[str, FeatureDisplayMeta] = Field(
+        description=(
+            "Per-variable display metadata keyed by variable name (matching VarName in the centile CSVs). "
+            "Only variables with non-default behaviour are included; variables absent from this map "
+            "should be treated as visible and enabled."
+        )
+    )
+
+
 class PipelineDetail(PipelineSummary):
     """Full pipeline definition including ordered steps and user-configurable parameters."""
 

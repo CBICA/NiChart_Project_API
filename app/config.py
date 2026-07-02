@@ -135,6 +135,23 @@ class Settings(BaseSettings):
         description="Hours after which uncommitted staging uploads are eligible for cleanup.",
     )
 
+    enable_test_endpoints: bool = Field(
+        default=False,
+        description=(
+            "Mount /test/* convenience endpoints for debugging and manual QA. "
+            "Never enable in production — these endpoints bypass normal constraints."
+        ),
+    )
+
+    # Project retention — must be kept in sync with the Lambda sweep config.
+    project_retention_days: int = Field(
+        default=7,
+        description=(
+            "Number of days after the last heartbeat write before a project is eligible "
+            "for automatic deletion by the Lambda sweep. Must match the Lambda's config."
+        ),
+    )
+
     # Custom CA bundle — needed when an SSL-inspection proxy (e.g. corporate VPN)
     # intercepts outbound HTTPS and presents a self-signed chain.
     # Point this at the PEM file containing the extra root CA(s).

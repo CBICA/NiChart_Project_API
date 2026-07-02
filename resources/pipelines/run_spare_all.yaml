@@ -10,6 +10,7 @@ categories:
   - inference
   - classification
   - highlighted
+  - brain-age
 
 requires:
   - needs_T1

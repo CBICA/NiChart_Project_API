@@ -7,10 +7,21 @@ execution. Clients poll the status/detail endpoints.
 
 Persistence
 -----------
-Run records are written through to ``{study_dir}/_working/pipeline_runs.json``
-after every state transition. On startup, ``load_runs_from_disk`` scans the
-data root for these files and restores the in-memory store. Runs that were
-in-progress at shutdown are marked as failed (the background task is gone).
+Each run is stored in its own file at::
+
+    {data_root}/_working/runs/{run_id}.json
+
+Files are written atomically (write-to-tmp then os.replace) so a concurrent
+reader never sees a partial write. All read endpoints (get_run_detail, list_runs,
+etc.) load directly from disk — there is no shared in-memory cache. This makes
+the store safe across multiple uvicorn workers and survives container restarts.
+
+Cancellation
+------------
+``cancel_run`` writes ``cancelled: true`` to the run file on disk. The background
+task (which owns the live JobHandle) re-reads this flag from disk at each polling
+tick and calls handle.cancel() when it sees it. This works regardless of which
+worker receives the cancel request.
 
 Step caching
 ------------
@@ -100,11 +111,30 @@ class _RunRecord:
     backend_type: str = ""  # e.g. "docker", "singularity", "slurm", "batch"
 
 
-_runs: dict[str, _RunRecord] = {}
+# Set once at startup by load_runs_from_disk(); used by all persistence helpers.
+_data_root: Path | None = None
 
-# Maps run_id → the JobHandle of the step currently executing.
-# Populated in _poll_to_completion; used by get_run_logs for live log tailing.
-_active_handles: dict[str, JobHandle] = {}
+
+@dataclass
+class _StepFlight:
+    """In-memory coordination handle for a step currently being executed.
+
+    When a background task is about to submit a fresh job it registers one slot
+    per unique cache key in ``_step_in_flight``, then calls ``resolve()`` when
+    the step finishes. Concurrent runs that would submit the same step instead
+    await the event, and use the sibling's output if it succeeded.
+    """
+    key: str
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    succeeded: bool = False
+
+    def resolve(self, succeeded: bool) -> None:
+        self.succeeded = succeeded
+        self.event.set()
+        _step_in_flight.pop(self.key, None)
+
+
+_step_in_flight: dict[str, _StepFlight] = {}
 
 
 # ── Path resolution (pipeline YAML templates) ─────────────────────────────────
@@ -151,7 +181,7 @@ def _cache_key(tool_id: str, inputs: dict, params: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _is_cached(metadata: dict, key: str, inputs: dict) -> str | None:
+def _is_cached(metadata: dict, key: str, inputs: dict, outputs: dict) -> str | None:
     """Return the originating run_id if the step is validly cached, else None."""
     entry = metadata.get(key)
     if not entry or entry.get("status") != "success":
@@ -160,6 +190,10 @@ def _is_cached(metadata: dict, key: str, inputs: dict) -> str | None:
     for path_str in inputs.values():
         p = Path(path_str)
         if not p.exists() or p.stat().st_mtime > finished:
+            return None
+    # Outputs must still exist — deleted outputs invalidate the cache entry.
+    for path_str in outputs.values():
+        if not Path(path_str).exists():
             return None
     return entry.get("run_id")
 
@@ -520,22 +554,70 @@ def _run_from_dict(d: dict) -> _RunRecord:
     return run
 
 
-def _persist_run(run: _RunRecord, study_dir: Path) -> None:
-    """Write-through: update this run's entry in pipeline_runs.json."""
-    runs_file = study_dir / "_working" / "pipeline_runs.json"
-    runs_file.parent.mkdir(parents=True, exist_ok=True)
+def _runs_dir() -> Path | None:
+    return (_data_root / "_working" / "runs") if _data_root else None
+
+
+def _save_run(run: _RunRecord) -> None:
+    """Atomically write a run record to its per-run JSON file."""
+    d = _runs_dir()
+    if d is None:
+        return
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"{run.run_id}.json.tmp"
+    target = d / f"{run.run_id}.json"
+    tmp.write_text(json.dumps(_run_to_dict(run), indent=2, default=str))
+    tmp.replace(target)
+
+
+def _load_run(run_id: str) -> _RunRecord | None:
+    """Read a run record from disk. Returns None if not found or corrupt."""
+    d = _runs_dir()
+    if d is None:
+        return None
+    p = d / f"{run_id}.json"
+    if not p.exists():
+        return None
     try:
-        existing: dict = json.loads(runs_file.read_text()) if runs_file.exists() else {}
+        return _run_from_dict(json.loads(p.read_text()))
     except Exception:
-        existing = {}
-    existing[run.run_id] = _run_to_dict(run)
-    runs_file.write_text(json.dumps(existing, indent=2, default=str))
+        return None
+
+
+def _is_cancel_requested(run_id: str) -> bool:
+    """Check the on-disk cancel flag. Safe to call from any worker."""
+    run = _load_run(run_id)
+    return run.cancelled if run else False
+
+
+async def _wait_for_in_flight_step(key: str, run_id: str) -> bool | None:
+    """
+    Wait for a concurrent in-flight step with the same cache key to complete.
+
+    Returns:
+      True  — sibling step succeeded; caller should reload metadata and skip.
+      False — sibling step failed; caller should submit its own job.
+      None  — no in-flight step, or cancel was requested, or 6-hour timeout.
+    """
+    flight = _step_in_flight.get(key)
+    if flight is None:
+        return None
+    _log.info("Waiting for sibling in-flight step (key=%.8s) to complete", key)
+    deadline = asyncio.get_event_loop().time() + 6 * 3600
+    while not flight.event.is_set():
+        if _is_cancel_requested(run_id):
+            return None
+        if asyncio.get_event_loop().time() > deadline:
+            _log.warning("Timed out waiting for in-flight step %.8s; submitting own job", key)
+            return None
+        await asyncio.sleep(5)
+    return flight.succeeded
 
 
 def load_runs_from_disk(data_root: Path) -> None:
     """
-    Called at startup: scan data_root for pipeline_runs.json files and
-    populate the in-memory store.
+    Called at startup: set the data root and fixup any runs left in a
+    non-terminal state from the previous server process.
 
     Handling of in-progress runs:
     - pending: always marked failed (task never started, cannot resume)
@@ -543,33 +625,44 @@ def load_runs_from_disk(data_root: Path) -> None:
       can reconnect to the still-running SLURM job
     - running + any other backend: marked failed (child process is gone)
     """
-    if not data_root.exists():
+    global _data_root
+    _data_root = data_root
+
+    d = _runs_dir()
+    if d is None or not d.exists():
         return
-    for runs_file in data_root.rglob("_working/pipeline_runs.json"):
+
+    for p in d.glob("*.json"):
         try:
-            records: dict = json.loads(runs_file.read_text())
+            run = _run_from_dict(json.loads(p.read_text()))
         except Exception:
             continue
-        for record in records.values():
-            try:
-                run = _run_from_dict(record)
-            except Exception:
-                continue
-            if run.status == "pending":
-                run.status = "failed"
-                run.error = "Server restarted before run started"
-                run.finished_at = run.finished_at or datetime.now(timezone.utc)
-            elif run.status == "running" and run.backend_type != "slurm":
-                run.status = "failed"
-                run.error = "Server restarted while run was in progress"
-                run.finished_at = run.finished_at or datetime.now(timezone.utc)
-            # SLURM "running" runs are left intact; resume_runs() handles them.
-            _runs[run.run_id] = run
+        if run.status == "pending":
+            run.status = "failed"
+            run.error = "Server restarted before run started"
+            run.finished_at = run.finished_at or datetime.now(timezone.utc)
+            _save_run(run)
+        elif run.status == "running" and run.backend_type != "slurm":
+            run.status = "failed"
+            run.error = "Server restarted while run was in progress"
+            run.finished_at = run.finished_at or datetime.now(timezone.utc)
+            _save_run(run)
+        # SLURM "running" runs are left intact; resume_runs() handles them.
 
 
 def has_slurm_runs_to_resume() -> bool:
-    """Return True if any loaded run is a SLURM run still marked 'running'."""
-    return any(r.status == "running" and r.backend_type == "slurm" for r in _runs.values())
+    """Return True if any on-disk run is a SLURM run still marked 'running'."""
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return False
+    for p in d.glob("*.json"):
+        try:
+            run = _run_from_dict(json.loads(p.read_text()))
+            if run.status == "running" and run.backend_type == "slurm":
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def resume_runs(settings: Any, backend: JobBackend) -> None:
@@ -581,7 +674,15 @@ async def resume_runs(settings: Any, backend: JobBackend) -> None:
     polling background task. Runs whose pipeline YAML is missing or whose
     backend does not support reconnection are marked failed.
     """
-    for run in list(_runs.values()):
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return
+
+    for p in d.glob("*.json"):
+        try:
+            run = _run_from_dict(json.loads(p.read_text()))
+        except Exception:
+            continue
         if run.status != "running" or run.backend_type != "slurm":
             continue
 
@@ -594,7 +695,7 @@ async def resume_runs(settings: Any, backend: JobBackend) -> None:
             run.status = "failed"
             run.error = f"Cannot resume: pipeline '{run.pipeline_id}' not found: {exc}"
             run.finished_at = datetime.now(timezone.utc)
-            _persist_run(run, study_dir)
+            _save_run(run)
             continue
 
         _log.info(
@@ -622,38 +723,32 @@ async def _poll_to_completion(
     handle: JobHandle,
     step: _StepRecord,
     run: _RunRecord,
-    study_dir: Path | None = None,
 ) -> bool:
     """Poll handle until terminal. Updates step and run state. Returns True on success."""
     step.job_id = handle.job_id
     if handle.log_path:
         step.log_path = handle.log_path
-    # Persist the job_id and log_path immediately so that a restart can reconnect
-    # to a SLURM job that is still running on the cluster.
-    if study_dir:
-        _persist_run(run, study_dir)
+    # Persist job_id and log_path immediately so a restart can reconnect to SLURM jobs.
+    _save_run(run)
 
-    _active_handles[run.run_id] = handle
-    try:
-        while True:
-            if run.cancelled:
-                await handle.cancel()
-                step.status = "failed"
-                step.error = "Cancelled by user"
-                run.status = "failed"
-                run.error = "Cancelled by user"
-                run.finished_at = datetime.now(timezone.utc)
-                return False
+    while True:
+        if _is_cancel_requested(run.run_id):
+            run.cancelled = True
+            await handle.cancel()
+            step.status = "failed"
+            step.error = "Cancelled by user"
+            run.status = "failed"
+            run.error = "Cancelled by user"
+            run.finished_at = datetime.now(timezone.utc)
+            return False
 
-            job_status = await handle.status()
-            if job_status in ("succeeded", "failed"):
-                break
-            await asyncio.sleep(5)
+        job_status = await handle.status()
+        if job_status in ("succeeded", "failed"):
+            break
+        await asyncio.sleep(5)
 
-        step.logs = await handle.logs()
-        step.finished_at = datetime.now(timezone.utc)
-    finally:
-        _active_handles.pop(run.run_id, None)
+    step.logs = await handle.logs()
+    step.finished_at = datetime.now(timezone.utc)
 
     if job_status == "succeeded":
         step.status = "succeeded"
@@ -697,22 +792,26 @@ async def run_pipeline_task(
     """Background task: drive each pipeline step in order, with caching and error handling."""
     run.backend_type = backend.backend_name
     run.status = "running"
-    _persist_run(run, study_dir)
+    _save_run(run)
 
     # Compute the project-scoped S3 prefix once, used for all steps.
     _s3_project_prefix: str | None = None
     if s3_sync:
         _s3_project_prefix = f"{s3_sync.prefix}/{run.user_id}/{study_dir.name}"
 
+    if _s3_project_prefix:
+        await s3_sync_service.sync_from_s3(s3_sync.bucket, _s3_project_prefix, study_dir)  # type: ignore[union-attr]
+
     metadata = _load_metadata(study_dir)
     step_outputs: dict[str, dict[str, str]] = {}
 
     for i, step_def in enumerate(pipeline_steps):
-        if run.cancelled:
+        if _is_cancel_requested(run.run_id):
+            run.cancelled = True
             run.status = "failed"
             run.error = "Cancelled by user"
             run.finished_at = datetime.now(timezone.utc)
-            _persist_run(run, study_dir)
+            _save_run(run)
             return
 
         run.current_step = i
@@ -738,21 +837,38 @@ async def run_pipeline_task(
         if step.status == "failed":
             run.status = "failed"
             run.finished_at = run.finished_at or datetime.now(timezone.utc)
-            _persist_run(run, study_dir)
+            _save_run(run)
             return
 
         key = _cache_key(step_def.tool, resolved_inputs, merged_params)
 
         # Check step cache (only for freshly-pending steps, not in-progress reconnects).
         if step.status == "pending" and reuse_cached_steps:
-            cached_run_id = _is_cached(metadata, key, resolved_inputs)
+            cached_run_id = _is_cached(metadata, key, resolved_inputs, resolved_outputs)
             if cached_run_id is not None:
                 step.status = "skipped"
                 step.finished_at = datetime.now(timezone.utc)
                 step.cached_from_run_id = cached_run_id
                 step_outputs[step_def.id] = resolved_outputs
-                _persist_run(run, study_dir)
+                _save_run(run)
                 continue
+
+        # If another run is currently executing this exact step (same cache key),
+        # wait for it rather than submitting a duplicate job.
+        if step.status == "pending":
+            _wait = await _wait_for_in_flight_step(key, run.run_id)
+            if _wait is True:
+                # Sibling succeeded — its outputs are on disk. Reload metadata
+                # so _is_cached can verify the entry, then treat as a cache hit.
+                metadata = _load_metadata(study_dir)
+                entry = metadata.get(key)
+                step.cached_from_run_id = entry.get("run_id") if entry else None
+                step.status = "skipped"
+                step.finished_at = datetime.now(timezone.utc)
+                step_outputs[step_def.id] = resolved_outputs
+                _save_run(run)
+                continue
+            # _wait is False (sibling failed) or None (no sibling / cancelled): proceed.
 
         # Determine the job handle — either reconnect to an in-progress SLURM job
         # (restart recovery) or submit a fresh job.
@@ -769,7 +885,7 @@ async def run_pipeline_task(
                 run.status = "failed"
                 run.error = f"Step '{step_def.id}' lost at server restart"
                 run.finished_at = datetime.now(timezone.utc)
-                _persist_run(run, study_dir)
+                _save_run(run)
                 return
             _log.info(
                 "Reconnected to %s job %s for step '%s' (run %s)",
@@ -779,6 +895,13 @@ async def run_pipeline_task(
                 tool_spec = catalog_service.load_tool_spec(tools_path, step_def.tool)
             except FileNotFoundError:
                 pass  # provenance will be skipped for this step
+
+        # Register an in-flight slot for fresh pending submissions so concurrent
+        # runs can wait on this step rather than submitting duplicate jobs.
+        flight: _StepFlight | None = None
+        if handle is None:
+            flight = _StepFlight(key=key)
+            _step_in_flight[key] = flight
 
         if handle is None:
             # Fresh submission path.
@@ -800,7 +923,9 @@ async def run_pipeline_task(
                 run.status = "failed"
                 run.error = f"Step '{step_def.id}': {e}"
                 run.finished_at = datetime.now(timezone.utc)
-                _persist_run(run, study_dir)
+                if flight:
+                    flight.resolve(False)
+                _save_run(run)
                 return
 
             # Estimate subject count for cloud queue-drain metric and SLURM time limits.
@@ -831,7 +956,9 @@ async def run_pipeline_task(
                     run.status = "failed"
                     run.error = f"Step '{step_def.id}': S3 pre-sync failed: {exc}"
                     run.finished_at = datetime.now(timezone.utc)
-                    _persist_run(run, study_dir)
+                    if flight:
+                        flight.resolve(False)
+                    _save_run(run)
                     return
 
             # ── Parallel chunk path ───────────────────────────────────────────
@@ -851,7 +978,7 @@ async def run_pipeline_task(
                     _ChunkRecord(chunk_idx=idx, subjects=subs)
                     for idx, subs in enumerate(chunk_subjects)
                 ]
-                _persist_run(run, study_dir)
+                _save_run(run)
 
                 # Submit all chunks concurrently.
                 handles: list[JobHandle | None] = []
@@ -878,7 +1005,7 @@ async def run_pipeline_task(
                         chunk.error = str(e)
                         chunk.finished_at = datetime.now(timezone.utc)
                         handles.append(None)
-                _persist_run(run, study_dir)
+                _save_run(run)
 
                 # Poll all chunks to completion concurrently.
                 async def _poll_chunk(h: JobHandle, chunk: _ChunkRecord) -> bool:
@@ -886,7 +1013,7 @@ async def run_pipeline_task(
                         return False
                     job_status = "running"
                     while job_status == "running":
-                        if run.cancelled:
+                        if _is_cancel_requested(run.run_id):
                             await h.cancel()
                             chunk.status = "failed"
                             chunk.error = "Cancelled"
@@ -942,7 +1069,9 @@ async def run_pipeline_task(
                     run.status = "failed"
                     run.error = f"Step '{step_def.id}': {step.error}"
                     run.finished_at = datetime.now(timezone.utc)
-                    _persist_run(run, study_dir)
+                    if flight:
+                        flight.resolve(False)
+                    _save_run(run)
                     return
 
                 # All chunks succeeded — S3 sync then merge.
@@ -971,7 +1100,9 @@ async def run_pipeline_task(
                     run.status = "failed"
                     run.error = f"Step '{step_def.id}': output merge failed: {exc}"
                     run.finished_at = datetime.now(timezone.utc)
-                    _persist_run(run, study_dir)
+                    if flight:
+                        flight.resolve(False)
+                    _save_run(run)
                     return
 
                 _cleanup_fragment_dirs(study_dir, run.run_id, step_def.id)
@@ -1001,7 +1132,9 @@ async def run_pipeline_task(
                     )
                 _mark_cached(metadata, key, run.run_id)
                 _save_metadata(study_dir, metadata)
-                _persist_run(run, study_dir)
+                if flight:
+                    flight.resolve(True)
+                _save_run(run)
                 continue  # advance to next pipeline step
 
             # ── Single-job (non-parallel) path ────────────────────────────────
@@ -1019,11 +1152,12 @@ async def run_pipeline_task(
                 run.status = "failed"
                 run.error = f"Step '{step_def.id}' submission failed: {e}"
                 run.finished_at = datetime.now(timezone.utc)
-                _persist_run(run, study_dir)
+                if flight:
+                    flight.resolve(False)
+                _save_run(run)
                 return
 
-        # Poll until terminal (passes study_dir so job_id/log_path are persisted immediately).
-        success = await _poll_to_completion(handle, step, run, study_dir)
+        success = await _poll_to_completion(handle, step, run)
 
         # After the step finishes: sync S3 → local (pull Batch outputs), then
         # sync local → S3 (push any API-server-written state, e.g. metadata.json).
@@ -1051,7 +1185,9 @@ async def run_pipeline_task(
             run.status = "failed"
             if not run.finished_at:
                 run.finished_at = datetime.now(timezone.utc)
-            _persist_run(run, study_dir)
+            if flight:
+                flight.resolve(False)
+            _save_run(run)
             return
 
         step_outputs[step_def.id] = resolved_outputs
@@ -1076,11 +1212,13 @@ async def run_pipeline_task(
             )
         _mark_cached(metadata, key, run.run_id)
         _save_metadata(study_dir, metadata)
-        _persist_run(run, study_dir)
+        if flight:
+            flight.resolve(True)
+        _save_run(run)
 
     run.status = "succeeded"
     run.finished_at = datetime.now(timezone.utc)
-    _persist_run(run, study_dir)
+    _save_run(run)
 
 
 # ── Direct step execution (DICOM conversion, etc.) ────────────────────────────
@@ -1104,16 +1242,15 @@ async def run_direct_steps_task(
 ) -> None:
     """Background task: execute a list of pre-resolved steps sequentially."""
     run.status = "running"
-    if study_dir:
-        _persist_run(run, study_dir)
+    _save_run(run)
 
     for i, step_def in enumerate(direct_steps):
-        if run.cancelled:
+        if _is_cancel_requested(run.run_id):
+            run.cancelled = True
             run.status = "failed"
             run.error = "Cancelled by user"
             run.finished_at = datetime.now(timezone.utc)
-            if study_dir:
-                _persist_run(run, study_dir)
+            _save_run(run)
             return
 
         run.current_step = i
@@ -1135,8 +1272,7 @@ async def run_direct_steps_task(
             run.status = "failed"
             run.error = str(e)
             run.finished_at = datetime.now(timezone.utc)
-            if study_dir:
-                _persist_run(run, study_dir)
+            _save_run(run)
             return
 
         success = await _poll_to_completion(handle, step, run)
@@ -1146,17 +1282,76 @@ async def run_direct_steps_task(
             run.status = "failed"
             if not run.finished_at:
                 run.finished_at = datetime.now(timezone.utc)
-            if study_dir:
-                _persist_run(run, study_dir)
+            _save_run(run)
             return
 
-        if study_dir:
-            _persist_run(run, study_dir)
+        _save_run(run)
 
     run.status = "succeeded"
     run.finished_at = datetime.now(timezone.utc)
-    if study_dir:
-        _persist_run(run, study_dir)
+    _save_run(run)
+
+
+# ── Finished-run polling ──────────────────────────────────────────────────────
+
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed"})
+
+
+def _poll_cursor_path(user_id: str) -> Path | None:
+    d = _runs_dir()
+    if d is None:
+        return None
+    return d.parent / "poll_cursors" / f"{user_id}.txt"
+
+
+def get_and_advance_poll_cursor(
+    user_id: str,
+) -> tuple[list[PipelineRunSummary], datetime]:
+    """
+    Return all terminal runs for *user_id* that finished after the last call,
+    then advance the stored cursor to now.
+
+    The cursor is persisted at ``{data_root}/_working/poll_cursors/{user_id}.txt``.
+    On the first call (no cursor file) the epoch is used, so all existing
+    terminal runs are returned — convenient for bootstrapping a UI on first load.
+    """
+    now = datetime.now(timezone.utc)
+
+    cursor_p = _poll_cursor_path(user_id)
+    if cursor_p is None or not cursor_p.exists():
+        cursor = datetime.fromtimestamp(0, tz=timezone.utc)
+    else:
+        try:
+            cursor = datetime.fromisoformat(cursor_p.read_text().strip())
+        except Exception:
+            cursor = datetime.fromtimestamp(0, tz=timezone.utc)
+
+    d = _runs_dir()
+    finished: list[_RunRecord] = []
+    if d and d.exists():
+        for p in d.glob("*.json"):
+            run = _load_run(p.stem)
+            if run is None or run.user_id != user_id:
+                continue
+            if run.status not in _TERMINAL_STATUSES:
+                continue
+            fa = run.finished_at
+            if fa is None:
+                continue
+            if fa.tzinfo is None:
+                fa = fa.replace(tzinfo=timezone.utc)
+            if fa > cursor:
+                finished.append(run)
+
+    finished.sort(
+        key=lambda r: r.finished_at or datetime.fromtimestamp(0, tz=timezone.utc)
+    )
+
+    if cursor_p is not None:
+        cursor_p.parent.mkdir(parents=True, exist_ok=True)
+        cursor_p.write_text(now.isoformat())
+
+    return [_to_summary(r) for r in finished], now
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -1177,7 +1372,7 @@ def create_pipeline_run(
         total_steps=len(pipeline_steps),
         steps=[_StepRecord(step_id=s.id, tool_id=s.tool) for s in pipeline_steps],
     )
-    _runs[run_id] = run
+    _save_run(run)
     return run
 
 
@@ -1197,7 +1392,7 @@ def create_direct_run(
         total_steps=len(direct_steps),
         steps=[_StepRecord(step_id=s.step_id, tool_id=s.tool_id) for s in direct_steps],
     )
-    _runs[run_id] = run
+    _save_run(run)
     return run
 
 
@@ -1237,11 +1432,15 @@ def list_runs(
     project_id: str | None,
     limit: int,
 ) -> list[PipelineRunSummary]:
-    runs = [
-        r for r in _runs.values()
-        if r.user_id == user_id
-        and (project_id is None or r.project_id == project_id)
-    ]
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return []
+    runs: list[_RunRecord] = []
+    for p in d.glob("*.json"):
+        run = _load_run(p.stem)
+        if run and run.user_id == user_id:
+            if project_id is None or run.project_id == project_id:
+                runs.append(run)
     runs.sort(key=lambda r: r.submitted_at, reverse=True)
     return [_to_summary(r) for r in runs[:limit]]
 
@@ -1288,7 +1487,7 @@ def _step_record_to_status(s: _StepRecord) -> StepStatus:
 
 
 def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
-    run = _runs.get(run_id)
+    run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
@@ -1297,17 +1496,15 @@ def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
 
 
 async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
-    run = _runs.get(run_id)
+    run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
         raise HTTPException(403, "Access denied")
 
     parts: list[str] = []
-    active_handle = _active_handles.get(run_id)
     for s in run.steps:
         if s.chunks:
-            # Parallelized step — concatenate per-chunk logs with headers.
             chunk_parts: list[str] = []
             for c in s.chunks:
                 if c.logs:
@@ -1315,13 +1512,15 @@ async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
             if chunk_parts:
                 parts.append(f"=== Step {s.step_id} ===\n" + "\n".join(chunk_parts))
         else:
-            if s.status == "running" and active_handle is not None:
-                try:
-                    live_logs = await active_handle.logs()
-                except Exception:
-                    live_logs = s.logs
-            else:
-                live_logs = s.logs
+            live_logs = s.logs
+            # For SLURM jobs the log file is on a shared filesystem — read it live.
+            if s.status == "running" and s.log_path:
+                p = Path(s.log_path)
+                if p.exists():
+                    try:
+                        live_logs = p.read_text()
+                    except Exception:
+                        pass
             if live_logs:
                 parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
 
@@ -1330,7 +1529,7 @@ async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
 
 def get_chunk_logs(run_id: str, user_id: str, step_id: str, chunk_idx: int) -> str:
     """Return logs for a specific chunk of a parallelized step."""
-    run = _runs.get(run_id)
+    run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
@@ -1347,9 +1546,10 @@ def get_chunk_logs(run_id: str, user_id: str, step_id: str, chunk_idx: int) -> s
 
 
 def cancel_run(run_id: str, user_id: str) -> None:
-    run = _runs.get(run_id)
+    run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
         raise HTTPException(403, "Access denied")
     run.cancelled = True
+    _save_run(run)

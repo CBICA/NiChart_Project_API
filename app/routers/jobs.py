@@ -24,6 +24,7 @@ from app.config import Settings, get_settings
 from app.models.catalog import ParameterSpec, PipelineDetail
 from app.models.errors import ErrorDetail
 from app.models.jobs import (
+    FinishedRunsResponse,
     PipelineRunDetail,
     PipelineRunLogs,
     PipelineRunSubmit,
@@ -207,6 +208,31 @@ async def list_pipeline_runs(
     user: CurrentUser = Depends(require_auth),
 ) -> list[PipelineRunSummary]:
     return job_service.list_runs(user_id=user.sub, project_id=project_id, limit=limit)
+
+
+@jobs_router.get(
+    "/pipelines/finished",
+    summary="Poll for newly finished pipeline runs",
+    description=(
+        "Returns all pipeline runs that reached a terminal state (``succeeded`` or "
+        "``failed``) since the last time this endpoint was called by the authenticated "
+        "user. The server stores a per-user cursor so only genuinely new completions "
+        "are returned on each call. "
+        "\n\n"
+        "**First call**: the cursor defaults to epoch, so all existing terminal runs "
+        "are returned — useful for bootstrapping a UI on first load. "
+        "\n\n"
+        "Designed for lightweight notification polling (e.g. every 10–30 seconds). "
+        "For full run history use ``GET /jobs/pipelines``."
+    ),
+    response_model=FinishedRunsResponse,
+    responses=_AUTH_ERRORS,
+)
+async def get_finished_pipeline_runs(
+    user: CurrentUser = Depends(require_auth),
+) -> FinishedRunsResponse:
+    runs, polled_at = job_service.get_and_advance_poll_cursor(user.sub)
+    return FinishedRunsResponse(runs=runs, polled_at=polled_at)
 
 
 @jobs_router.get(

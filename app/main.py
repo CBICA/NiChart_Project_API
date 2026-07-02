@@ -26,6 +26,7 @@ from app.routers.files import router as files_router
 from app.routers.jobs import jobs_router, project_router as jobs_project_router
 from app.routers.projects import router as projects_router
 from app.routers.results import router as results_router
+from app.routers.test_endpoints import router as test_router
 
 try:
     _VERSION = importlib.metadata.version("nichart-api")
@@ -148,6 +149,10 @@ def create_app() -> FastAPI:
     app.include_router(jobs_project_router)
     app.include_router(jobs_router)
     app.include_router(results_router)
+
+    settings = get_settings()
+    if settings.enable_test_endpoints:
+        app.include_router(test_router)
 
     # ── Health ────────────────────────────────────────────────────────────────
     @app.get(

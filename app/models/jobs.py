@@ -154,3 +154,22 @@ class PipelineRunCreated(BaseModel):
 
     run_id: str = Field(description="Use this ID to poll /jobs/pipelines/{run_id} for status.")
     status: Literal["pending"] = Field(default="pending")
+
+
+class FinishedRunsResponse(BaseModel):
+    """Response from the finished-runs polling endpoint."""
+
+    runs: list[PipelineRunSummary] = Field(
+        description=(
+            "Pipeline runs that reached a terminal state (succeeded or failed) "
+            "since the last call to this endpoint for this user. "
+            "Empty when no runs have finished since the last poll."
+        )
+    )
+    polled_at: datetime = Field(
+        description=(
+            "Server timestamp when this response was generated. "
+            "Stored server-side as the cursor for the next call — "
+            "only runs finishing after this moment appear in the next response."
+        )
+    )
