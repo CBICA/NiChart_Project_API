@@ -10,7 +10,7 @@
 #   label:    null   — override the display name shown in the UI (null = use variable name as-is)
 #   group:    null   — logical grouping name; the UI may use this to render nested selectors
 
-features: {}
+features:
   SPARE_AD_Harmonized:
     hidden: true
   SPARE_AD_decision_function:
