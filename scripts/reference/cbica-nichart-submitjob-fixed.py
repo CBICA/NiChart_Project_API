@@ -4,7 +4,7 @@ import re
 import subprocess
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import boto3
 import jwt
@@ -23,6 +23,12 @@ BATCH_JOB_DEF = "cbica-nichart-jobdefinition-template1"
 
 S3_BUCKET = "cbica-nichart-staticfiles"
 S3_TOOL_PREFIX = "tools/"
+
+# User data bucket + FSx mount root. The FSx Lustre filesystem is mounted at
+# /fsx, and user data lives under the key prefix fsx/{user_id}/... in the data
+# bucket, so /fsx/fsx/{user_id}/x maps to s3://{S3_DATA_BUCKET}/fsx/{user_id}/x.
+S3_DATA_BUCKET = "cbica-nichart-io"
+FSX_MOUNT_ROOT = "/fsx"
 
 DEFAULT_TOOL_DEFINITION_PATH = Path(__file__).parent.parent.parent.parent / "resources/tools/"
 
@@ -77,6 +83,19 @@ def is_safe_path(base_dir: Union[str, Path], target_path: Union[str, Path]) -> b
         return True
     except ValueError:
         return False
+
+
+def fsx_to_s3_uri(fsx_path: Union[str, Path]) -> str:
+    """Map an FSx host path to its S3 URI in the user data bucket.
+
+    /fsx/fsx/{user_id}/{rest}  ->  s3://{S3_DATA_BUCKET}/fsx/{user_id}/{rest}
+    """
+    p = str(fsx_path)
+    prefix = FSX_MOUNT_ROOT.rstrip("/") + "/"  # "/fsx/"
+    if not p.startswith(prefix):
+        raise ValueError(f"Path {p!r} is not under the FSx mount root {FSX_MOUNT_ROOT!r}")
+    rel = p[len(prefix):].rstrip("/")
+    return f"s3://{S3_DATA_BUCKET}/{rel}"
 
 class IOField(BaseModel):
     type: str  # "file" or "directory"
@@ -258,6 +277,51 @@ class ToolSpec(BaseModel):
 
         return docker_cmd
 
+    def generate_sync_commands(self, mount_paths: Dict[str, str]) -> Tuple[List[str], List[str]]:
+        """Build path-scoped `aws s3 sync` commands for this job.
+
+        Returns (down_cmds, up_cmds).
+
+        DOWN (S3 -> FSx): the tool's INPUT paths only, NO --delete. Inputs are
+          read-only, so deletion is never wanted, and dropping --delete means a
+          concurrent chunk job can't wipe another chunk's in-flight outputs.
+          DRA auto-import is the primary S3->FSx path; this explicit sync is a
+          determinism backstop guaranteeing inputs are materialised before the
+          tool reads them.
+
+        UP (FSx -> S3): the tool's OUTPUT paths only, NO --delete. DRA
+          auto-export is disabled, so this explicit up-sync is the ONLY thing
+          that publishes outputs to S3. It is chained after the tool with `&&`,
+          so a failed tool run never reaches it and never publishes partial
+          output.
+
+        File-typed mounts sync their PARENT directory, since `aws s3 sync`
+        operates on prefixes/directories rather than single objects.
+        """
+        down_dirs = set()
+        up_dirs = set()
+        for label, host_path in mount_paths.items():
+            if label in self.inputs:
+                is_file = self.inputs[label].type == "file"
+                sync_dir = str(Path(host_path).parent) if is_file else str(host_path).rstrip("/")
+                down_dirs.add(sync_dir)
+            elif label in self.outputs:
+                is_file = self.outputs[label].type == "file"
+                sync_dir = str(Path(host_path).parent) if is_file else str(host_path).rstrip("/")
+                up_dirs.add(sync_dir)
+            else:
+                raise ValueError(f"Mount label {label} not found in tool spec inputs or outputs.")
+
+        # A path that is somehow both an input and an output should only be
+        # up-synced (it's being written); don't down-sync over fresh writes.
+        down_dirs -= up_dirs
+
+        down_cmds = [f"aws s3 sync {fsx_to_s3_uri(d)} {d}" for d in sorted(down_dirs)]
+        # mkdir the local output dir first so the up-sync succeeds even when the
+        # tool wrote nothing (empty sync is a no-op; a missing dir is an error).
+        up_cmds = [f"mkdir -pv {d} && aws s3 sync {d} {fsx_to_s3_uri(d)}" for d in sorted(up_dirs)]
+        return down_cmds, up_cmds
+
     def get_container_image(self):
         return self.container['image']
 
@@ -438,6 +502,28 @@ def lambda_handler(event, context):
         # Finalize prefix commands string
         extra_prefix_commands_str = ' && '.join(extra_prefix_commands_list) if extra_prefix_commands_list else 'echo placeholder'
         print(f"Extra prefix commands string: {extra_prefix_commands_str}")
+
+        # ── Path-scoped S3 sync ────────────────────────────────────────────────
+        # DOWN: inputs only, no --delete (DRA auto-import backstop, concurrency-safe).
+        # UP:   outputs only, no --delete; sole publish path since DRA auto-export
+        #       is disabled. Chained after the tool with `&&`, so a failed tool run
+        #       never publishes partial output. Replaces the previous full-user-dir
+        #       `aws s3 sync ... --delete` which clobbered concurrent chunk outputs.
+        down_sync_cmds, up_sync_cmds = tool.generate_sync_commands(user_mounts)
+        down_sync_str = ' && '.join(down_sync_cmds) if down_sync_cmds else 'echo "no inputs to down-sync"'
+        up_sync_str = ' && '.join(up_sync_cmds) if up_sync_cmds else 'echo "no outputs to up-sync"'
+        print(f"DEBUG: down-sync: {down_sync_str}")
+        print(f"DEBUG: up-sync: {up_sync_str}")
+
+        full_command = (
+            f'docker pull {tool.get_container_image()} '
+            f'&& {down_sync_str} '
+            f'&& {extra_prefix_commands_str} '
+            f'&& {docker_command} '
+            f'&& {up_sync_str}'
+        )
+        print(f"DEBUG: full fsx-manager command: {full_command}")
+
         response = batch.submit_job(
             jobName=f"{tool_name}-{user_id}",
             jobQueue=BATCH_QUEUE,
@@ -452,7 +538,7 @@ def lambda_handler(event, context):
                         'containers': [
                             {
                                 'name': 'fsx-manager',
-                                'command': ['bash', '-c', f'docker pull {tool.get_container_image()} && aws s3 sync s3://cbica-nichart-io/fsx/{user_id} /fsx/fsx/{user_id} --delete && {extra_prefix_commands_str} && {docker_command} && aws s3 sync /fsx/fsx/{user_id} s3://cbica-nichart-io/fsx/{user_id}'],
+                                'command': ['bash', '-c', full_command],
                                 'resourceRequirements': resource_requirements
                             }
                         ]

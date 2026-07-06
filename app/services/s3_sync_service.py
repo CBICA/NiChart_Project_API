@@ -100,3 +100,32 @@ async def sync_from_s3(bucket: str, prefix: str, local_dir: Path) -> None:
     """Download S3 objects under s3://bucket/prefix/ to local_dir. Non-blocking."""
     n = await asyncio.to_thread(_download_sync, bucket, prefix, local_dir)
     _log.info("s3-sync down complete: %d file(s) ← s3://%s/%s/", n, bucket, prefix)
+
+
+def _delete_prefix_sync(bucket: str, prefix: str) -> int:
+    """Delete every object under s3://bucket/prefix. Returns count deleted."""
+    s3 = boto3.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    batch: list[dict] = []
+    deleted = 0
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            batch.append({"Key": obj["Key"]})
+            if len(batch) == 1000:  # delete_objects caps at 1000 keys per call
+                s3.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+                deleted += len(batch)
+                batch = []
+    if batch:
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        deleted += len(batch)
+    return deleted
+
+
+async def delete_s3_prefix(bucket: str, prefix: str) -> None:
+    """Delete all objects under s3://bucket/prefix. Non-blocking.
+
+    Pass a prefix ending in '/' to avoid matching sibling keys that merely share
+    the same leading string.
+    """
+    n = await asyncio.to_thread(_delete_prefix_sync, bucket, prefix)
+    _log.info("s3 delete complete: %d object(s) under s3://%s/%s", n, bucket, prefix)

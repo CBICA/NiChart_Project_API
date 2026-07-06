@@ -791,6 +791,20 @@ async def run_pipeline_task(
 ) -> None:
     """Background task: drive each pipeline step in order, with caching and error handling."""
     run.backend_type = backend.backend_name
+
+    # Wait until no other pipeline is running for this user (user-level serialisation).
+    # The run stays in 'pending' while queued. Cancellation is honoured while waiting.
+    while _has_running_pipeline(run.user_id, run.run_id):
+        if _is_cancel_requested(run.run_id):
+            run.cancelled = True
+            run.status = "failed"
+            run.error = "Cancelled while queued"
+            run.finished_at = datetime.now(timezone.utc)
+            _save_run(run)
+            return
+        await asyncio.sleep(5)
+
+    # No await between the check above and the status write below, so no race.
     run.status = "running"
     _save_run(run)
 
@@ -980,6 +994,26 @@ async def run_pipeline_task(
                 ]
                 _save_run(run)
 
+                # Push the freshly-created fragment dirs to S3. The Batch job's
+                # down-sync is now scoped to the exact input mount paths, so the
+                # per-chunk fragment inputs must exist in S3 before submission —
+                # the earlier pre-step sync ran before these dirs existed.
+                if _s3_project_prefix:
+                    try:
+                        await s3_sync_service.sync_to_s3(
+                            study_dir, s3_sync.bucket, _s3_project_prefix  # type: ignore[union-attr]
+                        )
+                    except Exception as exc:
+                        step.status = "failed"
+                        step.error = f"S3 fragment sync failed: {exc}"
+                        run.status = "failed"
+                        run.error = f"Step '{step_def.id}': S3 fragment sync failed: {exc}"
+                        run.finished_at = datetime.now(timezone.utc)
+                        if flight:
+                            flight.resolve(False)
+                        _save_run(run)
+                        return
+
                 # Submit all chunks concurrently.
                 handles: list[JobHandle | None] = []
                 for idx, (ci, co, subs) in enumerate(
@@ -1106,6 +1140,38 @@ async def run_pipeline_task(
                     return
 
                 _cleanup_fragment_dirs(study_dir, run.run_id, step_def.id)
+
+                if _s3_project_prefix:
+                    # Delete the fragment cruft we uploaded to S3 before submit
+                    # (nothing uses --delete anymore, so it won't self-clean).
+                    frag_prefix = (
+                        f"{_s3_project_prefix}/_working/fragments/"
+                        f"{run.run_id}/{step_def.id}/"
+                    )
+                    try:
+                        await s3_sync_service.delete_s3_prefix(
+                            s3_sync.bucket, frag_prefix  # type: ignore[union-attr]
+                        )
+                    except Exception as exc:
+                        _log.warning(
+                            "S3 fragment cleanup failed for step '%s': %s",
+                            step_def.id, exc,
+                        )
+
+                    # Push the merged output to S3. The per-chunk syncs above only
+                    # published fragment outputs; the merge produces the final
+                    # output locally, so without this it would never reach S3
+                    # (the Batch up-sync never sees it, auto-export is disabled).
+                    try:
+                        await s3_sync_service.sync_to_s3(
+                            study_dir, s3_sync.bucket, _s3_project_prefix  # type: ignore[union-attr]
+                        )
+                    except Exception as exc:
+                        _log.warning(
+                            "S3 merged-output sync failed for step '%s' (data remains local): %s",
+                            step_def.id, exc,
+                        )
+
                 step.status = "succeeded"
                 step_outputs[step_def.id] = resolved_outputs
 
@@ -1425,6 +1491,20 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
             for s in run.steps
         ],
     )
+
+
+def _has_running_pipeline(user_id: str, exclude_run_id: str) -> bool:
+    """Return True if the user has any pipeline currently in 'running' state."""
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return False
+    for p in d.glob("*.json"):
+        if p.stem == exclude_run_id:
+            continue
+        run = _load_run(p.stem)
+        if run and run.user_id == user_id and run.status == "running":
+            return True
+    return False
 
 
 def list_runs(

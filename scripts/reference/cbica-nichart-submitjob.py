@@ -1,31 +1,28 @@
 import json
 import os
-import boto3
-import yaml
-from pathlib import Path
-from typing import Dict, List, Union, Optional
-from pydantic import BaseModel, Field, validator
-from pathlib import Path
 import subprocess
-import json
-from botocore.exceptions import ClientError
+from io import BytesIO
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
+import boto3
 import jwt
 import urllib.request
-from io import BytesIO
+import yaml
+from botocore.exceptions import ClientError
+from pydantic import BaseModel, Field, validator
 
 BATCH_QUEUE = "cbica-nichart-jobqueue-standard"
 BATCH_JOB_DEF = "cbica-nichart-jobdefinition-template1"
 
 S3_BUCKET = "cbica-nichart-staticfiles"
-S3_TOOL_PREFIX = "tools/"  # all tools stored under tools/{tool_name}.yaml
+S3_TOOL_PREFIX = "tools/"
 
 DEFAULT_TOOL_DEFINITION_PATH = Path(__file__).parent.parent.parent.parent / "resources/tools/"
-
 
 COGNITO_POOL_ID = "us-east-1_BSBhcKA66"
 COGNITO_APP_CLIENT_ID = "4shr6mm2h0p0i4o9uleqpu33fj"
 REGION = "us-east-1"
-#JWKS_URL = f"https://cognito-idp.{REGION}.amazonaws.com/{COGNITO_POOL_ID}/.well-known/jwks.json"
 
 ASG_NAME = "cbica-nichart-unmanaged-ASG"
 COMPUTE_ENV_NAME = "cbica-nichart-compute-environment-unmanaged"
@@ -34,85 +31,26 @@ autoscaling = boto3.client("autoscaling")
 ec2 = boto3.client("ec2")
 batch = boto3.client("batch")
 
-# cache keys
-_jwk_cache = {}
+def get_user_id_from_token(token: str) -> str:
+    """Extract the Cognito sub from a JWT without verifying the signature.
 
-def get_jwk_keys(region, kid):
+    Signature verification is intentionally skipped here.  Security is enforced
+    at the IAM layer — only the NiChart API server's execution role can invoke
+    this Lambda (via lambda:InvokeFunction).  The API server has already
+    validated the Cognito token before calling us.  We still extract the sub
+    so we can scope mount-path validation to /fsx/fsx/{user_id}/, which prevents
+    one authenticated user from touching another's data.
+    """
     try:
-
-        jwks_url = f"https://public-keys.auth.elb.{region}.amazonaws.com/{kid}"
-        global _jwk_cache
-        if not _jwk_cache:
-            with urllib.request.urlopen(jwks_url) as response:
-                _jwk_cache = response.read().decode('utf-8')
-        return _jwk_cache
-    except Exception as e:
-        print(f"Error fetching public key: {e}")
-        raise
-
-def verify_alb_token_and_get_user_id(token: str):
-    try:
-        token_bytes = token.encode('utf-8')
         payload = jwt.decode(token, options={"verify_signature": False})
-        unverified_header = jwt.get_unverified_header(token)
-
-        region = "us-east-1"
-        jwks_url = f"https://public-keys.auth.elb.{region}.amazonaws.com/{unverified_header['kid']}"
-        req = urllib.request.Request(jwks_url)
-
-        try:
-            with urllib.request.urlopen(req) as response:
-                public_key_pem = response.read().decode('utf-8')
-
-                decoded = jwt.decode(
-                    token,
-                    public_key_pem,
-                    algorithms=['ES256'],
-                    options={
-                        'verify_signature': False,
-                        'verify_exp': False
-                        }
-                )
-
-                return decoded['sub']
-        except urllib.error.URLError as e:
-            print(f"Error accessing ALB public key: {e}")
-            return verify_cognito_token(token, payload['iss'])
-        
-        decoded = jwt.decode(token_bytes, public_key, algorithms=['RS256', 'ES256'], options={
-            'verify_signature': False,
-            "verify_exp": False}
-            )
-        return decoded["sub"]
+        sub = payload.get("sub")
+        if not sub:
+            raise ValueError("Token is missing 'sub' claim")
+        print(f"DEBUG: extracted user sub from token")
+        return sub
     except Exception as e:
-        print(f"Error verifying token: {e}")
-        print(f"Token: {token[:20]}...")
-        print(f"Header: {unverified_header if 'unverified_header' in locals() else 'Not available'}")
+        print(f"Error extracting user ID from token: {e}")
         raise
-
-def verify_cognito_token(token, issuer):
-    '''Fallback method to verify with Cognito JWKS'''
-    print(f"Attempting Cognito verification with issuer: {issuer}")
-
-    jwks_url = f"{issuer}/.well_known/jwks.json"
-    with urllib.request.urlopen(jwks_url) as response:
-        jwks = json.load(response)
-    
-    kid = jwt.get_unverified_header(token)['kid']
-    key = next((k for k in jwks['keys'] if k['kid'] == kid), None)
-    if not key:
-        raise Exception("Public key not found in Cognito JWKS")
-    
-    public_key = jwt.algorithms.ECAlgorithm.from_jwk(json.dumps(key))
-
-    decoded = jwt.decode(
-        token,
-        public_key,
-        algorithms=['ES256'],
-        options={'verify_exp': True}
-    )
-
-    return decoded['sub']
 
 def is_safe_path(base_dir: Union[str, Path], target_path: Union[str, Path]) -> bool:
     """
@@ -351,7 +289,7 @@ def lambda_handler(event, context):
     try:
         # Get user identity
         print("DEBUG: getting id from token")
-        user_id = verify_alb_token_and_get_user_id(event["id_token"])
+        user_id = get_user_id_from_token(event["id_token"])
         if not user_id:
             return {"statusCode": 403, "body": json.dumps({"error": "Unauthorized or missing user ID"})}
 
