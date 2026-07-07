@@ -16,7 +16,7 @@ parameters:
     default: 10
     description: How many seconds the dummy sleep should run.
     min: 1
-    max: 300
+    max: 600
 
 steps:
   - id: sleep

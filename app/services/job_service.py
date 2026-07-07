@@ -198,6 +198,35 @@ def _is_cached(metadata: dict, key: str, inputs: dict, outputs: dict) -> str | N
     return entry.get("run_id")
 
 
+def _verify_outputs_present(resolved_outputs: dict[str, str]) -> str | None:
+    """Return an error string if any declared output failed to materialise, else None.
+
+    Runs after the post-step S3 sync and before caching, so a run whose tool
+    exited 0 but whose results never landed locally (failed publish or failed
+    sync) is treated as a failure instead of being cached as an empty success.
+
+    Path convention matches the rest of the orchestrator: a suffixed path is a
+    file output (must exist and be non-empty); an unsuffixed path is a directory
+    output (must exist and contain at least one entry). This check runs before
+    _write_provenance, so a results-less output dir is genuinely empty here.
+    """
+    for label, path_str in resolved_outputs.items():
+        p = Path(path_str)
+        if p.suffix:  # file output
+            if not p.is_file() or p.stat().st_size == 0:
+                return f"expected output '{label}' missing or empty: {path_str}"
+        else:  # directory output
+            # Ignore _provenance.json: the API writes it into every output dir,
+            # and a stale one pulled back from S3 must not mask an empty result.
+            real = (
+                [e for e in p.iterdir() if e.name != "_provenance.json"]
+                if p.is_dir() else []
+            )
+            if not real:
+                return f"expected output '{label}' missing or empty: {path_str}"
+    return None
+
+
 def _mark_cached(metadata: dict, key: str, run_id: str) -> None:
     metadata[key] = {"status": "success", "finished_time": time.time(), "run_id": run_id}
 
@@ -1108,7 +1137,9 @@ async def run_pipeline_task(
                     _save_run(run)
                     return
 
-                # All chunks succeeded — S3 sync then merge.
+                # All chunks succeeded — pull their outputs from S3 so the merge
+                # can run locally. A sync failure FAILS the step: without the
+                # chunk outputs the merge is empty and would poison the cache.
                 if _s3_project_prefix:
                     for direction, fn, args in [
                         ("down", s3_sync_service.sync_from_s3,
@@ -1119,7 +1150,15 @@ async def run_pipeline_task(
                         try:
                             await fn(*args)
                         except Exception as exc:
-                            _log.warning("S3 post-chunk sync (%s) failed: %s", direction, exc)
+                            step.status = "failed"
+                            step.error = f"S3 post-chunk sync ({direction}) failed: {exc}"
+                            run.status = "failed"
+                            run.error = f"Step '{step_def.id}': S3 post-chunk sync ({direction}) failed: {exc}"
+                            run.finished_at = datetime.now(timezone.utc)
+                            if flight:
+                                flight.resolve(False)
+                            _save_run(run)
+                            return
 
                 try:
                     await asyncio.to_thread(
@@ -1138,6 +1177,20 @@ async def run_pipeline_task(
                         flight.resolve(False)
                     _save_run(run)
                     return
+
+                # Verify the merged outputs actually materialised before caching.
+                if _s3_project_prefix:
+                    missing = _verify_outputs_present(resolved_outputs)
+                    if missing:
+                        step.status = "failed"
+                        step.error = missing
+                        run.status = "failed"
+                        run.error = f"Step '{step_def.id}': {missing}"
+                        run.finished_at = datetime.now(timezone.utc)
+                        if flight:
+                            flight.resolve(False)
+                        _save_run(run)
+                        return
 
                 _cleanup_fragment_dirs(study_dir, run.run_id, step_def.id)
 
@@ -1225,26 +1278,6 @@ async def run_pipeline_task(
 
         success = await _poll_to_completion(handle, step, run)
 
-        # After the step finishes: sync S3 → local (pull Batch outputs), then
-        # sync local → S3 (push any API-server-written state, e.g. metadata.json).
-        # Both are best-effort — results are preserved in S3 regardless.
-        if _s3_project_prefix:
-            for direction, fn, args in [
-                ("down", s3_sync_service.sync_from_s3,
-                 (s3_sync.bucket, _s3_project_prefix, study_dir)),  # type: ignore[union-attr]
-                ("up",   s3_sync_service.sync_to_s3,
-                 (study_dir, s3_sync.bucket, _s3_project_prefix)),  # type: ignore[union-attr]
-            ]:
-                try:
-                    await fn(*args)
-                except Exception as exc:
-                    _log.warning(
-                        "S3 post-sync (%s) failed for step '%s' (data remains in S3): %s",
-                        direction,
-                        step_def.id,
-                        exc,
-                    )
-
         if not success:
             if not run.error:
                 run.error = f"Step '{step_def.id}' failed"
@@ -1255,6 +1288,47 @@ async def run_pipeline_task(
                 flight.resolve(False)
             _save_run(run)
             return
+
+        # Pull the Batch job's outputs from S3, then push local state back. A sync
+        # failure now FAILS the step: without the pulled outputs we cannot confirm
+        # or serve results, and caching an empty success here would make every
+        # future cached run silently serve nothing.
+        if _s3_project_prefix:
+            for direction, fn, args in [
+                ("down", s3_sync_service.sync_from_s3,
+                 (s3_sync.bucket, _s3_project_prefix, study_dir)),  # type: ignore[union-attr]
+                ("up",   s3_sync_service.sync_to_s3,
+                 (study_dir, s3_sync.bucket, _s3_project_prefix)),  # type: ignore[union-attr]
+            ]:
+                try:
+                    await fn(*args)
+                except Exception as exc:
+                    step.status = "failed"
+                    step.error = f"S3 post-sync ({direction}) failed: {exc}"
+                    run.status = "failed"
+                    run.error = f"Step '{step_def.id}': S3 post-sync ({direction}) failed: {exc}"
+                    run.finished_at = datetime.now(timezone.utc)
+                    if flight:
+                        flight.resolve(False)
+                    _save_run(run)
+                    return
+
+        # Verify the tool's declared outputs actually materialised locally. A tool
+        # can exit 0 without producing (or publishing) results; caching that would
+        # serve empty output on every future cached run. Scoped to the S3-backed
+        # path, where outputs return via sync and this failure mode exists.
+        if _s3_project_prefix:
+            missing = _verify_outputs_present(resolved_outputs)
+            if missing:
+                step.status = "failed"
+                step.error = missing
+                run.status = "failed"
+                run.error = f"Step '{step_def.id}': {missing}"
+                run.finished_at = datetime.now(timezone.utc)
+                if flight:
+                    flight.resolve(False)
+                _save_run(run)
+                return
 
         step_outputs[step_def.id] = resolved_outputs
         # Provenance must be written BEFORE _mark_cached so that finished_time

@@ -93,6 +93,70 @@ def test_pipeline_with_params(job_client):
     assert resp.status_code == 202
 
 
+def test_submitted_param_reaches_backend(tmp_path):
+    """A user-supplied param must flow through to backend.submit(params=...).
+
+    Regression guard: proves the API forwards params rather than defaulting.
+    Uses a capturing backend so we can inspect exactly what the orchestrator sends.
+    """
+    from typing import Any
+
+    from app.auth.dependencies import require_auth
+    from app.backends import get_backend
+    from app.backends.base import JobBackend, JobHandle
+    from app.config import Settings, get_settings
+    from app.main import create_app
+    from app.services import job_service
+
+    captured: dict[str, Any] = {}
+
+    class _CapturingHandle(JobHandle):
+        @property
+        def job_id(self) -> str:
+            return "cap-001"
+
+        async def status(self) -> str:
+            return "succeeded"
+
+        async def logs(self, tail: int = 200) -> str:
+            return "ok"
+
+        async def cancel(self) -> None:
+            pass
+
+    class _CapturingBackend(JobBackend):
+        async def submit(self, tool_spec, mount_paths, params, num_subjects=1,
+                         user_token=None, extra_readonly_mounts=None):
+            captured["params"] = dict(params)
+            return _CapturingHandle()
+
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        execution_mode="local", data_root=tmp_path
+    )
+    app.dependency_overrides[get_backend] = lambda: _CapturingBackend()
+
+    async def _fixed_user():
+        from app.auth.dependencies import CurrentUser
+        return CurrentUser(sub="LOCAL_USER", token="")
+
+    app.dependency_overrides[require_auth] = _fixed_user
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        job_service._data_root = tmp_path
+        client.post("/projects", json={"name": "paramflow"})
+        resp = client.post(
+            "/projects/paramflow/jobs/pipelines",
+            json={"pipeline_id": "dummy_pipeline", "params": {"duration_seconds": 250}},
+        )
+        assert resp.status_code == 202
+
+    app.dependency_overrides.clear()
+    assert captured.get("params", {}).get("duration_seconds") == 250
+
+
 def test_pipeline_cache_reuse_default_true(job_client, tmp_path):
     """Submit twice with the same params; second run should have skipped steps."""
     pid = _create_project(job_client, "cachetest")

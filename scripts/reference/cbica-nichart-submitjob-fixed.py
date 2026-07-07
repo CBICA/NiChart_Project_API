@@ -97,6 +97,36 @@ def fsx_to_s3_uri(fsx_path: Union[str, Path]) -> str:
     rel = p[len(prefix):].rstrip("/")
     return f"s3://{S3_DATA_BUCKET}/{rel}"
 
+
+# Sidecar image (guaranteed present on the processing instances) used to run the
+# S3<->FSx syncs. It carries the AWS CLI and is launched the SAME way as the tool
+# container (host daemon `docker run -v`), so it shares the tool container's real
+# host-Lustre view. fsx-manager's own Batch-provided FSx bind is a divergent mount
+# namespace (proven by a stat device:inode mismatch vs the host), so an aws s3 sync
+# run inside fsx-manager can neither see the tool's outputs nor write where the
+# tool reads — hence the syncs must run in this sidecar instead.
+SIDECAR_IMAGE = "cbica/aws-fsx-sidecar:06182025"
+
+
+def sidecar_run(user_id: str, inner_cmd: str) -> str:
+    """Wrap a shell command in a host-daemon `docker run` of the FSx sidecar.
+
+    The user's FSx dir is bind-mounted at the same path inside the sidecar, so the
+    absolute /fsx/fsx/... paths used by the sync commands resolve identically.
+    Runs synchronously (no -d), so the caller's `&&` chain waits on it and
+    propagates its exit code — a failed sync fails the whole job. S3 credentials
+    come from the instance role via IMDS (requires the instance metadata hop limit
+    to allow container access).
+
+    NOTE: inner_cmd must not contain single quotes — it is single-quoted for
+    `sh -c` and this whole string is itself embedded in the fsx-manager `bash -c`.
+    """
+    fsx_dir = f"/fsx/fsx/{user_id}"
+    return (
+        f"docker run --rm -v {fsx_dir}:{fsx_dir}:rw "
+        f"--entrypoint sh {SIDECAR_IMAGE} -c '{inner_cmd}'"
+    )
+
 class IOField(BaseModel):
     type: str  # "file" or "directory"
     description: Optional[str] = None
@@ -277,29 +307,26 @@ class ToolSpec(BaseModel):
 
         return docker_cmd
 
-    def generate_sync_commands(self, mount_paths: Dict[str, str]) -> Tuple[List[str], List[str]]:
-        """Build path-scoped `aws s3 sync` commands for this job.
+    def generate_down_sync_commands(self, mount_paths: Dict[str, str]) -> List[str]:
+        """Build scoped DOWN-sync (S3 -> FSx) commands for this job's INPUTS.
 
-        Returns (down_cmds, up_cmds).
+        Inputs only, NO --delete. Inputs are read-only, so deletion is never
+        wanted, and dropping --delete means a concurrent chunk job can't wipe
+        another chunk's in-flight outputs. DRA auto-import is the primary
+        S3->FSx path; this explicit sync is a determinism backstop guaranteeing
+        inputs are materialised before the tool reads them.
 
-        DOWN (S3 -> FSx): the tool's INPUT paths only, NO --delete. Inputs are
-          read-only, so deletion is never wanted, and dropping --delete means a
-          concurrent chunk job can't wipe another chunk's in-flight outputs.
-          DRA auto-import is the primary S3->FSx path; this explicit sync is a
-          determinism backstop guaranteeing inputs are materialised before the
-          tool reads them.
+        The UP-sync is deliberately NOT scoped — see the up-sync in
+        lambda_handler. Scoping the up-sync to declared output mounts is fragile:
+        tools that write results outside their exact declared output paths (aux
+        files, logs, nested dirs) were silently not published. The up-sync
+        therefore covers the whole user dir.
 
-        UP (FSx -> S3): the tool's OUTPUT paths only, NO --delete. DRA
-          auto-export is disabled, so this explicit up-sync is the ONLY thing
-          that publishes outputs to S3. It is chained after the tool with `&&`,
-          so a failed tool run never reaches it and never publishes partial
-          output.
-
-        File-typed mounts sync their PARENT directory, since `aws s3 sync`
+        File-typed inputs sync their PARENT directory, since `aws s3 sync`
         operates on prefixes/directories rather than single objects.
         """
         down_dirs = set()
-        up_dirs = set()
+        out_dirs = set()
         for label, host_path in mount_paths.items():
             if label in self.inputs:
                 is_file = self.inputs[label].type == "file"
@@ -307,20 +334,27 @@ class ToolSpec(BaseModel):
                 down_dirs.add(sync_dir)
             elif label in self.outputs:
                 is_file = self.outputs[label].type == "file"
-                sync_dir = str(Path(host_path).parent) if is_file else str(host_path).rstrip("/")
-                up_dirs.add(sync_dir)
+                out_dirs.add(str(Path(host_path).parent) if is_file else str(host_path).rstrip("/"))
             else:
                 raise ValueError(f"Mount label {label} not found in tool spec inputs or outputs.")
 
-        # A path that is somehow both an input and an output should only be
-        # up-synced (it's being written); don't down-sync over fresh writes.
-        down_dirs -= up_dirs
+        # Don't down-sync a path that is also an output (it's being written).
+        down_dirs -= out_dirs
 
-        down_cmds = [f"aws s3 sync {fsx_to_s3_uri(d)} {d}" for d in sorted(down_dirs)]
-        # mkdir the local output dir first so the up-sync succeeds even when the
-        # tool wrote nothing (empty sync is a no-op; a missing dir is an error).
-        up_cmds = [f"mkdir -pv {d} && aws s3 sync {d} {fsx_to_s3_uri(d)}" for d in sorted(up_dirs)]
-        return down_cmds, up_cmds
+        return [f"aws s3 sync {fsx_to_s3_uri(d)} {d}" for d in sorted(down_dirs)]
+
+    def output_dirs(self, mount_paths: Dict[str, str]) -> List[str]:
+        """Return the host directories the tool's outputs land in (dedup, sorted).
+
+        For a file output this is the parent directory; for a directory output it
+        is the directory itself. Used for post-run diagnostics.
+        """
+        dirs = set()
+        for label, host_path in mount_paths.items():
+            if label in self.outputs:
+                is_file = self.outputs[label].type == "file"
+                dirs.add(str(Path(host_path).parent) if is_file else str(host_path).rstrip("/"))
+        return sorted(dirs)
 
     def get_container_image(self):
         return self.container['image']
@@ -503,15 +537,35 @@ def lambda_handler(event, context):
         extra_prefix_commands_str = ' && '.join(extra_prefix_commands_list) if extra_prefix_commands_list else 'echo placeholder'
         print(f"Extra prefix commands string: {extra_prefix_commands_str}")
 
-        # ── Path-scoped S3 sync ────────────────────────────────────────────────
-        # DOWN: inputs only, no --delete (DRA auto-import backstop, concurrency-safe).
-        # UP:   outputs only, no --delete; sole publish path since DRA auto-export
-        #       is disabled. Chained after the tool with `&&`, so a failed tool run
-        #       never publishes partial output. Replaces the previous full-user-dir
-        #       `aws s3 sync ... --delete` which clobbered concurrent chunk outputs.
-        down_sync_cmds, up_sync_cmds = tool.generate_sync_commands(user_mounts)
-        down_sync_str = ' && '.join(down_sync_cmds) if down_sync_cmds else 'echo "no inputs to down-sync"'
-        up_sync_str = ' && '.join(up_sync_cmds) if up_sync_cmds else 'echo "no outputs to up-sync"'
+        # ── S3 sync via host-daemon sidecar containers ─────────────────────────
+        # Both syncs run in the FSx sidecar (see sidecar_run), launched the same
+        # way as the tool container so they share its real host-Lustre view. This
+        # is fully explicit S3<->FSx sync in both directions — no dependence on DRA
+        # auto-import/auto-export, so FSx auto-sync can be disabled entirely.
+        #
+        # DOWN: scoped to inputs, no --delete. Runs before the tool so inputs are
+        #       materialised on the shared Lustre the tool container reads.
+        # UP:   whole user dir, no --delete. NOT scoped to declared output mounts
+        #       (tools write results outside their exact declared paths). Gated
+        #       behind && after the tool, so a failed tool run publishes nothing.
+        down_sync_cmds = tool.generate_down_sync_commands(user_mounts)
+        if down_sync_cmds:
+            down_sync_str = sidecar_run(user_id, ' && '.join(down_sync_cmds))
+        else:
+            down_sync_str = 'echo "no inputs to down-sync"'
+
+        # Up-sync inner: list the output dirs from the sidecar's (correct) view for
+        # visibility, then sync the whole user dir. `; ` (not `&&`) after the `ls`
+        # so the sync's exit code is what the sidecar returns.
+        out_dirs = tool.output_dirs(user_mounts)
+        ls_part = (
+            f'echo "== FSx output dirs (sidecar view) ==" && '
+            f'ls -laR {" ".join(out_dirs)} 2>&1 || true; '
+            if out_dirs else ''
+        )
+        up_inner = f'{ls_part}aws s3 sync /fsx/fsx/{user_id} s3://{S3_DATA_BUCKET}/fsx/{user_id}'
+        up_sync_str = sidecar_run(user_id, up_inner)
+
         print(f"DEBUG: down-sync: {down_sync_str}")
         print(f"DEBUG: up-sync: {up_sync_str}")
 
