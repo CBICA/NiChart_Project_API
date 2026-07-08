@@ -295,8 +295,9 @@ async def get_pipeline_run(
 async def get_pipeline_logs(
     run_id: str,
     user: CurrentUser = Depends(require_auth),
+    backend: JobBackend = Depends(get_backend),
 ) -> PipelineRunLogs:
-    return await job_service.get_run_logs(run_id=run_id, user_id=user.sub)
+    return await job_service.get_run_logs(run_id=run_id, user_id=user.sub, backend=backend)
 
 
 @jobs_router.get(

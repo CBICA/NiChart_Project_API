@@ -843,7 +843,15 @@ async def run_pipeline_task(
         _s3_project_prefix = f"{s3_sync.prefix}/{run.user_id}/{study_dir.name}"
 
     if _s3_project_prefix:
-        await s3_sync_service.sync_from_s3(s3_sync.bucket, _s3_project_prefix, study_dir)  # type: ignore[union-attr]
+        try:
+            await s3_sync_service.sync_from_s3(s3_sync.bucket, _s3_project_prefix, study_dir)  # type: ignore[union-attr]
+        except Exception as exc:
+            _log.exception("Pipeline-start S3 sync failed for run %s", run.run_id)
+            run.status = "failed"
+            run.error = f"Pipeline-start S3 sync failed: {exc}"
+            run.finished_at = datetime.now(timezone.utc)
+            _save_run(run)
+            return
 
     metadata = _load_metadata(study_dir)
     step_outputs: dict[str, dict[str, str]] = {}
@@ -1649,7 +1657,24 @@ def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
     return _to_detail(run)
 
 
-async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
+async def _live_logs_for_job(backend, job_id: str) -> str | None:
+    """Best-effort live log fetch for a still-running job via a rebuilt handle.
+
+    Returns None if the backend can't reconnect (e.g. Docker after restart) or on
+    any error — callers fall back to the persisted step logs.
+    """
+    if backend is None or not job_id:
+        return None
+    try:
+        handle = backend.reconnect(job_id)
+        if handle is None:
+            return None
+        return await handle.logs()
+    except Exception:
+        return None
+
+
+async def get_run_logs(run_id: str, user_id: str, backend=None) -> PipelineRunLogs:
     run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
@@ -1661,20 +1686,35 @@ async def get_run_logs(run_id: str, user_id: str) -> PipelineRunLogs:
         if s.chunks:
             chunk_parts: list[str] = []
             for c in s.chunks:
-                if c.logs:
-                    chunk_parts.append(f"  --- chunk {c.chunk_idx}/{len(s.chunks)-1} ---\n{c.logs}")
+                chunk_logs = c.logs
+                # Fetch live logs for chunks still running (persisted logs are
+                # only written when the chunk completes).
+                if c.status == "running" and c.job_id:
+                    live = await _live_logs_for_job(backend, c.job_id)
+                    if live:
+                        chunk_logs = live
+                if chunk_logs:
+                    chunk_parts.append(f"  --- chunk {c.chunk_idx}/{len(s.chunks)-1} ---\n{chunk_logs}")
             if chunk_parts:
                 parts.append(f"=== Step {s.step_id} ===\n" + "\n".join(chunk_parts))
         else:
             live_logs = s.logs
-            # For SLURM jobs the log file is on a shared filesystem — read it live.
-            if s.status == "running" and s.log_path:
-                p = Path(s.log_path)
-                if p.exists():
-                    try:
-                        live_logs = p.read_text()
-                    except Exception:
-                        pass
+            # Persisted step logs are only written at completion; for a running
+            # step fetch live output so the client can stream it.
+            if s.status == "running":
+                if s.log_path:
+                    # SLURM: log file on a shared filesystem — read it live.
+                    p = Path(s.log_path)
+                    if p.exists():
+                        try:
+                            live_logs = p.read_text()
+                        except Exception:
+                            pass
+                elif s.job_id:
+                    # Batch/cloud: rebuild the handle and pull live CloudWatch logs.
+                    live = await _live_logs_for_job(backend, s.job_id)
+                    if live:
+                        live_logs = live
             if live_logs:
                 parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
 

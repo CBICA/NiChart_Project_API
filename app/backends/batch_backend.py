@@ -122,6 +122,16 @@ class BatchBackend(JobBackend):
     def backend_name(self) -> str:
         return "batch"
 
+    def reconnect(self, job_id: str, log_path: str | None = None) -> BatchJobHandle:
+        """Rebuild a handle for an existing Batch job.
+
+        Batch jobs are addressable purely by ID via the AWS API, so this works
+        from any process/instance — used by the logs endpoint to fetch live
+        CloudWatch output for a still-running step (the original handle lives only
+        in the background task).
+        """
+        return BatchJobHandle(job_id, self._batch, self._logs)
+
     async def submit(
         self,
         tool_spec: ToolSpec,

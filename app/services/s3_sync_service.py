@@ -67,25 +67,44 @@ def _download_sync(bucket: str, prefix: str, local_dir: Path) -> int:
     """Download new/changed S3 objects to local_dir. Returns number downloaded."""
     s3 = boto3.client("s3")
 
-    downloaded = 0
     paginator = s3.get_paginator("list_objects_v2")
+    objects: list[dict] = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix + "/"):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            rel = key[len(prefix) + 1:]
-            if not rel:
-                continue
-            if _should_exclude(rel):
-                continue
+        objects.extend(page.get("Contents", []))
 
-            local_file = local_dir / rel
-            if local_file.exists() and local_file.stat().st_size == obj["Size"]:
-                continue  # already up to date
+    # FSx DRA auto-export represents directories as zero-byte objects at the
+    # directory's key (no trailing slash), which collide with the real directory
+    # on the local filesystem (download onto a dir → IsADirectoryError). Detect
+    # these "directory marker" keys: any key that is an ancestor path of another
+    # key is a directory, not a file, and must be skipped. Order-independent —
+    # computed from the full key set, not local filesystem state.
+    dir_keys: set[str] = set()
+    for obj in objects:
+        parts = obj["Key"].split("/")
+        for i in range(1, len(parts)):
+            dir_keys.add("/".join(parts[:i]))
 
-            local_file.parent.mkdir(parents=True, exist_ok=True)
-            _log.info("s3-sync down: s3://%s/%s → %s", bucket, key, rel)
-            s3.download_file(bucket, key, str(local_file))
-            downloaded += 1
+    downloaded = 0
+    for obj in objects:
+        key = obj["Key"]
+        rel = key[len(prefix) + 1:]
+        if not rel:
+            continue
+        if _should_exclude(rel):
+            continue
+        if key.endswith("/") or key in dir_keys:
+            continue  # directory marker, not a real file
+
+        local_file = local_dir / rel
+        if local_file.is_dir():
+            continue  # stray marker whose path is already a real directory
+        if local_file.exists() and local_file.stat().st_size == obj["Size"]:
+            continue  # already up to date
+
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        _log.info("s3-sync down: s3://%s/%s → %s", bucket, key, rel)
+        s3.download_file(bucket, key, str(local_file))
+        downloaded += 1
 
     return downloaded
 
