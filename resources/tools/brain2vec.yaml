@@ -1,0 +1,44 @@
+name: Brain2Vec Embedding Extraction
+description: >
+  Extracts 768-dimensional latent brain embeddings from T1-weighted MRI scans using
+  the Brain2Vec masked autoencoder (ViT-Base, patch size 8). Produces a CSV with one
+  row per subject (MRID + feature_0000 … feature_0767) and a JSON file of the raw
+  embedding vectors, both written to the output directory.
+
+github_url: https://github.com/CBICA/Brain2Vec
+
+inputs:
+  t1_img:
+    type: directory
+    description: Directory of T1-weighted MRI scans, one {MRID}.nii.gz per subject.
+
+outputs:
+  out_csv:
+    type: file
+    description: CSV of Brain2Vec embeddings; columns are MRID, feature_0000 … feature_0767.
+    merge: csv_concat
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  out_csv:
+    path_in_container: /output/Brain2Vec_Embeddings.csv
+    mode: rw
+
+parameters: {}
+
+resources:
+  vcpus: 4
+  memory: 6000    # MiB — observed ~3.2 GB peak on 3-subject batch; 6 GB adds margin
+  gpus: 1         # peak GPU VRAM ~6 GB (GTX 1080 Ti benchmark, 3 subjects)
+
+time_per_subject_seconds: 15.0   # ~39 s wall time / 3 subjects includes model-load startup
+
+# Re-enable when parallelization is tested working
+#parallelizable: true
+#subjects_per_chunk: 10
+
+container:
+  image: cbica/nichart_brain2vec:1.0.1-wrapped
+  command: "brain2vec {t1_img} {out_csv}"

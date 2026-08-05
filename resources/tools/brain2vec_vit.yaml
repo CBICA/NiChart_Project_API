@@ -1,0 +1,70 @@
+name: Brain2Vec ViT Downstream Inference
+description: >
+  Runs downstream inference using a fine-tuned Vision Transformer (ViT) trained on
+  top of Brain2Vec representations. Accepts user-supplied model weights and produces
+  a CSV with MRID and Prediction columns. Supports regression, binary classification,
+  and multiclass classification tasks.
+
+github_url: https://github.com/CBICA/Brain2Vec
+
+inputs:
+  t1_img:
+    type: directory
+    description: Directory of T1-weighted MRI scans, one {MRID}.nii.gz per subject.
+  model_weights:
+    type: directory
+    description: Directory containing the fine-tuned ViT .pth weights file.
+
+outputs:
+  out_dir:
+    type: directory
+    description: Output directory containing ViT_Predictions.csv (MRID + Prediction columns).
+    merge: directory_union_csv_concat
+
+mounts:
+  t1_img:
+    path_in_container: /input/t1
+    mode: ro
+  model_weights:
+    path_in_container: /input/weights
+    mode: ro
+  out_dir:
+    path_in_container: /output
+    mode: rw
+
+parameters:
+  model:
+    type: str
+    default: vit_base
+    description: ViT architecture variant.
+    choices: [vit_base, vit_large, vit_huge]
+  weights_filename:
+    type: str
+    default: model.pth
+    description: Filename of the .pth weights file within the model_weights directory.
+  mode:
+    type: str
+    default: regression
+    description: Inference mode.
+    choices: [regression, binary, multiclass]
+  num_classes:
+    type: int
+    default: 1
+    description: Number of output classes (multiclass mode only).
+    min: 1
+    max: 1000
+
+resources:
+  vcpus: 4
+  memory: 6000
+  gpus: 1
+
+time_per_subject_seconds: 15.0
+
+# Re-enable when parallelization is tested working
+#parallelizable: true
+#subjects_per_chunk: 10
+
+container:
+  image: cbica/nichart_brain2vec:1.0.1-wrapped
+  command: "vit {t1_img} {out_dir} {model} {weights_filename} {mode} {num_classes}"

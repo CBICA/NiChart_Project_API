@@ -3,14 +3,33 @@ NiChart CLI — terminal client for the NiChart API.
 
 Typical usage
 -------------
-    nichart status
+    nichart status                        # server health
+    nichart cloud                         # cloud queue status (cloud mode)
+
     nichart projects create myproject
-    nichart files upload nifti myproject scan_T1.nii.gz
     nichart pipelines list
+    nichart pipelines show dummy_pipeline
+    nichart tools list
+
+    nichart files upload-nifti myproject scan_T1.nii.gz
+    nichart files upload-csv   myproject participants.csv
+    nichart participants show  myproject
+
+    nichart readiness myproject dummy_pipeline
     nichart jobs submit myproject dummy_pipeline --param duration_seconds=5
     nichart jobs                          # live dashboard of all your jobs
     nichart jobs <run_id>                 # live detail view for one run
     nichart jobs logs <run_id>
+    nichart results show myproject dummy_pipeline
+
+    nichart retention show    myproject   # when does this project expire? (cloud)
+    nichart retention refresh myproject
+
+All-in-one — create a project, upload data, verify, and run in one shot:
+
+    nichart run run_dlmuse --project study1 --t1 /data/t1 --participants demo.csv
+    nichart run run_spare_all --project study1 --t1 /data/t1 --fl /data/flair \\
+                --participants demo.csv --wait-until-done
 
 Server URL is read from the NICHART_API_URL environment variable
 (default: http://localhost:8000).  Override per-command with --url.
@@ -18,9 +37,17 @@ Server URL is read from the NICHART_API_URL environment variable
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
 import time
+import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -56,11 +83,19 @@ jobs_app     = typer.Typer(
         "Pass a run ID to watch a specific run."
     ),
 )
+tools_app        = typer.Typer(no_args_is_help=True, help="Browse available tools.")
+results_app      = typer.Typer(no_args_is_help=True, help="Inspect pipeline results for a project.")
+participants_app = typer.Typer(no_args_is_help=True, help="View the participants table.")
+retention_app    = typer.Typer(no_args_is_help=True, help="View or refresh a project's retention timer (cloud mode).")
 
 app.add_typer(projects_app, name="projects")
 app.add_typer(files_app,    name="files")
 app.add_typer(pipelines_app, name="pipelines")
+app.add_typer(tools_app,    name="tools")
 app.add_typer(jobs_app,     name="jobs")
+app.add_typer(results_app,  name="results")
+app.add_typer(participants_app, name="participants")
+app.add_typer(retention_app, name="retention")
 
 # Global URL state (set by --url callback)
 _api_url: str = ""
@@ -102,7 +137,14 @@ def _api(
             console.print(f"[red]Error {r.status_code}:[/red] {detail}")
             raise typer.Exit(1)
         raise typer.Exit(1)
-    return r.json()
+    # 204 No Content and other empty-bodied successes (deletes, CSV upload, …)
+    # have no JSON to parse. Callers that need a body use JSON endpoints.
+    if r.status_code == 204 or not r.content:
+        return {}
+    try:
+        return r.json()
+    except Exception:
+        return {}
 
 
 def _api_download(path: str) -> httpx.Response:
@@ -111,6 +153,238 @@ def _api_download(path: str) -> httpx.Response:
     except httpx.ConnectError:
         console.print(f"[red]Cannot connect to {_api_url}[/red]")
         raise typer.Exit(1)
+
+
+# ── Managed server sessions ───────────────────────────────────────────────────
+#
+# Some commands (notably `run`) can operate against a server they start
+# themselves. The governing invariant is OWNERSHIP: we only ever shut down a
+# server this process spawned; an already-running server is attached to and left
+# untouched.
+#
+# Strategies (see `api_session`):
+#   attach — require an existing server at the target URL (the classic behavior)
+#   spawn  — always start a fresh ephemeral local server (local execution mode)
+#   auto   — attach if one is reachable, otherwise spawn
+#   remote — [NOT IMPLEMENTED] provision + start the server on a remote host over
+#            SSH and tunnel to it (the "VS Code remote" model). Its lifecycle
+#            contract is identical to `spawn` (owned server → torn down on exit);
+#            only `_open_remote` below needs filling in. See CLI_run.md.
+
+
+@dataclass
+class ApiConnection:
+    """A resolved API endpoint plus the lifecycle we owe it."""
+    base_url: str
+    owned: bool                              # True if this process started the server
+    proc: Optional[subprocess.Popen] = None
+    log_path: Optional[str] = None
+
+
+def _probe(url: str) -> bool:
+    """True if a NiChart API server answers /health at ``url`` (and looks like one)."""
+    try:
+        r = httpx.get(f"{url}/health", timeout=1.5)
+    except Exception:
+        return False
+    if not r.is_success:
+        return False
+    try:
+        body = r.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and "execution_mode" in body
+
+
+def _is_loopback(url: str) -> bool:
+    return urllib.parse.urlparse(url).hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def _free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _print_log_tail(path: str, n: int = 20) -> None:
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()[-n:]
+    except Exception:
+        return
+    if lines:
+        console.print(f"[dim]— last {len(lines)} line(s) of {path} —[/dim]")
+        for ln in lines:
+            console.print(f"[dim]{ln}[/dim]")
+
+
+def _graceful_shutdown(conn: ApiConnection) -> None:
+    """SIGTERM the owned server, then SIGKILL if it doesn't exit. No-op if not owned."""
+    if not conn.owned or conn.proc is None or conn.proc.poll() is not None:
+        return
+    conn.proc.terminate()
+    try:
+        conn.proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        conn.proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            conn.proc.wait(timeout=5)
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """Minimal KEY=VALUE parser for a .env file (ignores comments/blank lines)."""
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def _effective_spawn_backend(env_cfg: dict[str, str]) -> str:
+    """The backend a spawned (forced-local) server would use, from .env + environment.
+
+    os.environ overrides .env (matching pydantic-settings precedence). Because we
+    force execution_mode=local, batch is only reached via an explicit override.
+    """
+    def val(name: str) -> Optional[str]:
+        return os.environ.get(name) or env_cfg.get(name)
+
+    return val("NICHART_JOB_BACKEND") or ("singularity" if val("NICHART_SIF_DIR") else "docker")
+
+
+def _spawn_local(log_path: Optional[str]) -> ApiConnection:
+    """Start an ephemeral local-mode API server subprocess; wait until it's healthy.
+
+    The server runs with cwd = the API repo root so it loads the operator's
+    ``.env`` and finds the relative ``resources/`` directory. Config precedence:
+    inherited environment > repo ``.env`` > server defaults, with
+    execution_mode forced to local (so the CLI can talk to it without auth).
+    """
+    env_cfg = _read_env_file(ENV_FILE) if ENV_FILE.exists() else {}
+    if not ENV_FILE.exists():
+        console.print(
+            f"[yellow]No .env found at {ENV_FILE}[/yellow] — the spawned server will use "
+            "defaults. Copy .env.example there and configure it "
+            "(see docs/getting-started.md → Environment variables)."
+        )
+
+    backend = _effective_spawn_backend(env_cfg)
+    if backend == "batch":
+        console.print(
+            "[red]Your API config selects the AWS Batch backend (NICHART_JOB_BACKEND=batch).[/red]\n"
+            "That runs on the cloud and can't be a locally-spawned server. Point --url at your "
+            "deployed API and use --server attach."
+        )
+        raise typer.Exit(1)
+    if backend == "docker" and shutil.which("docker") is None and not Path("/var/run/docker.sock").exists():
+        console.print(
+            "[yellow]Warning:[/yellow] Docker backend selected but no Docker found "
+            "(no `docker` on PATH, no docker socket). Pipeline steps will fail without it."
+        )
+
+    port = _free_loopback_port()
+    url = f"http://127.0.0.1:{port}"
+
+    if log_path:
+        log_handle: object = open(log_path, "wb")
+        log_name = log_path
+    else:
+        tmp = tempfile.NamedTemporaryFile(prefix="nichart-server-", suffix=".log", delete=False)
+        log_handle, log_name = tmp, tmp.name
+
+    env = dict(os.environ)
+    env["NICHART_EXECUTION_MODE"] = "local"
+    cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)]
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=env, cwd=str(REPO_ROOT),  # type: ignore[arg-type]
+        )
+    except Exception as exc:
+        console.print(f"[red]Failed to launch local server:[/red] {exc}")
+        raise typer.Exit(1)
+
+    conn = ApiConnection(base_url=url, owned=True, proc=proc, log_path=log_name)
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            console.print(f"[red]Local server exited during startup (code {proc.returncode}).[/red]")
+            _print_log_tail(log_name)
+            raise typer.Exit(1)
+        if _probe(url):
+            return conn
+        time.sleep(0.3)
+
+    console.print("[red]Local server did not become healthy within 30s.[/red]")
+    _print_log_tail(log_name)
+    _graceful_shutdown(conn)
+    raise typer.Exit(1)
+
+
+def _open_remote(url_hint: str, log_path: Optional[str]) -> ApiConnection:
+    """[STUB] Provision + start the server on a remote host and tunnel to it.
+
+    Planned "VS Code remote" model: over SSH, ensure the NiChart server package or
+    container is installed on the host (the "install server component" step), start
+    it bound to loopback there, open an SSH tunnel to a local port, and return an
+    owned ApiConnection pointing at the tunnel. Teardown then stops the remote
+    server and closes the tunnel — identical ownership contract to a local spawn.
+    Not implemented yet.
+    """
+    console.print("[red]The 'remote' server strategy is not implemented yet.[/red]")
+    raise typer.Exit(1)
+
+
+@contextlib.contextmanager
+def api_session(url_hint: str, *, strategy: str = "auto", keep: bool = False,
+                log_path: Optional[str] = None):
+    """Yield an :class:`ApiConnection`, managing the server lifecycle when we own it.
+
+    While the context is active the module-level API URL is pointed at the
+    connection, so plain ``_api``/``_api_download`` calls target it. Only a server
+    this process started is shut down on exit (unless ``keep``).
+    """
+    global _api_url
+
+    if strategy == "remote":
+        conn = _open_remote(url_hint, log_path)
+    elif strategy in ("auto", "attach") and _probe(url_hint):
+        conn = ApiConnection(base_url=url_hint, owned=False)
+    elif strategy == "attach":
+        console.print(
+            f"[red]No API server reachable at {url_hint}.[/red] "
+            "Start one, or use --server auto/spawn."
+        )
+        raise typer.Exit(1)
+    else:
+        # strategy == "spawn", or "auto" with nothing running → spawn locally.
+        if not _is_loopback(url_hint):
+            console.print(
+                f"[red]Cannot auto-start a server for a remote target ({url_hint}).[/red] "
+                "Start the server there and point --url at it, or use --server attach."
+            )
+            raise typer.Exit(1)
+        conn = _spawn_local(log_path)
+        console.print(f"[dim]Started a local API server (pid {conn.proc.pid}) at {conn.base_url}[/dim]")
+
+    saved_url = _api_url
+    _api_url = conn.base_url
+    try:
+        yield conn
+    finally:
+        _api_url = saved_url
+        if conn.owned and not keep:
+            console.print("[dim]Shutting down the local API server…[/dim]")
+            _graceful_shutdown(conn)
+        elif conn.owned and keep and conn.proc is not None:
+            console.print(
+                f"[dim]Leaving local API server running (pid {conn.proc.pid}) at "
+                f"{conn.base_url} — stop it yourself (--keep-server).[/dim]"
+            )
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
@@ -125,6 +399,14 @@ _STATUS_STYLE = {
 }
 
 VALID_MODALITIES = ("t1", "fl", "t2", "t1ce", "adc")
+
+# Repo root = parent of app/. Used to locate the server's .env and resources/ when
+# spawning a managed server, so it runs with the config the operator set up at
+# install time — not whatever directory the user happens to invoke `nichart` from.
+# (pydantic-settings loads .env from cwd, and NICHART_RESOURCES_PATH defaults to a
+# relative "resources", so cwd must be the repo root for the server to work.)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = REPO_ROOT / ".env"
 
 
 def _status_text(status: str) -> Text:
@@ -171,6 +453,150 @@ def _project_root(project: str) -> Path | None:
     if root:
         return Path(root) / getpass.getuser() / project
     return None
+
+
+def _parse_params(param: list[str]) -> dict:
+    """Parse repeated ``--param key=value`` into a dict with best-effort typing.
+
+    Values are coerced int → float → bool → str (first that fits). Raises with a
+    clear message on a malformed entry.
+    """
+    params: dict = {}
+    for p in param:
+        if "=" not in p:
+            console.print(f"[red]Bad --param {p!r}[/red] — expected key=value")
+            raise typer.Exit(1)
+        k, _, raw = p.partition("=")
+        val: object = raw
+        for cast in (int, float):
+            try:
+                val = cast(raw)
+                break
+            except ValueError:
+                pass
+        else:
+            if raw.lower() in ("true", "false"):
+                val = raw.lower() == "true"
+        params[k.strip()] = val
+    return params
+
+
+def _gather_niftis(path: Path) -> list[Path]:
+    """Resolve a path to NIfTI files: a directory yields all NIfTIs within (flat),
+    a single file yields itself. Errors clearly if nothing usable is found."""
+    if not path.exists():
+        console.print(f"[red]Path not found:[/red] {path}")
+        raise typer.Exit(1)
+    if path.is_dir():
+        files = sorted(
+            p for p in path.iterdir()
+            if p.is_file() and (p.name.endswith(".nii") or p.name.endswith(".nii.gz"))
+        )
+        if not files:
+            console.print(f"[red]No NIfTI files (.nii / .nii.gz) found in[/red] {path}")
+            raise typer.Exit(1)
+        return files
+    if not (path.name.endswith(".nii") or path.name.endswith(".nii.gz")):
+        console.print(f"[red]Not a NIfTI file:[/red] {path}")
+        raise typer.Exit(1)
+    return [path]
+
+
+def _upload_modality(project: str, modality: str, files: list[Path]) -> list[str]:
+    """Non-interactively upload NIfTIs as a fixed modality; returns committed MRIDs.
+
+    The MRID for each file comes from server-side filename inference. A file whose
+    MRID can't be inferred is a hard error (the whole staged batch is discarded and
+    the offending files are listed), since committing without an MRID is unsafe.
+    """
+    upload_files = [
+        ("files", (f.name, f.open("rb"), "application/octet-stream")) for f in files
+    ]
+    try:
+        resp = _api("POST", f"/projects/{project}/files/upload/nifti", files=upload_files)
+    finally:
+        for _, (_, fh, _) in upload_files:
+            fh.close()
+
+    staging_id = resp["staging_id"]
+    proposals = resp["proposals"]
+    missing = [p["filename"] for p in proposals if not p.get("inferred_mrid")]
+    if missing:
+        _api("DELETE", f"/projects/{project}/files/stage/{staging_id}", silent_errors=True)
+        console.print(
+            f"[red]Could not infer an MRID for {len(missing)} {modality.upper()} file(s):[/red]"
+        )
+        for m in missing:
+            console.print(f"    {m}")
+        console.print(
+            "[dim]Rename so the subject ID is derivable, or upload these individually "
+            "with `nichart files upload-nifti` to set MRIDs by hand.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    mappings = [
+        {"filename": p["filename"], "mrid": p["inferred_mrid"], "modality": modality}
+        for p in proposals
+    ]
+    result = _api(
+        "POST", f"/projects/{project}/files/stage/{staging_id}/commit",
+        json={"mappings": mappings},
+    )
+    return [c["mrid"] for c in result.get("committed", [])]
+
+
+def _render_readiness(project: str, pipeline_id: str, report: dict) -> bool:
+    """Render a readiness report; return whether it is satisfied."""
+    satisfied = report.get("satisfied", False)
+    badge = Text("READY", style="green") if satisfied else Text("NOT READY", style="red")
+    console.print(f"\nProject [bold]{project}[/bold] → pipeline [bold]{pipeline_id}[/bold]: ", end="")
+    console.print(badge)
+    console.print()
+
+    for img in report.get("imaging") or []:
+        icon = "[green]✓[/green]" if img["satisfied"] else "[red]✗[/red]"
+        console.print(f"  {icon}  {img['modality'].upper()} imaging — {img['subject_count']} subject(s)")
+
+    csv = report.get("csv")
+    if csv:
+        csv_icon = "[green]✓[/green]" if csv["satisfied"] else "[red]✗[/red]"
+        console.print(f"  {csv_icon}  participants.csv — {csv['total_subjects']} subject(s)")
+        for col in csv.get("required_columns") or []:
+            missing = col.get("subjects_missing") or []
+            invalid = col.get("subjects_invalid") or []
+            ok = col["present"] and not missing and not invalid
+            col_icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
+            if not col["present"]:
+                note = " [red](column absent)[/red]"
+            else:
+                parts = []
+                if missing:
+                    parts.append(f"{len(missing)} subject(s) empty")
+                if invalid:
+                    parts.append(f"{len(invalid)} subject(s) invalid value")
+                note = f" [yellow]({', '.join(parts)})[/yellow]" if parts else ""
+            console.print(f"      {col_icon}  {col['column']}{note}")
+
+    sc = report.get("subject_count")
+    if sc:
+        if sc["satisfied"] and not sc["recommended_met"]:
+            icon, note = "[yellow]⚠[/yellow]", (
+                f"[yellow]{sc['actual']} subject(s) — meets minimum ({sc['required']}) "
+                f"but below recommended ({sc['recommended']}) for reliable harmonization[/yellow]"
+            )
+        elif sc["satisfied"]:
+            icon, note = "[green]✓[/green]", (
+                f"{sc['actual']} subject(s) (min {sc['required']}, recommended {sc['recommended']})"
+            )
+        else:
+            icon, note = "[red]✗[/red]", (
+                f"[red]{sc['actual']} subject(s) — below minimum {sc['required']} "
+                f"required for harmonization[/red]"
+            )
+        console.print(f"  {icon}  Subject count — {note}")
+
+    console.print()
+    return satisfied
 
 
 # ── nichart status ─────────────────────────────────────────────────────────────
@@ -532,65 +958,7 @@ def readiness(
 ) -> None:
     """Check whether a project has the data needed to run a pipeline."""
     report = _api("GET", f"/projects/{project}/readiness/{pipeline_id}")
-    satisfied = report.get("satisfied", False)
-    badge = Text("READY", style="green") if satisfied else Text("NOT READY", style="red")
-    console.print(f"\nProject [bold]{project}[/bold] → pipeline [bold]{pipeline_id}[/bold]: {badge}\n")
-
-    # Imaging modality checks
-    for img in report.get("imaging") or []:
-        icon = "[green]✓[/green]" if img["satisfied"] else "[red]✗[/red]"
-        console.print(
-            f"  {icon}  {img['modality'].upper()} imaging — "
-            f"{img['subject_count']} subject(s)"
-        )
-
-    # CSV column checks
-    csv = report.get("csv")
-    if csv:
-        csv_icon = "[green]✓[/green]" if csv["satisfied"] else "[red]✗[/red]"
-        console.print(
-            f"  {csv_icon}  participants.csv — "
-            f"{csv['total_subjects']} subject(s)"
-        )
-        for col in csv.get("required_columns") or []:
-            missing = col.get("subjects_missing") or []
-            invalid = col.get("subjects_invalid") or []
-            ok = col["present"] and not missing and not invalid
-            col_icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
-            note = ""
-            if not col["present"]:
-                note = " [red](column absent)[/red]"
-            else:
-                parts = []
-                if missing:
-                    parts.append(f"{len(missing)} subject(s) empty")
-                if invalid:
-                    parts.append(f"{len(invalid)} subject(s) invalid value")
-                if parts:
-                    note = f" [yellow]({', '.join(parts)})[/yellow]"
-            console.print(f"      {col_icon}  {col['column']}{note}")
-
-    # Subject count check (harmonized pipelines)
-    sc = report.get("subject_count")
-    if sc:
-        if sc["satisfied"] and not sc["recommended_met"]:
-            icon = "[yellow]⚠[/yellow]"
-            note = (
-                f"[yellow]{sc['actual']} subject(s) — meets minimum ({sc['required']})"
-                f" but below recommended ({sc['recommended']}) for reliable harmonization[/yellow]"
-            )
-        elif sc["satisfied"]:
-            icon = "[green]✓[/green]"
-            note = f"{sc['actual']} subject(s) (min {sc['required']}, recommended {sc['recommended']})"
-        else:
-            icon = "[red]✗[/red]"
-            note = (
-                f"[red]{sc['actual']} subject(s) — below minimum {sc['required']} "
-                f"required for harmonization[/red]"
-            )
-        console.print(f"  {icon}  Subject count — {note}")
-
-    console.print()
+    _render_readiness(project, pipeline_id, report)
 
 
 # ── nichart provenance ────────────────────────────────────────────────────────
@@ -787,24 +1155,7 @@ def jobs_submit(
     skip_readiness: bool = typer.Option(False, "--skip-readiness", help="Skip readiness check."),
 ) -> None:
     """Submit a pipeline job, then watch it live (use --no-wait to just get the run ID)."""
-    # Parse --param key=value
-    params: dict = {}
-    for p in param:
-        if "=" not in p:
-            console.print(f"[red]Bad --param {p!r}[/red] — expected key=value")
-            raise typer.Exit(1)
-        k, _, v = p.partition("=")
-        # Best-effort type coercion: int → float → bool → str
-        for cast in (int, float):
-            try:
-                v = cast(v)
-                break
-            except ValueError:
-                pass
-        else:
-            if v.lower() in ("true", "false"):
-                v = v.lower() == "true"
-        params[k.strip()] = v
+    params = _parse_params(param)
 
     # Readiness check
     if not skip_readiness:
@@ -872,6 +1223,429 @@ def jobs_logs(
         console.print(logs)
     else:
         console.print("[dim]No logs yet.[/dim]")
+
+
+# ── nichart cloud ─────────────────────────────────────────────────────────────
+
+def _fmt_seconds(s: float | None) -> str:
+    if s is None:
+        return "—"
+    s = int(s)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}h {(s % 3600) // 60}m"
+
+
+@app.command("cloud")
+def cloud() -> None:
+    """Show cloud execution/queue status: running + pending jobs and drain estimate.
+
+    In local mode this reports mode=local with no queue data.
+    """
+    data = _api("GET", "/cloud/status")
+    table = Table(show_header=False, box=box.SIMPLE)
+    table.add_row("Mode", data.get("mode", "—"))
+    table.add_row("Queue", data.get("queue_name") or "—")
+    rj = data.get("running_job_count")
+    pj = data.get("pending_job_count")
+    table.add_row("Running jobs", str(rj) if rj is not None else "—")
+    table.add_row("Pending jobs", str(pj) if pj is not None else "—")
+    table.add_row("Est. queue drain", _fmt_seconds(data.get("estimated_queue_drain_seconds")))
+    console.print(table)
+
+
+# ── nichart tools ─────────────────────────────────────────────────────────────
+
+@tools_app.command("list")
+def tools_list() -> None:
+    """List all available tools."""
+    items = _api("GET", "/catalog/tools")
+    table = Table(box=box.SIMPLE_HEAVY)
+    table.add_column("ID", style="bold")
+    table.add_column("Name")
+    table.add_column("Description")
+    for t in items:
+        table.add_row(t["id"], t.get("name", ""), (t.get("description") or "")[:70])
+    console.print(table)
+
+
+@tools_app.command("show")
+def tools_show(
+    tool_id: str = typer.Argument(..., help="Tool ID (see: nichart tools list)."),
+) -> None:
+    """Show a tool's inputs, outputs, parameters, and resource requirements."""
+    t = _api("GET", f"/catalog/tools/{tool_id}")
+    console.print(f"\n[bold]{t.get('name', tool_id)}[/bold]  [dim]({t['id']})[/dim]")
+    if t.get("description"):
+        console.print(t["description"])
+    for section in ("inputs", "outputs"):
+        d = t.get(section) or {}
+        if d:
+            console.print(f"\n[underline]{section.title()}[/underline]")
+            for label, spec in d.items():
+                console.print(f"  {label}: [dim]{spec.get('type', '')}[/dim]")
+    res = t.get("resources") or {}
+    if res:
+        console.print(
+            f"\n[underline]Resources[/underline]  "
+            f"vcpus={res.get('vcpus')}  memory={res.get('memory')} MiB  gpus={res.get('gpus', 0)}"
+        )
+    params = t.get("parameters") or {}
+    if params:
+        console.print("\n[underline]Parameters[/underline]")
+        for name, spec in params.items():
+            console.print(f"  {name}: [dim]{spec.get('type', '')}  default={spec.get('default')}[/dim]")
+    console.print()
+
+
+# ── nichart results ───────────────────────────────────────────────────────────
+
+@results_app.command("list")
+def results_list(
+    project: str = typer.Argument(..., help="Project name."),
+) -> None:
+    """List pipelines that have results in this project."""
+    items = _api("GET", f"/projects/{project}/results")
+    if not items:
+        console.print("[dim]No results yet.[/dim]")
+        return
+    table = Table(box=box.SIMPLE_HEAVY)
+    table.add_column("Pipeline", style="bold")
+    table.add_column("Name")
+    table.add_column("Batch features", justify="center")
+    table.add_column("Per-subject", justify="right")
+    table.add_column("Atlas", justify="center")
+    for r in items:
+        table.add_row(
+            r["pipeline_id"],
+            r.get("pipeline_name", ""),
+            "✓" if r.get("has_batch_features") else "—",
+            str(len(r.get("per_subject_ids") or [])),
+            "✓" if r.get("has_atlas") else "—",
+        )
+    console.print(table)
+
+
+@results_app.command("show")
+def results_show(
+    project: str = typer.Argument(..., help="Project name."),
+    pipeline_id: str = typer.Argument(..., help="Pipeline ID."),
+) -> None:
+    """Show detailed results for one pipeline: features, per-subject outputs, completeness."""
+    r = _api("GET", f"/projects/{project}/results/{pipeline_id}")
+    console.print(f"\n[bold]{r.get('pipeline_name', pipeline_id)}[/bold]  [dim]({pipeline_id})[/dim]")
+
+    bf = r.get("batch_features")
+    if bf:
+        avail = "[green]available[/green]" if bf.get("available") else "[red]missing[/red]"
+        console.print(f"\n[underline]Batch features[/underline] — {avail}")
+        if bf.get("available"):
+            console.print(f"  {bf.get('row_count', 0)} row(s), {len(bf.get('columns') or [])} column(s)")
+            if bf.get("download_path"):
+                console.print(
+                    f"  [dim]download:[/dim] nichart files download {project} {bf['download_path']}"
+                )
+
+    ps = r.get("per_subject") or []
+    if ps:
+        console.print("\n[underline]Per-subject outputs[/underline]")
+        for o in ps:
+            subs = o.get("subjects") or {}
+            have = sum(1 for v in subs.values() if v.get("available"))
+            console.print(
+                f"  {o.get('display_name') or o.get('id')} [dim]({o.get('type')})[/dim] — "
+                f"{have}/{len(subs)} subject(s)"
+            )
+
+    subj = r.get("subjects") or {}
+    if subj:
+        complete = sum(1 for v in subj.values() if v.get("complete"))
+        console.print(f"\n[underline]Completeness[/underline] — {complete}/{len(subj)} subject(s) complete")
+    console.print()
+
+
+# ── nichart participants ──────────────────────────────────────────────────────
+
+@participants_app.command("show")
+def participants_show(
+    project: str = typer.Argument(..., help="Project name."),
+) -> None:
+    """Show the participants table."""
+    data = _api("GET", f"/projects/{project}/participants")
+    rows = data.get("rows") or []
+    if not rows:
+        console.print("[dim]No participants.csv, or it is empty.[/dim]")
+        return
+    cols: list[str] = []
+    for row in rows:
+        for k in row:
+            if k not in cols:
+                cols.append(k)
+    table = Table(box=box.SIMPLE_HEAVY)
+    for c in cols:
+        table.add_column(c, style="bold" if c.upper() == "MRID" else None)
+    for row in rows[:200]:
+        table.add_row(*[str(row.get(c, "")) for c in cols])
+    console.print(table)
+    suffix = " (showing first 200)" if len(rows) > 200 else ""
+    console.print(f"[dim]{len(rows)} row(s){suffix}[/dim]")
+
+
+@participants_app.command("template")
+def participants_template(
+    project: str = typer.Argument(..., help="Project name."),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Output path (default: participants_template.csv)."),
+) -> None:
+    """Download a participants CSV template pre-filled with detected MRIDs."""
+    dest = Path(out) if out else Path("participants_template.csv")
+    with _api_download(f"/projects/{project}/participants/template") as resp:
+        if not resp.is_success:
+            console.print(f"[red]Error {resp.status_code}[/red]")
+            raise typer.Exit(1)
+        with dest.open("wb") as f:
+            for chunk in resp.iter_bytes(chunk_size=65536):
+                f.write(chunk)
+    console.print(f"[green]Saved[/green] {dest}")
+
+
+# ── nichart retention ─────────────────────────────────────────────────────────
+
+@retention_app.command("show")
+def retention_show(
+    project: str = typer.Argument(..., help="Project name."),
+) -> None:
+    """Show when a project is scheduled to expire (cloud mode only)."""
+    data = _api("GET", f"/projects/{project}/retention")
+    exp = data.get("expires_at")
+    console.print(f"\nProject [bold]{project}[/bold] expires at: [bold]{_fmt_dt(exp)}[/bold]")
+    if exp:
+        remaining = datetime.fromisoformat(exp.replace("Z", "+00:00")) - datetime.now(timezone.utc)
+        secs = int(remaining.total_seconds())
+        if secs <= 0:
+            console.print("[red]Already past expiry — eligible for deletion.[/red]")
+        else:
+            console.print(
+                f"[dim]{secs // 86400}d {(secs % 86400) // 3600}h remaining[/dim]  — "
+                f"refresh with: nichart retention refresh {project}"
+            )
+    console.print()
+
+
+@retention_app.command("refresh")
+def retention_refresh(
+    project: str = typer.Argument(..., help="Project name."),
+) -> None:
+    """Reset a project's retention timer to the full window (cloud mode only)."""
+    data = _api("POST", f"/projects/{project}/retention/refresh")
+    console.print(f"[green]Refreshed.[/green] New expiry: [bold]{_fmt_dt(data.get('expires_at'))}[/bold]")
+
+
+# ── nichart run (all-in-one) ──────────────────────────────────────────────────
+
+@app.command("run")
+def run(
+    pipeline_id: str = typer.Argument(..., help="Pipeline to run (see: nichart pipelines list)."),
+    project: str = typer.Option(..., "--project", "-P", help="Project name. Created new unless --existing is given."),
+    t1: Optional[Path] = typer.Option(None, "--t1", help="T1-weighted NIfTIs: a flat directory (all NIfTIs within) or a single .nii/.nii.gz."),
+    fl: Optional[Path] = typer.Option(None, "--fl", "--flair", help="FLAIR NIfTIs (directory or file)."),
+    t2: Optional[Path] = typer.Option(None, "--t2", help="T2 NIfTIs (directory or file)."),
+    t1ce: Optional[Path] = typer.Option(None, "--t1ce", help="T1CE NIfTIs (directory or file)."),
+    adc: Optional[Path] = typer.Option(None, "--adc", help="ADC NIfTIs (directory or file)."),
+    participants: Optional[Path] = typer.Option(None, "--participants", help="Participants CSV (subject IDs + covariates)."),
+    existing: bool = typer.Option(False, "--existing", help="Add to an existing project instead of creating a new one."),
+    param: list[str] = typer.Option([], "--param", "-p", help="Pipeline parameter as key=value (repeatable)."),
+    reuse_cache: bool = typer.Option(True, "--reuse-cache/--no-reuse-cache", help="Reuse cached step outputs when inputs are unchanged."),
+    wait: bool = typer.Option(False, "--wait-until-done/--no-wait", help="Block and stream live progress until the run finishes."),
+    force: bool = typer.Option(False, "--force", help="Submit even if the readiness check fails."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate inputs and print the plan without creating, uploading, or submitting."),
+    server: str = typer.Option("auto", "--server", help="Server strategy: 'auto' (attach if one is running, else start a local one), 'attach' (require a running server), or 'spawn' (always start a fresh local one)."),
+    keep_server: bool = typer.Option(False, "--keep-server", help="Don't shut down a server this command started (leave it running)."),
+    server_log: Optional[str] = typer.Option(None, "--server-log", help="File to write a spawned server's logs to (default: a temp file)."),
+) -> None:
+    """
+    Run a pipeline end-to-end in one command.
+
+    Performs, in order — each step verified before the next:
+
+      1. Verify the pipeline exists.
+      2. Create the project (or select it with --existing; collisions are errors).
+      3. Upload each provided modality (--t1 / --fl / --t2 / --t1ce / --adc) as
+         NIfTI. Each flag takes a flat directory (every NIfTI within) or a single
+         file; MRIDs are inferred from filenames.
+      4. Upload the participants CSV (--participants), if given.
+      5. Report per-modality subject counts and flag any mismatches.
+      6. Check pipeline readiness (imaging, CSV columns, subject count).
+      7. Submit the pipeline.
+      8. Print how to track the run — or, with --wait-until-done, stream live
+         progress until it finishes.
+
+    Server: by default (--server auto) this attaches to a running API server if
+    one is reachable, otherwise it starts a local one, runs, waits for the run to
+    finish, then shuts that server down. Because a spawned local server also runs
+    the pipeline, --no-wait is ignored when we started the server (you'll be told).
+    Use --server attach to require an already-running server, or --server spawn to
+    always start a fresh local one. Remote servers are not yet supported (see
+    CLI_run.md).
+
+    Use --dry-run to validate inputs and preview the plan without starting a
+    server or touching data. If a newly-created project's setup fails partway, the
+    command tells you the project was left with partial data and how to remove it.
+
+    Examples:
+      nichart run run_dlmuse --project study1 --t1 /data/t1
+      nichart run run_spare_all --project study1 --t1 /data/t1 --fl /data/flair \\
+                  --participants demo.csv --wait-until-done
+    """
+    provided = {m: p for m, p in (("t1", t1), ("fl", fl), ("t2", t2), ("t1ce", t1ce), ("adc", adc)) if p is not None}
+    params = _parse_params(param)
+
+    # Pre-flight — purely local, no server needed. Resolve modality file lists and
+    # validate the CSV path up front so problems surface before anything starts.
+    resolved: dict[str, list[Path]] = {mod: _gather_niftis(path) for mod, path in provided.items()}
+    if participants is not None and not participants.is_file():
+        console.print(f"[red]Participants CSV not found:[/red] {participants}")
+        raise typer.Exit(1)
+
+    # Plan summary.
+    console.print(f"\n[bold]Pipeline:[/bold] {pipeline_id}")
+    console.print(f"[bold]Project: [/bold] {project}  [dim]({'existing' if existing else 'new'})[/dim]")
+    for mod, files in resolved.items():
+        console.print(f"  {mod.upper():5} {len(files):3} file(s)  [dim]{provided[mod]}[/dim]")
+    if participants:
+        console.print(f"  {'CSV':5}      [dim]{participants}[/dim]")
+    if params:
+        console.print(f"  [dim]params: {params}[/dim]")
+
+    if dry_run:
+        # Dry-run never starts a server. If one is already reachable, use it for
+        # the pipeline/collision checks; otherwise validate locally and say so.
+        console.print("\n[yellow]Dry run — nothing created, uploaded, or submitted.[/yellow]")
+        if _probe(_api_url):
+            if not isinstance(_api("GET", f"/catalog/pipelines/{pipeline_id}", silent_errors=True), dict):
+                console.print(f"[red]Would fail:[/red] unknown pipeline '{pipeline_id}'.")
+            known = _api("GET", "/projects", silent_errors=True)
+            names = {p["id"] for p in known} if isinstance(known, list) else set()
+            if not existing and project in names:
+                console.print(f"[red]Would fail:[/red] project '{project}' already exists (use --existing).")
+            if existing and project not in names:
+                console.print(f"[red]Would fail:[/red] project '{project}' does not exist (drop --existing).")
+        else:
+            console.print(
+                f"[dim]No server reachable at {_api_url}; pipeline/project checks skipped. "
+                "The real run would start a local server (--server auto).[/dim]"
+            )
+        raise typer.Exit(0)
+
+    with api_session(_api_url, strategy=server, keep=keep_server, log_path=server_log) as conn:
+        # 1. Pipeline must exist.
+        pipe = _api("GET", f"/catalog/pipelines/{pipeline_id}", silent_errors=True)
+        if not isinstance(pipe, dict):
+            console.print(f"[red]Unknown pipeline:[/red] {pipeline_id}")
+            console.print("[dim]See available pipelines with: nichart pipelines list[/dim]")
+            raise typer.Exit(1)
+        if pipe.get("name") and pipe["name"] != pipeline_id:
+            console.print(f"[dim]→ {pipe['name']}[/dim]")
+
+        known_projects = _api("GET", "/projects", silent_errors=True)
+        names = {p["id"] for p in known_projects} if isinstance(known_projects, list) else set()
+
+        created_new = False
+        try:
+            # 2. Project create / select.
+            if existing:
+                if project not in names:
+                    console.print(f"[red]Project '{project}' does not exist.[/red] Drop --existing to create it.")
+                    raise typer.Exit(1)
+                console.print(f"\n[dim]Using existing project[/dim] [bold]{project}[/bold]")
+            else:
+                if project in names:
+                    console.print(
+                        f"[red]Project '{project}' already exists.[/red] "
+                        "Pass --existing to add to it, or choose another name."
+                    )
+                    raise typer.Exit(1)
+                _api("POST", "/projects", json={"name": project})
+                created_new = True
+                console.print(f"\n[green]Created[/green] project [bold]{project}[/bold]")
+
+            # 3. Upload modalities.
+            per_modality: dict[str, set[str]] = {}
+            for mod, files in resolved.items():
+                console.print(f"[dim]Uploading {len(files)} {mod.upper()} file(s)…[/dim]")
+                mrids = _upload_modality(project, mod, files)
+                per_modality[mod] = set(mrids)
+                console.print(f"  [green]✓[/green] {mod.upper()}: {len(mrids)} subject(s)")
+
+            # 4. Participants.
+            if participants:
+                _api(
+                    "POST", f"/projects/{project}/files/upload/csv",
+                    files={"file": (participants.name, participants.open("rb"), "text/csv")},
+                )
+                console.print(f"  [green]✓[/green] participants: {participants.name}")
+
+            # 5. Cross-modality subject-count diagnostics.
+            if len(per_modality) > 1:
+                counts = {m: len(s) for m, s in per_modality.items()}
+                if len(set(counts.values())) > 1:
+                    console.print("\n[yellow]⚠ Subject counts differ across modalities:[/yellow]")
+                    all_mrids = set().union(*per_modality.values())
+                    for m, s in per_modality.items():
+                        console.print(f"    {m.upper():5} {len(s)} subject(s)")
+                    for m, s in per_modality.items():
+                        miss = sorted(all_mrids - s)
+                        if miss:
+                            console.print(f"    [dim]{m.upper()} missing: {', '.join(miss)}[/dim]")
+
+            # 6. Readiness.
+            report = _api("GET", f"/projects/{project}/readiness/{pipeline_id}", silent_errors=True)
+            if isinstance(report, dict):
+                satisfied = _render_readiness(project, pipeline_id, report)
+                if not satisfied and not force:
+                    console.print(
+                        "[red]Project is not ready to run this pipeline.[/red] "
+                        "Fix the issues above, or re-run with --force to submit anyway."
+                    )
+                    raise typer.Exit(1)
+            else:
+                console.print("[yellow]Could not evaluate readiness; proceeding.[/yellow]")
+
+            # 7. Submit.
+            run_rec = _api(
+                "POST", f"/projects/{project}/jobs/pipelines",
+                json={"pipeline_id": pipeline_id, "params": params, "reuse_cached_steps": reuse_cache},
+            )
+            run_id: str = run_rec["run_id"]
+            console.print(f"\n[green]Submitted[/green] run [bold]{run_id[:8]}[/bold]  [dim](full ID: {run_id})[/dim]")
+
+        except typer.Exit as e:
+            if created_new and e.exit_code != 0:
+                console.print(
+                    f"[dim]Project '{project}' was created but setup did not complete; it may hold partial data. "
+                    f"Remove it with: nichart projects delete {project}[/dim]"
+                )
+            raise
+
+        # 8. Wait, or hand back tracking commands. A server we started also runs
+        # the pipeline, so we must block until it finishes before tearing it down —
+        # this overrides --no-wait.
+        if conn.owned and not wait:
+            console.print(
+                "[dim]This command started the local server, so it will wait for the run "
+                "to finish before shutting it down (overrides --no-wait).[/dim]"
+            )
+        if wait or conn.owned:
+            console.print("[dim]Watching… Ctrl+C detaches"
+                          + ("; the managed server is then shut down and the run stops." if conn.owned
+                             else " (the run keeps going).") + "[/dim]\n")
+            _watch_run(run_id)
+        else:
+            console.print("[dim]Track it with:[/dim]")
+            console.print(f"    nichart jobs {run_id}")
+            console.print(f"    nichart jobs logs {run_id}")
+            console.print(f"[dim]View results when done:[/dim] nichart results show {project} {pipeline_id}")
 
 
 # ── Convenience top-level aliases ─────────────────────────────────────────────

@@ -34,5 +34,5 @@ resources:
 time_per_subject_seconds: 120.0  # estimated GPU (V100/A100); CPU measured at ~454 s
 
 container:
-  image: nichart_synthseg:conda-0.2-wrapped
+  image: cbica/synthseg:conda-0.2-wrapped-gpu
   command: "{t1_img} {synthseg_seg} {synthseg_vol}"

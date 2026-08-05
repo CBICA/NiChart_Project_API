@@ -1,0 +1,51 @@
+pipeline_name: SynthSeg Whole-Brain Segmentation
+description: |
+  Whole-brain MRI segmentation using SynthSeg. Produces segmentation label maps
+  and a CSV of regional volumes (mm³). SynthSeg accepts any single MRI modality;
+  this pipeline runs on T1-weighted scans.
+
+categories:
+  - image-processing
+  - segmentation
+  - feature-extraction
+
+requires:
+  - needs_T1
+
+steps:
+  - id: run_synthseg
+    tool: synthseg # MUST CORRESPOND EXACTLY to a tool in resources/tools dir
+    inputs:
+      t1_img: ${STUDY}/t1
+    outputs:
+      synthseg_seg: ${STUDY}/synthseg_seg
+      synthseg_vol: ${STUDY}/synthseg_vol
+
+outputs:
+  download_dirs:
+    - ${STUDY}/synthseg_seg
+    - ${STUDY}/synthseg_vol
+  tabular_output:
+    - ${STUDY}/synthseg_vol/volumes.csv
+
+results:
+  batch_features:
+    file: "synthseg_vol/volumes.csv"
+    # NOTE: verify this against the actual volumes.csv header. SynthSeg's native
+    # output labels the subject column "subject"; if the wrapper doesn't rename
+    # it to MRID, set mrid_column accordingly or the results will be empty.
+    mrid_column: "MRID"
+    default_unit: "mm³"
+    # label_map / column_template / feature_groups intentionally omitted:
+    # SynthSeg labels do not correspond to the MUSE parcellation, and there is no
+    # ROI integer-to-region-name mapping for them yet. Add label_map +
+    # column_template + feature_groups once that mapping exists.
+
+  per_subject:
+    - id: "segmentation"
+      pattern: "synthseg_seg/{MRID}_synthseg.nii.gz"
+      type: "segmentation_nifti"
+      display_name: "SynthSeg segmentation"
+
+  # atlas / atlas_segmentation omitted: no SynthSeg atlas template exists yet.
+  # Add both once available to enable the centile/overlay viewer.

@@ -18,7 +18,7 @@ mounts:
     path_in_container: /input/t1
     mode: ro
   out_csv:
-    path_in_container: /output/BAScores.csv
+    path_in_container: /output/SPARE_BA_Image.csv
     mode: rw
   out_attention:
     path_in_container: /output/output_attention

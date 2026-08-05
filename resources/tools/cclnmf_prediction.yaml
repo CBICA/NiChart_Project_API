@@ -19,7 +19,7 @@ mounts:
     path_in_container: /input/demog.csv
     mode: ro
   cclnmf_csv:
-    path_in_container: /output/CCLNMF.csv
+    path_in_container: /output/CCLNMF_prediction_loadings.csv
     mode: rw
 
 parameters: {}
