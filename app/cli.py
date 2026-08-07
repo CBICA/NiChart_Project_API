@@ -257,7 +257,7 @@ def _effective_spawn_backend(env_cfg: dict[str, str]) -> str:
     return val("NICHART_JOB_BACKEND") or ("singularity" if val("NICHART_SIF_DIR") else "docker")
 
 
-def _spawn_local(log_path: Optional[str]) -> ApiConnection:
+def _spawn_local(log_path: Optional[str], inactivity_timeout: int = 0) -> ApiConnection:
     """Start an ephemeral local-mode API server subprocess; wait until it's healthy.
 
     The server runs with cwd = the API repo root so it loads the operator's
@@ -299,6 +299,10 @@ def _spawn_local(log_path: Optional[str]) -> ApiConnection:
 
     env = dict(os.environ)
     env["NICHART_EXECUTION_MODE"] = "local"
+    # Courtesy on shared systems: an ephemeral server self-terminates after a
+    # period of inactivity (with no active runs), so an orphaned spawn (e.g. the
+    # CLI was killed before teardown) doesn't linger. 0 disables.
+    env["NICHART_INACTIVITY_TIMEOUT_SECONDS"] = str(inactivity_timeout)
     cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)]
     try:
         proc = subprocess.Popen(
@@ -341,7 +345,7 @@ def _open_remote(url_hint: str, log_path: Optional[str]) -> ApiConnection:
 
 @contextlib.contextmanager
 def api_session(url_hint: str, *, strategy: str = "auto", keep: bool = False,
-                log_path: Optional[str] = None):
+                log_path: Optional[str] = None, inactivity_timeout: int = 0):
     """Yield an :class:`ApiConnection`, managing the server lifecycle when we own it.
 
     While the context is active the module-level API URL is pointed at the
@@ -368,8 +372,12 @@ def api_session(url_hint: str, *, strategy: str = "auto", keep: bool = False,
                 "Start the server there and point --url at it, or use --server attach."
             )
             raise typer.Exit(1)
-        conn = _spawn_local(log_path)
-        console.print(f"[dim]Started a local API server (pid {conn.proc.pid}) at {conn.base_url}[/dim]")
+        conn = _spawn_local(log_path, inactivity_timeout=inactivity_timeout)
+        _idle = (f", idle auto-shutdown after {inactivity_timeout}s"
+                 if inactivity_timeout and inactivity_timeout > 0 else "")
+        console.print(
+            f"[dim]Started a local API server (pid {conn.proc.pid}) at {conn.base_url}{_idle}[/dim]"
+        )
 
     saved_url = _api_url
     _api_url = conn.base_url
@@ -407,6 +415,10 @@ VALID_MODALITIES = ("t1", "fl", "t2", "t1ce", "adc")
 # relative "resources", so cwd must be the repo root for the server to work.)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = REPO_ROOT / ".env"
+
+# Default idle auto-shutdown (seconds) for a CLI-spawned server — a courtesy on
+# shared systems so an orphaned ephemeral server doesn't linger. 0 disables.
+_DEFAULT_SPAWN_INACTIVITY = 1800
 
 
 def _status_text(status: str) -> Text:
@@ -1463,6 +1475,7 @@ def run(
     server: str = typer.Option("auto", "--server", help="Server strategy: 'auto' (attach if one is running, else start a local one), 'attach' (require a running server), or 'spawn' (always start a fresh local one)."),
     keep_server: bool = typer.Option(False, "--keep-server", help="Don't shut down a server this command started (leave it running)."),
     server_log: Optional[str] = typer.Option(None, "--server-log", help="File to write a spawned server's logs to (default: a temp file)."),
+    server_timeout: Optional[int] = typer.Option(None, "--server-timeout", help="Idle auto-shutdown (seconds) for a server this command spawns; the timer never fires while a run is in progress. Default: 1800 (30 min), or disabled with --keep-server. Use -1/0 to disable."),
 ) -> None:
     """
     Run a pipeline end-to-end in one command.
@@ -1538,7 +1551,15 @@ def run(
             )
         raise typer.Exit(0)
 
-    with api_session(_api_url, strategy=server, keep=keep_server, log_path=server_log) as conn:
+    # Resolve idle auto-shutdown for a spawned server. Unset → 30 min, unless
+    # --keep-server (then off, since you asked to keep it). A negative value disables.
+    if server_timeout is None:
+        spawn_timeout = 0 if keep_server else _DEFAULT_SPAWN_INACTIVITY
+    else:
+        spawn_timeout = max(0, server_timeout)
+
+    with api_session(_api_url, strategy=server, keep=keep_server, log_path=server_log,
+                     inactivity_timeout=spawn_timeout) as conn:
         # 1. Pipeline must exist.
         pipe = _api("GET", f"/catalog/pipelines/{pipeline_id}", silent_errors=True)
         if not isinstance(pipe, dict):

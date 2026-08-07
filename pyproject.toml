@@ -25,11 +25,15 @@ dependencies = [
 
 [project.scripts]
 nichart = "app.cli:main"
+nichart-mcp = "app.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
     "anyio[trio]>=4.3",
+]
+mcp = [
+    "mcp>=1.2",
 ]
 
 [tool.pytest.ini_options]

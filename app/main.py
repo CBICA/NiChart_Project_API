@@ -68,10 +68,47 @@ def _log_settings(settings: Settings) -> None:
     log.info("\n".join(lines))
 
 
+async def _inactivity_watchdog(app: FastAPI, timeout: int) -> None:
+    """Shut the server down after ``timeout`` seconds of no activity and no work.
+
+    "Activity" is any non-``/health`` request (recorded by the middleware); "work"
+    is any pending/running pipeline run. While runs are in progress the idle clock
+    is continuously reset, so a long external (SLURM/Batch) job — whose run stays
+    'running' for its whole duration — can never trigger shutdown, and a full idle
+    window elapses after the last run finishes before the server exits.
+    """
+    import asyncio
+    import logging
+    import os
+    import signal
+    import time
+
+    from app.services import job_service
+
+    _log = logging.getLogger("uvicorn.error")
+    interval = max(5, min(timeout, 30))
+    while True:
+        await asyncio.sleep(interval)
+        if job_service.has_active_runs():
+            app.state.last_activity = time.monotonic()  # active work counts as activity
+            continue
+        idle = time.monotonic() - app.state.last_activity
+        if idle >= timeout:
+            _log.info(
+                "Inactivity auto-shutdown: %ds idle, no active runs. Stopping server.",
+                int(idle),
+            )
+            os.kill(os.getpid(), signal.SIGTERM)  # graceful uvicorn shutdown
+            return
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Startup / shutdown hook. Extend here as services are added."""
+    import asyncio
+    import contextlib
     import logging
+    import time
 
     from app.backends import get_backend_instance
     from app.services import job_service
@@ -92,7 +129,25 @@ async def _lifespan(app: FastAPI):
             await job_service.resume_runs(settings, backend)
         except Exception as exc:
             _log.warning("Could not resume SLURM runs at startup: %s", exc)
+
+    # Inactivity auto-shutdown (opt-in via NICHART_INACTIVITY_TIMEOUT_SECONDS > 0).
+    watchdog: asyncio.Task | None = None
+    if settings.inactivity_timeout_seconds and settings.inactivity_timeout_seconds > 0:
+        app.state.last_activity = time.monotonic()
+        watchdog = asyncio.create_task(
+            _inactivity_watchdog(app, settings.inactivity_timeout_seconds)
+        )
+        _log.info(
+            "Inactivity auto-shutdown enabled: %ds idle with no active runs.",
+            settings.inactivity_timeout_seconds,
+        )
+
     yield
+
+    if watchdog is not None:
+        watchdog.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watchdog
 
 
 def create_app() -> FastAPI:
@@ -137,6 +192,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Inactivity tracking ──────────────────────────────────────────────────
+    # Record the time of the last real request so the inactivity watchdog (started
+    # in the lifespan when enabled) knows when the server is idle. /health is
+    # excluded so liveness probes don't keep an otherwise-idle server alive.
+    import time as _time
+
+    app.state.last_activity = _time.monotonic()
+
+    @app.middleware("http")
+    async def _track_activity(request, call_next):
+        if request.url.path != "/health":
+            app.state.last_activity = _time.monotonic()
+        return await call_next(request)
 
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(auth_router)

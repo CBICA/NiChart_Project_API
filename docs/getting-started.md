@@ -340,6 +340,7 @@ All variables are prefixed `NICHART_`. Set them in `.env` or via the compose
 | `NICHART_HOST_DATA_ROOT` | — | Host path to data root, needed for DooD (local mode with sibling containers) |
 | `NICHART_CORS_ORIGINS` | `["http://localhost:3000"]` | JSON array of allowed UI origins |
 | `NICHART_STAGING_TTL_HOURS` | `24` | Hours before uncommitted uploads are cleaned up |
+| `NICHART_INACTIVITY_TIMEOUT_SECONDS` | `0` (off) | Idle auto-shutdown: exit after N seconds with no API activity and no in-progress runs. `0`/`-1` disables. The CLI's spawned servers enable this by default. |
 | `NICHART_S3_DATA_BUCKET` | — | S3 bucket for automatic data sync in cloud mode (e.g. `cbica-nichart-io`). When set, data is uploaded to S3 before each step and downloaded after. |
 | `NICHART_S3_DATA_PREFIX` | `fsx` | Key prefix within the S3 data bucket |
 | `NICHART_COGNITO_USER_POOL_ID` | `us-east-1_BSBhcKA66` | Cognito pool (cloud mode) |

@@ -7,6 +7,7 @@ AWS Batch/cloud).
 - New to the project / local Docker dev? `docs/getting-started.md` is the quick start.
 - Cloud (AWS Batch) testing? `docs/cloud-local-testing.md`.
 - Validating the CLI on a SLURM cluster? `docs/cli-slurm-testing.md`.
+- Driving NiChart from an LLM agent (Claude Desktop, etc.)? `docs/mcp.md`.
 
 ---
 
@@ -100,6 +101,7 @@ Key variables (see `.env.example` / `app/config.py` for the full list):
 | `NICHART_SLURM_PARTITION` / `_ACCOUNT` | slurm | Partition / account to charge. |
 | `NICHART_SLURM_LOGS_DIR` | slurm | Job logs. Defaults to `<data_root>/_slurm_logs`. **Must be on shared FS.** |
 | `NICHART_SLURM_EXTRA_SBATCH_ARGS` | slurm | JSON list, e.g. `["--constraint=h100"]`. |
+| `NICHART_INACTIVITY_TIMEOUT_SECONDS` | all | Idle auto-shutdown: server exits after this many seconds with no API activity **and** no in-progress runs. Default `0` = disabled (a manually-launched/systemd server stays up). The CLI's auto-spawned servers enable this themselves (default 30 min). Set `-1`/`0` to disable. |
 
 **Backend auto-selection** when `NICHART_JOB_BACKEND` is unset:
 `execution_mode=cloud` → `batch`; `local` + `NICHART_SIF_DIR` set → `singularity`;

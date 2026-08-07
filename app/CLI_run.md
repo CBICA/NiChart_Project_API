@@ -76,6 +76,7 @@ inspect the partial state.)
 | `--server` | `auto`\|`attach`\|`spawn` | `auto` | How to obtain a server (see [Server lifecycle](#server-lifecycle)). |
 | `--keep-server` | flag | off | Don't shut down a server this command started. |
 | `--server-log` | path | temp file | Where to write a spawned server's logs. |
+| `--server-timeout` | int (s) | 1800 (0 if `--keep-server`) | Idle auto-shutdown for a spawned server; never fires while a run is in progress. `-1`/`0` disables. |
 
 Global `--url` (or `NICHART_API_URL`) selects the target server, as with any command.
 
@@ -111,6 +112,15 @@ Details and guarantees:
   server, Ctrl+C just detaches and the run continues.
 - **Startup failures** are surfaced: if the server doesn't become healthy within
   30 s, the tail of its log is printed and the command exits non-zero.
+- **Idle auto-shutdown.** A spawned server self-terminates after `--server-timeout`
+  seconds of no API activity — as a courtesy on shared systems, so an orphaned
+  server (e.g. the CLI was killed before teardown) doesn't linger. The timer is
+  **held off while any pipeline run is in progress** (including long SLURM/Batch
+  jobs, whose run stays `running` for the whole job), so it never shuts down over
+  active work; a full idle window elapses only after the last run finishes.
+  Default 30 min; `--keep-server` turns it off; `-1`/`0` disables explicitly. A
+  manually-launched server is unaffected unless you set
+  `NICHART_INACTIVITY_TIMEOUT_SECONDS` (off by default there).
 
 ### Configuration of a spawned server
 

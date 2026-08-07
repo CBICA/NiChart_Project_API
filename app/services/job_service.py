@@ -1575,6 +1575,23 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
     )
 
 
+def has_active_runs() -> bool:
+    """True if any pipeline run (any user) is still pending or running.
+
+    Used by the server's inactivity auto-shutdown to avoid tearing itself down
+    while it is still orchestrating/polling work — including long external
+    (SLURM/Batch) jobs, whose run stays 'running' for the job's whole duration.
+    """
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return False
+    for p in d.glob("*.json"):
+        run = _load_run(p.stem)
+        if run and run.status in ("pending", "running"):
+            return True
+    return False
+
+
 def _has_running_pipeline(user_id: str, exclude_run_id: str) -> bool:
     """Return True if the user has any pipeline currently in 'running' state."""
     d = _runs_dir()

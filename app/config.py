@@ -143,6 +143,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    inactivity_timeout_seconds: int = Field(
+        default=0,
+        description=(
+            "Idle auto-shutdown: if > 0, the server shuts itself down after this many "
+            "seconds with no API activity AND no in-progress pipeline runs. A long "
+            "external job (SLURM/Batch) keeps its run 'running', which holds the timer "
+            "off until the job finishes. Set to 0 or -1 to disable (default). The CLI's "
+            "auto-spawned servers enable this by default as a courtesy on shared systems."
+        ),
+    )
+
     # Project retention — must be kept in sync with the Lambda sweep config.
     project_retention_days: int = Field(
         default=7,
