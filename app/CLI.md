@@ -8,6 +8,32 @@ For the end-to-end **`nichart run`** command, see **[CLI_run.md](CLI_run.md)**.
 
 ---
 
+## Prerequisites: a configured, running API server
+
+`nichart` is a **client** — it does no processing itself. Almost every command
+talks to a NiChart **API server**, which must be **installed and configured
+first**, and (for most commands) **already running**.
+
+1. **Set up the server → [INSTALLATION.md](../INSTALLATION.md).** Covers the
+   editable install, the `.env`, the execution backend (Docker / Singularity /
+   SLURM / Batch), and — for Singularity/SLURM — building the SIF images. Do this
+   once, at install time.
+2. **Start the server** and point the CLI at it:
+   - Local dev: `docker compose up` (see [getting-started.md](../docs/getting-started.md)).
+   - Bare-metal (no Docker): from the repo root, `uvicorn app.main:app --host 127.0.0.1 --port 8000` (INSTALLATION.md §6).
+   - Verify: `nichart status` should report `ok`. Use `NICHART_API_URL` / `--url` if it isn't on `http://localhost:8000`.
+
+> **`nichart run` can start the server for you — but it still needs configuring first.**
+> `nichart run` will **automatically spin up a local API server if none is running,
+> then shut it down when the run finishes** (`--server auto`, the default). That's a
+> real convenience — you don't have to start the server by hand. But the server it
+> spawns uses the **same configured install**: the editable install and the repo
+> `.env` from [INSTALLATION.md](../INSTALLATION.md) must already be in place.
+> Auto-spawn replaces *starting* the server, not *configuring* it. Details in
+> [CLI_run.md](CLI_run.md).
+
+---
+
 ## Install & invoke
 
 The CLI ships with the API package. Once installed (`pip install -e .`), the
