@@ -4,7 +4,7 @@ Request/response schemas for file management endpoints.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class FileEntry(BaseModel):
@@ -34,7 +34,7 @@ class NiftiUploadProposal(BaseModel):
     )
     inferred_modality: str | None = Field(
         default=None,
-        description="Modality inferred from the filename (t1/fl/t2/t1ce/adc), or null if not detectable.",
+        description="Modality inferred from the filename (see GET /catalog/modalities), or null if not detectable.",
     )
 
 
@@ -52,9 +52,18 @@ class NiftiMapping(BaseModel):
 
     filename: str = Field(description="Filename as returned in the staging proposals.")
     mrid: str = Field(description="Subject identifier. Becomes the file stem in the target directory.")
-    modality: Literal["t1", "fl", "t2", "t1ce", "adc"] = Field(
-        description="NiChart modality label. Determines which subdirectory the file lands in."
+    modality: str = Field(
+        description="NiChart modality code (see GET /catalog/modalities). Determines which subdirectory the file lands in."
     )
+
+    @field_validator("modality")
+    @classmethod
+    def _known_modality(cls, v: str) -> str:
+        from app import modalities
+
+        if not modalities.is_valid(v):
+            raise ValueError(f"Unknown modality {v!r}. Valid: {list(modalities.MODALITY_CODES)}")
+        return v
 
 
 class NiftiCommitRequest(BaseModel):

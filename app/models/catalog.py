@@ -7,6 +7,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class ModalityInfo(BaseModel):
+    """An imaging modality the platform recognizes."""
+
+    code: str = Field(description="Canonical modality code — also the study subdirectory name and the key used in uploads/requirements.")
+    label: str = Field(description="Human-readable label, e.g. 'T1-weighted'.")
+    dir: str = Field(description="Study subdirectory where images of this modality are stored (${STUDY}/{dir}/).")
+
+
 class ParameterSpec(BaseModel):
     """Specification for a single configurable parameter."""
 

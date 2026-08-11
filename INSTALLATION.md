@@ -51,39 +51,43 @@ python -m venv .venv && source .venv/bin/activate    # or conda
 pip install -e .
 ```
 
-> ⚠️ **Editable (`-e`) is required, not optional.** The package is monolithic —
-> installing it gives you both the server (`app.main`, FastAPI/uvicorn) and the
-> `nichart` CLI. The CLI's auto-spawn feature and the server's relative
-> `resources/` path both resolve files **relative to the repo root** (the parent
-> of the installed `app/`). A non-editable/wheel install puts `app/` in
-> `site-packages`, where there is no `.env` and no `resources/` — the server would
-> start with an empty pipeline/tool catalog. Install editable so the repo (with
-> `.env` and `resources/`) stays the package root.
+> **Editable (`-e`) is the recommended *development* install.** It gives you both
+> the server (`app.main`, FastAPI/uvicorn) and the `nichart` CLI, and keeps your
+> working copy as the source of truth. A **packaged install** (a wheel, or `uv`)
+> also works: the `resources/` catalog ships **inside** the package and config is
+> read from `~/.nichart/.env` / environment variables (not the working directory),
+> so the server runs from any directory. Use `-e` for dev; use a packaged install
+> for distribution.
 
 Verify:
 
 ```bash
 nichart --help
-python -c "import app.cli; print('repo root:', app.cli.REPO_ROOT)"
-# repo root: /path/to/NiChart_Project_API   ← must contain .env and resources/
+python -c "from app.config import Settings; s=Settings(); print('resources:', s.resources_path, s.resources_path.is_dir())"
 ```
 
 ---
 
 ## 4. Configuration (`.env`)
 
-The server reads all settings from environment variables prefixed `NICHART_`, and
-loads a **`.env` file at the repo root** automatically. Set this up **once** at
-install time — the CLI's spawned server reuses it, so runs are reproducible for
-everyone using the install.
+The server reads settings from environment variables prefixed `NICHART_` and from
+`.env` files, resolved **independently of the working directory**. Set this up
+**once**; every launch (including the CLI's spawned server) reuses it.
+
+**Where config comes from, lowest → highest precedence:**
+
+1. `<repo>/.env` — dev-checkout fallback (last resort).
+2. `~/.nichart/.env` — the per-user configured location (use this for a packaged/`uv` install).
+3. `$NICHART_ENV_FILE` — an explicit path (e.g. set by a launcher/GUI).
+4. exported `NICHART_*` env vars — override everything.
 
 ```bash
-cp .env.example .env
-$EDITOR .env
+cp .env.example .env                              # dev checkout, or…
+mkdir -p ~/.nichart && cp .env.example ~/.nichart/.env   # packaged/user install
+$EDITOR .env    # (or ~/.nichart/.env)
 ```
 
-**Precedence (highest first):** exported `NICHART_*` env vars → repo `.env` →
-built-in defaults. Check for stray overrides before relying on `.env`:
+Check for stray overrides before relying on a file:
 
 ```bash
 env | grep NICHART_ || echo "clean"
@@ -204,14 +208,15 @@ this doc is that the step exists and where it fits: build the SIF registry to a
 ## 6. Running the server
 
 - **Local Docker (dev):** `docker compose up` (see `docs/getting-started.md`).
-- **Singularity / SLURM (bare-metal, no compose):** run uvicorn from the repo root
-  so it loads `.env` and `resources/`:
+- **Singularity / SLURM (bare-metal, no compose):** run uvicorn — from **any**
+  directory; config and `resources/` are resolved independently of the cwd (§4):
   ```bash
-  cd /path/to/NiChart_Project_API
   uvicorn app.main:app --host 127.0.0.1 --port 8000
   ```
-  For a shared, long-lived server, run it under `tmux`/`systemd`. For one-off CLI
-  use you usually don't start it yourself — see §7.
+  (In a dev checkout the repo `.env` is picked up automatically; for a packaged
+  install, configure `~/.nichart/.env`.) For a shared, long-lived server, run it
+  under `tmux`/`systemd`. For one-off CLI use you usually don't start it yourself
+  — see §7.
 - **Cloud (Batch):** see `docs/cloud-local-testing.md`.
 
 Verify: `curl http://127.0.0.1:8000/health` → `{"status":"ok","execution_mode":"local",…}`.
@@ -227,10 +232,9 @@ Installed with the package (§3). Full reference: `app/CLI.md`; the all-in-one
   `http://localhost:8000`).
 - **`nichart run` can start a server for you.** With `--server auto` (default) it
   attaches to a running server if one answers, otherwise it spawns an ephemeral
-  local one **from the repo root** (so it uses your `.env` and `resources/`), runs,
-  waits for completion, and shuts it down. This is why the editable install (§3)
-  and repo-root `.env` (§4) matter. `--server attach` requires an existing server;
-  `--server spawn` always starts a fresh one.
+  local one (using the configured install — the bundled `resources/` and your
+  `.env` from §4), runs, waits for completion, and shuts it down. `--server attach`
+  requires an existing server; `--server spawn` always starts a fresh one.
 
 ```bash
 # One shot: create a project, upload, verify, submit — spawning a local

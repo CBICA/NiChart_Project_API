@@ -22,10 +22,10 @@ from typing import Any, Optional
 
 import httpx
 
+from app import modalities
+
 # Resolved in main(); tools read this module global.
 _BASE_URL = os.environ.get("NICHART_API_URL", "http://localhost:8000").rstrip("/")
-
-_MODALITIES = ("t1", "fl", "t2", "t1ce", "adc")
 
 
 # ── API helpers (never print to stdout) ───────────────────────────────────────
@@ -141,6 +141,8 @@ def run_pipeline(
     t2: Optional[str] = None,
     t1ce: Optional[str] = None,
     adc: Optional[str] = None,
+    pet: Optional[str] = None,
+    images: Optional[dict] = None,
     participants: Optional[str] = None,
     existing: bool = False,
     params: Optional[dict] = None,
@@ -165,6 +167,9 @@ def run_pipeline(
         t2: Path to T2 NIfTIs.
         t1ce: Path to T1CE NIfTIs.
         adc: Path to ADC NIfTIs.
+        pet: Path to PET NIfTIs.
+        images: Any other modality as {modality_code: path}; use for modalities
+            without a dedicated argument above.
         participants: Path to the participants/demographics CSV.
         existing: Add to an existing project instead of creating a new one.
         params: Pipeline parameter overrides, e.g. {"duration_seconds": 30}.
@@ -182,9 +187,17 @@ def run_pipeline(
         _api("POST", "/projects", json={"name": project})
 
     per_modality: dict[str, list[str]] = {}
-    for mod, path in (("t1", t1), ("fl", fl), ("t2", t2), ("t1ce", t1ce), ("adc", adc)):
+    for mod, path in (("t1", t1), ("fl", fl), ("t2", t2), ("t1ce", t1ce), ("adc", adc), ("pet", pet)):
         if path:
             per_modality[mod] = _upload_modality(project, mod, path)
+    for code, path in (images or {}).items():
+        code = str(code).strip().lower()
+        if not modalities.is_valid(code):
+            raise RuntimeError(f"Unknown modality {code!r}. Valid: {list(modalities.MODALITY_CODES)}")
+        if code in per_modality:
+            raise RuntimeError(f"Modality {code!r} given twice (named argument and images).")
+        if path:
+            per_modality[code] = _upload_modality(project, code, str(path))
 
     if participants:
         pcsv = Path(participants).expanduser()

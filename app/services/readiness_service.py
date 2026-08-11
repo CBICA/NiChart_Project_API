@@ -18,18 +18,8 @@ from app.models.readiness import (
     ReadinessReport,
     SubjectCountRequirement,
 )
+from app import modalities
 from app.services.file_service import collect_project_mrids
-
-# Map lowercase requires token → modality directory name
-_MODALITY_TOKEN: dict[str, str] = {
-    "needs_t1": "t1",
-    "needs_t1w": "t1",
-    "needs_fl": "fl",
-    "needs_flair": "fl",
-    "needs_t2": "t2",
-    "needs_t1ce": "t1ce",
-    "needs_adc": "adc",
-}
 
 _PARTICIPANTS_CSV = Path("participants") / "participants.csv"
 
@@ -214,7 +204,7 @@ def check_readiness(
     for item in raw_requires:
         if isinstance(item, str):
             key = item.lower()
-            mod_dir = _MODALITY_TOKEN.get(key)
+            mod_dir = modalities.modality_for_requires(key)
             if mod_dir is not None:
                 mrids = _mrids_in_dir(project_path, mod_dir)
                 imaging_checks.append(ImagingRequirement(

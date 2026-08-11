@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -5,18 +6,55 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Package dir (…/app) and its parent (the repo root in a source checkout, or
+# site-packages when installed). Used to locate bundled resources and .env files
+# independently of the current working directory, so the server runs from anywhere.
+_PKG_DIR = Path(__file__).resolve().parent
+_SRC_ROOT = _PKG_DIR.parent
+
+
+def _default_resources_path() -> Path:
+    """Locate the pipeline/tool ``resources/`` directory without relying on cwd.
+
+    Prefers the copy bundled inside the installed package (``app/resources``,
+    force-included in the wheel), then the top-level ``resources/`` of a dev
+    checkout. ``NICHART_RESOURCES_PATH`` overrides this default.
+    """
+    for candidate in (_PKG_DIR / "resources", _SRC_ROOT / "resources"):
+        if candidate.is_dir():
+            return candidate
+    return _SRC_ROOT / "resources"
+
+
+def _env_files() -> tuple[str, ...]:
+    """Candidate .env files, lowest → highest precedence (later wins in pydantic).
+
+    Real ``NICHART_*`` environment variables still override all of these.
+      1. ``<source root>/.env``      — dev-checkout fallback (last resort)
+      2. ``~/.nichart/.env``         — the per-user configured location
+      3. ``$NICHART_ENV_FILE``       — an explicit path (e.g. set by a launcher/GUI)
+    """
+    candidates: list[Path] = [_SRC_ROOT / ".env", Path.home() / ".nichart" / ".env"]
+    explicit = os.environ.get("NICHART_ENV_FILE")
+    if explicit:
+        candidates.append(Path(explicit))
+    return tuple(str(c) for c in candidates)
+
 
 class Settings(BaseSettings):
     """
     All runtime configuration for the NiChart API.
 
     Every field is read from environment variables prefixed with ``NICHART_``.
-    A ``.env`` file in the working directory is loaded automatically.
+    Config is also loaded from .env files (see ``_env_files``): a per-user
+    ``~/.nichart/.env``, with a dev-checkout ``<repo>/.env`` as a last-resort
+    fallback, and ``$NICHART_ENV_FILE`` as an explicit override. Environment
+    variables take precedence over all .env files.
     """
 
     model_config = SettingsConfigDict(
         env_prefix="NICHART_",
-        env_file=".env",
+        env_file=_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -30,8 +68,12 @@ class Settings(BaseSettings):
         description="Root directory under which all user project data is stored.",
     )
     resources_path: Path = Field(
-        default=Path("resources"),
-        description="Directory containing pipeline and tool YAML definitions.",
+        default_factory=_default_resources_path,
+        description=(
+            "Directory containing pipeline and tool YAML definitions. Defaults to the "
+            "copy bundled with the installed package (or resources/ in a dev checkout); "
+            "resolved independently of the working directory."
+        ),
     )
 
     # AWS Cognito — only used when execution_mode == "cloud"

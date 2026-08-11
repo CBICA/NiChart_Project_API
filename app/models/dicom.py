@@ -2,9 +2,7 @@
 Request/response schemas for DICOM staging and conversion endpoints.
 """
 
-from typing import Literal
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DicomStagingResult(BaseModel):
@@ -35,9 +33,18 @@ class SeriesMapping(BaseModel):
     """User-confirmed mapping from a DICOM series to a NiChart modality."""
 
     series_uid: str = Field(description="SeriesInstanceUID of the series to convert.")
-    nichart_modality: Literal["t1", "fl", "t2", "t1ce", "adc"] = Field(
-        description="Target NiChart modality subdirectory."
+    nichart_modality: str = Field(
+        description="Target NiChart modality code (see GET /catalog/modalities)."
     )
+
+    @field_validator("nichart_modality")
+    @classmethod
+    def _known_modality(cls, v: str) -> str:
+        from app import modalities
+
+        if not modalities.is_valid(v):
+            raise ValueError(f"Unknown modality {v!r}. Valid: {list(modalities.MODALITY_CODES)}")
+        return v
     mrid: str | None = Field(
         default=None,
         description=(

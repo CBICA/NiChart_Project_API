@@ -350,3 +350,26 @@ can be used as a minimal smoke-test pattern that runs without any real imaging d
 - [ ] At least one user-facing markdown section written (`audience: user`)
 - [ ] `docs_id` added to all pipeline YAMLs covered by this topic
 - [ ] Pipeline tested end-to-end locally (tool, pipeline, docs all verified)
+
+---
+
+## Adding a new imaging modality
+
+Modalities (t1, fl, t2, t1ce, adc, pet, …) are defined in **one place**:
+[`app/modalities.py`](../app/modalities.py). To add one (say PET), add a single
+`Modality(...)` entry to `MODALITIES` — its code (the `${STUDY}/{code}/` upload
+subdirectory), a label, the filename regex used to detect it on upload, the
+suffix tokens to strip for the MRID, and any `needs_*` aliases.
+
+Everything else derives from that entry automatically — no other edits:
+
+- **File uploads** infer and route the modality to `${STUDY}/{code}/`.
+- **Readiness** honors `needs_{code}` in a pipeline's `requires:` (plus aliases).
+- **The CLI** accepts `--image {code}=/path` (a named flag like `--pet` is an
+  optional one-line convenience, not required).
+- **The MCP tool** accepts it via `images={"{code}": "/path"}`.
+- **`GET /catalog/modalities`** lists it — clients (frontend, etc.) should read
+  that endpoint instead of hard-coding the modality list.
+
+Ordering note: put a more specific token before one it contains (`t1ce` before
+`t1`). See the module docstring and `tests/test_modalities.py`.

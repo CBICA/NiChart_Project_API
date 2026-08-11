@@ -46,6 +46,9 @@ requires:
   - needs_T2               # Project must have at least one file in t2/
   - needs_T1CE             # Project must have at least one file in t1ce/
   - needs_ADC              # Project must have at least one file in adc/
+  - needs_PET              # Project must have at least one file in pet/
+  # Imaging modalities are defined centrally in app/modalities.py — needs_<code>
+  # works for every registered modality (see GET /catalog/modalities).
   - needs_idat             # Project must have paired {MRID}_Red.idat + {MRID}_Grn.idat in idat/
   - needs_demographics     # Project must have a participants/participants.csv
 

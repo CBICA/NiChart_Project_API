@@ -61,6 +61,8 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from app import modalities
+
 # ── App skeleton ──────────────────────────────────────────────────────────────
 
 console = Console()
@@ -265,12 +267,23 @@ def _spawn_local(log_path: Optional[str], inactivity_timeout: int = 0) -> ApiCon
     inherited environment > repo ``.env`` > server defaults, with
     execution_mode forced to local (so the CLI can talk to it without auth).
     """
-    env_cfg = _read_env_file(ENV_FILE) if ENV_FILE.exists() else {}
-    if not ENV_FILE.exists():
+    # Merge config from the same locations the server resolves (INSTALLATION.md §4),
+    # lowest → highest precedence; used below to pick the backend / warn sensibly.
+    _candidates = [ENV_FILE, Path.home() / ".nichart" / ".env"]
+    _explicit = os.environ.get("NICHART_ENV_FILE")
+    if _explicit:
+        _candidates.append(Path(_explicit))
+    env_cfg: dict[str, str] = {}
+    found_config = False
+    for cand in _candidates:
+        if cand.exists():
+            env_cfg.update(_read_env_file(cand))  # later candidate overrides earlier
+            found_config = True
+    if not found_config and not any(k.startswith("NICHART_") for k in os.environ):
         console.print(
-            f"[yellow]No .env found at {ENV_FILE}[/yellow] — the spawned server will use "
-            "defaults. Copy .env.example there and configure it "
-            "(see docs/getting-started.md → Environment variables)."
+            "[yellow]No configuration found[/yellow] (no .env at the repo, ~/.nichart/.env, "
+            "or $NICHART_ENV_FILE, and no NICHART_* env vars) — the spawned server will use "
+            "defaults. See INSTALLATION.md §4."
         )
 
     backend = _effective_spawn_backend(env_cfg)
@@ -406,7 +419,7 @@ _STATUS_STYLE = {
     "cancelled": "dim",
 }
 
-VALID_MODALITIES = ("t1", "fl", "t2", "t1ce", "adc")
+VALID_MODALITIES = modalities.MODALITY_CODES
 
 # Repo root = parent of app/. Used to locate the server's .env and resources/ when
 # spawning a managed server, so it runs with the config the operator set up at
@@ -1465,6 +1478,15 @@ def run(
     t2: Optional[Path] = typer.Option(None, "--t2", help="T2 NIfTIs (directory or file)."),
     t1ce: Optional[Path] = typer.Option(None, "--t1ce", help="T1CE NIfTIs (directory or file)."),
     adc: Optional[Path] = typer.Option(None, "--adc", help="ADC NIfTIs (directory or file)."),
+    pet: Optional[Path] = typer.Option(None, "--pet", help="PET NIfTIs (directory or file)."),
+    image: list[str] = typer.Option(
+        [], "--image",
+        help=(
+            "Fallback for a modality without a dedicated flag above: MODALITY=PATH "
+            "(repeatable). Prefer the named flags when one exists. Valid modalities: "
+            + ", ".join(modalities.MODALITY_CODES) + "."
+        ),
+    ),
     participants: Optional[Path] = typer.Option(None, "--participants", help="Participants CSV (subject IDs + covariates)."),
     existing: bool = typer.Option(False, "--existing", help="Add to an existing project instead of creating a new one."),
     param: list[str] = typer.Option([], "--param", "-p", help="Pipeline parameter as key=value (repeatable)."),
@@ -1484,9 +1506,10 @@ def run(
 
       1. Verify the pipeline exists.
       2. Create the project (or select it with --existing; collisions are errors).
-      3. Upload each provided modality (--t1 / --fl / --t2 / --t1ce / --adc) as
-         NIfTI. Each flag takes a flat directory (every NIfTI within) or a single
-         file; MRIDs are inferred from filenames.
+      3. Upload each provided modality (--t1 / --fl / --t2 / --t1ce / --adc /
+         --pet, or --image MOD=PATH for any other) as NIfTI. Each flag takes a
+         flat directory (every NIfTI within) or a single file; MRIDs are inferred
+         from filenames.
       4. Upload the participants CSV (--participants), if given.
       5. Report per-modality subject counts and flag any mismatches.
       6. Check pipeline readiness (imaging, CSV columns, subject count).
@@ -1511,7 +1534,26 @@ def run(
       nichart run run_spare_all --project study1 --t1 /data/t1 --fl /data/flair \\
                   --participants demo.csv --wait-until-done
     """
-    provided = {m: p for m, p in (("t1", t1), ("fl", fl), ("t2", t2), ("t1ce", t1ce), ("adc", adc)) if p is not None}
+    # Modality inputs: the common named flags plus any --image MODALITY=PATH.
+    provided: dict[str, Path] = {
+        m: p for m, p in (("t1", t1), ("fl", fl), ("t2", t2), ("t1ce", t1ce), ("adc", adc), ("pet", pet)) if p is not None
+    }
+    for spec in image:
+        if "=" not in spec:
+            console.print(f"[red]Bad --image {spec!r}[/red] — expected MODALITY=PATH")
+            raise typer.Exit(1)
+        code, _, pth = spec.partition("=")
+        code = code.strip().lower()
+        if not modalities.is_valid(code):
+            console.print(
+                f"[red]Unknown modality {code!r}[/red] — valid: {', '.join(modalities.MODALITY_CODES)}"
+            )
+            raise typer.Exit(1)
+        if code in provided:
+            console.print(f"[red]Modality {code!r} given twice[/red] (named flag and --image).")
+            raise typer.Exit(1)
+        provided[code] = Path(pth).expanduser()
+
     params = _parse_params(param)
 
     # Pre-flight — purely local, no server needed. Resolve modality file lists and

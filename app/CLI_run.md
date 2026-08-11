@@ -33,7 +33,8 @@ specific message.
 2. **Create or select the project.** By default a *new* project is created;
    a name collision is an error (use `--existing` to add to it instead). With
    `--existing`, a *missing* project is an error.
-3. **Upload each provided modality** (`--t1 / --fl / --t2 / --t1ce / --adc`) as
+3. **Upload each provided modality** (`--t1 / --fl / --t2 / --t1ce / --adc / --pet`,
+   or `--image MOD=PATH` for any other) as
    NIfTI. Each flag takes a **flat directory** (every `.nii`/`.nii.gz` inside) or
    a **single file**. MRIDs are inferred from filenames server-side; a file whose
    MRID can't be inferred aborts the run (the staged batch is discarded and the
@@ -66,6 +67,8 @@ inspect the partial state.)
 | `--t2` | path | — | T2 NIfTIs (directory or file). |
 | `--t1ce` | path | — | T1CE NIfTIs (directory or file). |
 | `--adc` | path | — | ADC NIfTIs (directory or file). |
+| `--pet` | path | — | PET NIfTIs (directory or file). |
+| `--image` | `MOD=PATH` (repeatable) | — | **Fallback** for a modality without a named flag above (e.g. a newly added one). Prefer the named flags when one exists. |
 | `--participants` | path | — | Participants CSV (subject IDs + covariates). |
 | `--existing` | flag | off | Add to an existing project instead of creating a new one. |
 | `--param`, `-p` | `key=value` (repeatable) | — | Pipeline parameter. Typed `int → float → bool → str`. |
@@ -128,19 +131,15 @@ See **[INSTALLATION.md](../INSTALLATION.md)** for full install/config, including
 building Singularity images (`scripts/build-sif-registry.py`) and the SLURM setup.
 
 A spawned server is **not** a bare default server — it runs with the operator's
-own configuration, discovered relative to the API install (not your current
-directory):
+own configuration, resolved independently of your current directory:
 
-- It runs with its working directory set to the **API repo root** (the parent of
-  `app/`, computed from the CLI's own location). This is what lets it find the
-  `.env` and the relative `resources/` directory — invoking `nichart run` from any
-  folder works. You set up `.env` **once** at install time; every `run` reuses it.
-- **Config precedence:** inherited `NICHART_*` environment variables > the repo
-  `.env` > server defaults. `execution_mode` is forced to `local` (so the CLI can
-  talk to the server without auth).
-- If no `.env` is found at the repo root, `run` **warns** and points you to
-  `.env.example` and `docs/getting-started.md → Environment variables`; the server
-  falls back to defaults.
+- The `resources/` catalog ships inside the package and `.env` is resolved from
+  the standard locations (`~/.nichart/.env`, a dev-checkout `<repo>/.env`, or
+  `$NICHART_ENV_FILE`) — see INSTALLATION.md §4 — so invoking `nichart run` from
+  any folder works. You configure once at install time; every `run` reuses it.
+- **Config precedence:** inherited `NICHART_*` environment variables > those
+  `.env` files > server defaults. `execution_mode` is forced to `local` (so the
+  CLI can talk to the server without auth).
 
 **Backend selection** follows the server's normal rules, driven by that config:
 
@@ -175,6 +174,9 @@ server is torn down and the tunnel closed on exit). Only `_open_remote` in
 
 ### Modality inputs
 
+- Common modalities have named flags: `--t1`, `--fl`, `--t2`, `--t1ce`, `--adc`,
+  `--pet`. Any other registered modality (see `GET /catalog/modalities`) is given
+  via the **fallback** `--image MOD=PATH` — prefer a named flag when one exists.
 - A modality flag pointing at a **directory** uploads every `.nii`/`.nii.gz`
   file directly inside it (non-recursive), all tagged as that modality.
 - Pointing at a **single file** uploads just that file.

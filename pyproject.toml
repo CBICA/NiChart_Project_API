@@ -41,3 +41,10 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+# Ship the pipeline/tool YAMLs (and other reference data) inside the installed
+# package at app/resources, so a non-editable `pip install` / `uv` install yields
+# a server that runs from any directory — no repo checkout required. In an
+# editable/dev install this isn't materialized; the top-level resources/ is used.
+[tool.hatch.build.targets.wheel.force-include]
+"resources" = "app/resources"

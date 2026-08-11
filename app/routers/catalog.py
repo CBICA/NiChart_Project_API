@@ -9,6 +9,7 @@ from app.auth.dependencies import public
 from app.config import Settings, get_settings
 from app.models.catalog import (
     CentileFeatureMetadataResponse,
+    ModalityInfo,
     PipelineDetail,
     PipelineSummary,
     ToolDetail,
@@ -54,6 +55,24 @@ async def get_pipeline(
     settings: Settings = Depends(get_settings),
 ) -> PipelineDetail:
     return catalog_service.get_pipeline(settings.pipelines_path, pipeline_id, settings.resources_path)
+
+
+@router.get(
+    "/modalities",
+    summary="List recognized imaging modalities",
+    description=(
+        "Returns every imaging modality the platform recognizes — the code (also the "
+        "study subdirectory name and the key used in NIfTI uploads and pipeline "
+        "``needs_<code>`` requirements) and a human label. Clients should read this "
+        "rather than hard-coding the modality list."
+    ),
+    response_model=list[ModalityInfo],
+    responses={},
+)
+async def list_modalities() -> list[ModalityInfo]:
+    from app import modalities
+
+    return [ModalityInfo(**m) for m in modalities.catalog()]
 
 
 @router.get(

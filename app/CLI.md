@@ -20,7 +20,7 @@ first**, and (for most commands) **already running**.
    once, at install time.
 2. **Start the server** and point the CLI at it:
    - Local dev: `docker compose up` (see [getting-started.md](../docs/getting-started.md)).
-   - Bare-metal (no Docker): from the repo root, `uvicorn app.main:app --host 127.0.0.1 --port 8000` (INSTALLATION.md §6).
+   - Bare-metal (no Docker): `uvicorn app.main:app --host 127.0.0.1 --port 8000` (from any directory — INSTALLATION.md §6).
    - Verify: `nichart status` should report `ok`. Use `NICHART_API_URL` / `--url` if it isn't on `http://localhost:8000`.
 
 > **`nichart run` can start the server for you — but it still needs configuring first.**

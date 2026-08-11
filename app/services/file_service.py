@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
+from app import modalities
 from app.auth.dependencies import CurrentUser
 from app.config import Settings
 from app.models.files import (
@@ -208,13 +209,10 @@ def write_participants(project_path: Path, rows: list) -> None:
             writer.writerow({k: ("" if d.get(k) is None else d.get(k, "")) for k in fieldnames})
 
 
-_MODALITY_DIRS = {"t1", "fl", "t2", "t1ce", "adc"}
-
-
 def collect_project_mrids(project_path: Path) -> list[str]:
     """Return sorted list of MRIDs detected from committed NIfTI files in modality directories."""
     mrids: set[str] = set()
-    for mod in _MODALITY_DIRS:
+    for mod in modalities.MODALITY_CODES:
         mod_path = project_path / mod
         if not mod_path.is_dir():
             continue
@@ -261,21 +259,7 @@ def participants_template_csv(project_path: Path) -> str:
 
 
 # ── NIfTI filename inference ──────────────────────────────────────────────────
-
-_MODALITY_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("t1ce", re.compile(r"_T1CE", re.IGNORECASE)),
-    ("fl",   re.compile(r"_(?:FLAIR|FL)\b", re.IGNORECASE)),
-    ("t2",   re.compile(r"_T2\b", re.IGNORECASE)),
-    ("adc",  re.compile(r"_ADC\b", re.IGNORECASE)),
-    ("t1",   re.compile(r"_T1(?:w)?\b", re.IGNORECASE)),
-]
-
-_KNOWN_MODALITIES = {"t1", "fl", "t2", "t1ce", "adc"}
-
-_STRIP_SUFFIX = re.compile(
-    r"(_T1CE|_FLAIR|_FL|_T2|_ADC|_T1w|_T1)?(\.nii\.gz|\.nii)$",
-    re.IGNORECASE,
-)
+# All modality logic lives in app.modalities (the single source of truth).
 
 
 def infer_nifti_metadata(original_path: str) -> tuple[str | None, str | None]:
@@ -283,22 +267,18 @@ def infer_nifti_metadata(original_path: str) -> tuple[str | None, str | None]:
 
     MRID is derived from the basename (suffixes and modality tags stripped).
     Modality is detected from the basename first; if not found, the parent
-    directory name is checked against known modality codes (t1/fl/t2/t1ce/adc).
-    This allows uploads like ``fl/subject001.nii.gz`` to resolve correctly even
-    when the filename itself carries no modality indicator.
+    directory name is checked against known modality codes. This allows uploads
+    like ``fl/subject001.nii.gz`` to resolve correctly even when the filename
+    itself carries no modality indicator.
     """
     p = Path(original_path)
     basename = p.name
-    modality = None
-    for mod, pattern in _MODALITY_PATTERNS:
-        if pattern.search(basename):
-            modality = mod
-            break
+    modality = modalities.infer_modality(basename)
     if modality is None:
         parent = p.parent.name.lower()
-        if parent in _KNOWN_MODALITIES:
+        if modalities.is_valid(parent):
             modality = parent
-    mrid = _STRIP_SUFFIX.sub("", basename).strip("_-. ")
+    mrid = modalities.strip_to_mrid(basename)
     return mrid or None, modality
 
 
@@ -451,14 +431,7 @@ def store_csv_upload(project_path: Path, contents: bytes, filename: str) -> None
 
 # ── BIDS upload ───────────────────────────────────────────────────────────────
 
-# BIDS suffix → NiChart modality (t1ce must precede t1 to avoid false match)
-_BIDS_MODALITY_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("t1ce", re.compile(r"_T1CE", re.IGNORECASE)),
-    ("fl",   re.compile(r"_(?:FLAIR|FL)\b", re.IGNORECASE)),
-    ("t2",   re.compile(r"_T2w?\b", re.IGNORECASE)),   # handles both _T2 and BIDS _T2w
-    ("adc",  re.compile(r"_ADC\b", re.IGNORECASE)),
-    ("t1",   re.compile(r"_T1w?\b", re.IGNORECASE)),   # handles both _T1 and BIDS _T1w
-]
+# BIDS suffix → NiChart modality: see app.modalities.infer_modality_bids.
 
 _BIDS_SUB_RE = re.compile(r"^sub-(\w+)")
 
@@ -486,11 +459,7 @@ def store_bids_upload(project_path: Path, contents: bytes, filename: str) -> int
             if not m:
                 continue
             mrid = m.group(1)
-            modality = None
-            for mod, pat in _BIDS_MODALITY_PATTERNS:
-                if pat.search(nifti.name):
-                    modality = mod
-                    break
+            modality = modalities.infer_modality_bids(nifti.name)
             if not modality:
                 continue
             target_dir = project_path / modality
@@ -581,11 +550,7 @@ def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
             if not m:
                 continue
             mrid = m.group(1)
-            modality = None
-            for mod, pat in _BIDS_MODALITY_PATTERNS:
-                if pat.search(nifti.name):
-                    modality = mod
-                    break
+            modality = modalities.infer_modality_bids(nifti.name)
             if not modality:
                 continue
             target_dir = project_path / modality
