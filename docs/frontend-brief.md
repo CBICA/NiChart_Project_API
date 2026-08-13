@@ -12,7 +12,7 @@ A reference Streamlit implementation exists at `../NiChart_Project` — read it 
 
 **Base URL:** `http://localhost:8000` (local mode, configurable)
 
-**Auth:** In local mode (`NICHART_EXECUTION_MODE=local`) the server bypasses auth entirely — no `Authorization` header is needed. In cloud mode a Cognito `id_token` goes in `Authorization: Bearer <token>`. Build the auth header in one place so it can be toggled; for now, local mode is the target.
+**Auth:** In local mode (`NICHART_EXECUTION_MODE=local`) the server bypasses auth entirely — no credentials are needed. In cloud mode the Cognito `id_token` lives in the `session` httpOnly cookie, set by the `/auth/login` → `/auth/callback` BFF flow; the browser sends it automatically, so send requests with credentials included (e.g. `fetch(..., { credentials: "include" })`). There is no `Authorization: Bearer` header. For now, local mode is the target.
 
 **Error shape:** All errors return `{ "detail": "..." }` (FastAPI default).
 

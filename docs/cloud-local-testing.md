@@ -163,19 +163,29 @@ The overlay:
 
 The server starts on `http://localhost:8000`.
 
-### Step 3 — Get a Cognito token
+### Step 3 — Get a Cognito token (only for by-hand API calls)
 
-Cloud mode enforces auth on all non-public routes.
+Cloud mode enforces auth on all non-public routes. The server reads the ID token
+from the **`session` httpOnly cookie** — the same cookie the browser BFF flow
+(`/auth/login` → `/auth/callback`) sets automatically. It does **not** read an
+`Authorization: Bearer` header.
+
+So if you're testing through the **React UI**, skip this step — signing in through
+the UI sets the cookie for you. You only need a token when calling the API **by
+hand** (curl/httpie), and you pass it as a cookie:
 
 ```bash
 # Prompts for password; prints the ID token
 TOKEN=$(python scripts/get-token.py your@email.com)
 
-# Verify it works
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects
+# Verify it works — pass the token as the `session` cookie, not a Bearer header
+curl -b "session=$TOKEN" http://localhost:8000/projects
 ```
 
 Tokens expire after 1 hour. Re-run the script to refresh.
+
+> The `nichart` CLI does not currently send this cookie, so it can only talk to a
+> local-mode server — it cannot authenticate to a cloud/cloud-local API yet.
 
 ### Step 4 — Run a pipeline end-to-end
 
@@ -184,42 +194,42 @@ PROJECT="my-test-project"
 
 # 1. Create the project
 curl -s -X POST http://localhost:8000/projects \
-  -H "Authorization: Bearer $TOKEN" \
+  -b "session=$TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"name\": \"$PROJECT\"}" | jq
 
 # 2. Upload a T1 NIfTI (two-step: stage then commit)
 STAGE=$(curl -s -X POST "http://localhost:8000/projects/$PROJECT/files/upload/nifti" \
-  -H "Authorization: Bearer $TOKEN" \
+  -b "session=$TOKEN" \
   -F "files=@/path/to/sub001_T1.nii.gz")
 echo "$STAGE" | jq
 
 STAGING_ID=$(echo "$STAGE" | jq -r '.staging_id')
 curl -s -X POST "http://localhost:8000/projects/$PROJECT/files/stage/$STAGING_ID/commit" \
-  -H "Authorization: Bearer $TOKEN" \
+  -b "session=$TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"mappings": [{"filename": "sub001_T1.nii.gz", "mrid": "sub001", "modality": "t1"}]}' | jq
 
 # 3. Submit the pipeline
 #    The API server automatically uploads data to S3 before Batch sees the job.
 RUN_ID=$(curl -s -X POST "http://localhost:8000/projects/$PROJECT/jobs/pipelines" \
-  -H "Authorization: Bearer $TOKEN" \
+  -b "session=$TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"pipeline_id": "run_dlmuse"}' | jq -r '.run_id')
 echo "Run: $RUN_ID"
 
 # 4. Poll status (Batch runs on the cloud side)
 curl -s "http://localhost:8000/jobs/pipelines/$RUN_ID" \
-  -H "Authorization: Bearer $TOKEN" | jq '{status, jobs_ahead, estimated_wait_seconds}'
+  -b "session=$TOKEN" | jq '{status, jobs_ahead, estimated_wait_seconds}'
 
 # 5. Wait for completion, then inspect results
 #    Results are downloaded from S3 automatically after the step finishes.
 curl -s "http://localhost:8000/projects/$PROJECT/results/run_dlmuse" \
-  -H "Authorization: Bearer $TOKEN" | jq
+  -b "session=$TOKEN" | jq
 
 # 6. Check logs if anything went wrong
 curl -s "http://localhost:8000/jobs/pipelines/$RUN_ID/logs" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.logs'
+  -b "session=$TOKEN" | jq -r '.logs'
 ```
 
 No manual S3 sync steps needed — the API server handles it automatically.

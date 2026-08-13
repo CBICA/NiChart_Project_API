@@ -103,15 +103,17 @@ resources/
 | Mode | Behaviour |
 |---|---|
 | `local` (default) | Auth is bypassed. All requests run as `LOCAL_USER`. |
-| `cloud` | Every protected route requires `Authorization: Bearer <id_token>`. |
+| `cloud` | Every protected route requires the Cognito ID token in the `session` httpOnly cookie (set by the `/auth/login` → `/auth/callback` BFF flow). The server does not read an `Authorization: Bearer` header. |
 
-In cloud mode, obtain a Cognito ID token:
+Through the React UI, signing in sets the `session` cookie automatically. To call
+the API **by hand** in cloud mode, obtain a Cognito ID token and pass it as that
+cookie:
 
 ```bash
 TOKEN=$(python3 scripts/get-token.py your@email.com)
 # Prompts for password; prints the ID token.
 
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects
+curl -b "session=$TOKEN" http://localhost:8000/projects
 ```
 
 Tokens expire after 1 hour by default. Re-run the script to refresh.

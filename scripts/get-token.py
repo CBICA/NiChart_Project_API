@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-Get Cognito tokens for CLI / API testing.
+Get a Cognito ID token for manual/scripted API testing in cloud mode.
+
+The normal way to authenticate is the browser BFF flow (/auth/login →
+/auth/callback), which sets the ``session`` httpOnly cookie automatically — the
+React UI needs nothing from this script. Use this script only when you want to
+call the API **by hand** (curl/httpie) without a browser.
+
+The server authenticates cloud requests from the ``session`` cookie only; it does
+not read an ``Authorization: Bearer`` header. So pass the ID token as a cookie:
+
+    TOKEN=$(python scripts/get-token.py user@example.com)
+    curl -b "session=$TOKEN" http://localhost:8000/projects
 
 Usage:
-    # Print only the ID token (default — for Authorization: Bearer header)
+    # Print the ID token (default — this is what goes in the session cookie)
     python scripts/get-token.py user@example.com
 
-    # Print only the access token (for X-Access-Token header / Lambda calls)
+    # Print the access token (not consumed by the API; kept for ad-hoc use)
     python scripts/get-token.py user@example.com --access-token
 
     # Print both as shell variable assignments (eval to set both at once)
-    python scripts/get-token.py user@example.com --env
-
-Common patterns:
-    TOKEN=$(python scripts/get-token.py user@example.com)
-    ACCESS_TOKEN=$(python scripts/get-token.py user@example.com --access-token)
-    # or in one call:
     eval $(python scripts/get-token.py user@example.com --env)
 
-When submitting pipeline jobs in cloud mode, pass both:
-    curl -H "Authorization: Bearer $TOKEN" \\
-         -H "X-Access-Token: $ACCESS_TOKEN" \\
-         -X POST http://localhost:8000/projects/myproject/jobs/pipelines ...
-
-Requires ALLOW_USER_PASSWORD_AUTH on the Cognito app client.
+Requires ALLOW_USER_PASSWORD_AUTH on the Cognito app client. Tokens expire after
+1 hour — re-run to refresh.
 """
 
 import getpass

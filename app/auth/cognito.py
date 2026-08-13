@@ -14,6 +14,11 @@ import httpx
 import jwt
 from jwt.algorithms import RSAAlgorithm
 
+# Clock-skew tolerance (seconds) for JWT iat/nbf/exp validation. Absorbs normal
+# drift between this host's clock and Cognito's; larger drift should be fixed by
+# syncing the host clock (NTP), not by widening this.
+_CLOCK_SKEW_LEEWAY_SECONDS = 60
+
 
 class _JWKSCache:
     """In-process JWKS cache keyed by ``kid``."""
@@ -79,6 +84,13 @@ class CognitoVerifier:
             key=public_key,
             algorithms=["RS256"],
             audience=self.client_id,
+            # Tolerate small clock skew between this host and Cognito's issuer
+            # clock. Without leeway, a host running even a second or two behind
+            # rejects freshly-issued tokens with ImmatureSignatureError
+            # ("The token is not yet valid (iat)"). This relaxes only the iat/
+            # nbf/exp timing checks; signature, issuer, and audience are still
+            # fully enforced. Standard OIDC-client practice.
+            leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
         )
 
         if claims.get("iss") != self.issuer:

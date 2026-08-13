@@ -102,7 +102,8 @@ print(json.loads(base64.b64decode(t))['sub'])
 " "$TOKEN")
 ok "Cognito sub: $SUB"
 
-AUTH_HEADER=(-H "Authorization: Bearer $TOKEN")
+# The server reads the ID token from the `session` cookie, not a Bearer header.
+AUTH_HEADER=(-b "session=$TOKEN")
 
 # ── Create project ────────────────────────────────────────────────────────────
 
@@ -237,7 +238,7 @@ if [[ "$STATUS" == "succeeded" ]]; then
   scripts/fsx-sync.sh down --user "$SUB" --project "$PROJECT"
   echo
   ok "Results synced. Browse with:"
-  echo "    curl -s '$API/projects/$PROJECT/files' -H 'Authorization: Bearer \$TOKEN'"
+  echo "    curl -s '$API/projects/$PROJECT/files' -b 'session=\$TOKEN'"
 else
   echo
   echo "  Pipeline did not succeed (status=$STATUS). Results not synced."
