@@ -1,6 +1,11 @@
 pipeline_name: ITHResolve-GBM
+root_pipeline: ithresolve_gbm
+harmonized: false
+modalities: [idat]
 description: |
   Takes IDAT epigenetic data arrays and produces tumor composition measures (methylation signatures).
+
+docs_id: ithresolve_gbm
 
 categories:
   - glioblastoma

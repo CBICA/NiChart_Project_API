@@ -1,4 +1,7 @@
-pipeline_name: SurrealGAN R-Score Prediction
+pipeline_name: SurrealGAN
+root_pipeline: surrealgan
+harmonized: false
+modalities: [T1]
 description: |
   Prediction of SurrealGAN R-Scores along 5 disease progression dimensions using T1-weighted MRI brain scans via DLMUSE.
 

@@ -1,0 +1,11 @@
+title: "AmyloidPETNet"
+description: "End-to-end deep learning classification of amyloid positivity from brain PET imaging."
+pipelines:
+  - amyloidpetnet_pipeline
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

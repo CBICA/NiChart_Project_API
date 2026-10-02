@@ -1,0 +1,11 @@
+title: "DL-BA (Deep Learning Brain Age)"
+description: "Direct image-to-biomarker brain age regression from T1-weighted MRI, with attention maps."
+pipelines:
+  - run_bascores
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

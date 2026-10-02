@@ -146,6 +146,31 @@ class PipelineSummary(BaseModel):
             "Multiple pipelines may share the same docs_id (e.g. harmonized variants)."
         ),
     )
+    root_pipeline: str | None = Field(
+        default=None,
+        description=(
+            "Grouping key for this pipeline, used to cluster related variants "
+            "(e.g. base/harmonized/CVM flavours) under a single entry in the UI. "
+            "Pipelines sharing the same root_pipeline belong to the same group; "
+            "null if the pipeline YAML does not declare one."
+        ),
+    )
+    harmonized: bool = Field(
+        default=False,
+        description=(
+            "True if this pipeline applies harmonization to its inputs. "
+            "Explicit counterpart to the 'harmonized' category tag, for callers "
+            "that want to filter/group variants without scanning categories."
+        ),
+    )
+    modalities: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Imaging/data modalities this pipeline requires (e.g. ['T1'], ['T1', 'FLAIR'], "
+            "['PET'], ['idat']), derived from its 'needs_*' prerequisites. "
+            "Empty for pipelines with no modality requirement (e.g. the test pipeline)."
+        ),
+    )
 
 
 class ColumnSpec(BaseModel):
@@ -211,6 +236,61 @@ class FeatureGroup(BaseModel):
 
     name: str = Field(description="Display name for this group (e.g. 'Lobar', 'Global').")
     columns: list[str] = Field(description="Feature column names belonging to this group.")
+
+
+class VarGroup(BaseModel):
+    """A curated, cross-pipeline group of related variables.
+
+    Defined in ``resources/dicts/dict_var_groups.yaml``. Each group is either a flat
+    list of explicitly named variables (``values``, e.g. SPARE scores) or a
+    prefix-based group of ROI-indexed variables (``prefix``, e.g. DLMUSE volumes) —
+    never both. For prefix-based groups, combine ``prefix`` with a ROI index from one
+    of ``roi_lists`` on ``VarGroupCatalogResponse`` to build a candidate raw column
+    name, then resolve its display name via the owning pipeline's ``label_map``.
+    """
+
+    key: str = Field(description="Group identifier (YAML top-level key), e.g. 'group_dlmuse-vol'.")
+    label: str = Field(description="Human-readable group name shown in the category selector.")
+    desc: str | None = Field(default=None, description="Longer description for tooltips/help text.")
+    category: str = Field(description="Coarse bucket for UI sectioning, e.g. 'demog', 'biomarker', 'roi'.")
+    pipeline: list[str] = Field(
+        default_factory=list,
+        description="Pipeline IDs these variables come from; empty for cross-pipeline groups like demographics.",
+    )
+    vtype: str | None = Field(
+        default=None,
+        description="'name' for flat named variables; unset/null for ROI-indexed groups.",
+    )
+    values: list[str] | None = Field(
+        default=None,
+        description="Explicit raw column names belonging to this group. Mutually exclusive with prefix.",
+    )
+    prefix: str | None = Field(
+        default=None,
+        description=(
+            "Column-name prefix for ROI-indexed variables, e.g. 'DL_MUSE_Volume_'. "
+            "Mutually exclusive with values."
+        ),
+    )
+
+
+class RoiList(BaseModel):
+    """A curated sub-list of ROI indices, used to narrow a prefix-based VarGroup.
+
+    Defined in ``resources/dicts/dict_roi_lists.yaml``.
+    """
+
+    key: str = Field(description="List identifier (YAML top-level key), e.g. 'list_muse-all'.")
+    desc: str | None = Field(default=None, description="Human-readable description of this list.")
+    atlas: str = Field(description="Atlas these indices belong to, e.g. 'muse'.")
+    values: list[int] = Field(description="ROI index values in this list.")
+
+
+class VarGroupCatalogResponse(BaseModel):
+    """Response from GET /catalog/var-groups."""
+
+    groups: dict[str, VarGroup] = Field(description="All curated variable groups, keyed by group id.")
+    roi_lists: dict[str, RoiList] = Field(description="All curated ROI sub-lists, keyed by list id.")
 
 
 class FeatureDisplayMeta(BaseModel):

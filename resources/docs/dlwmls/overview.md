@@ -1,5 +1,10 @@
 # DLWMLS White Matter Lesion Segmentation
 
+## Links
+
+- **GitHub:** [CBICA/DLWMLS](https://github.com/CBICA/DLWMLS)
+- **Underlying architecture:** [nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation](https://pubmed.ncbi.nlm.nih.gov/33288961/) (Isensee et al., *Nature Methods*, 2021) — DLWMLS is a trained nnU-Net model.
+
 DLWMLS quantifies white matter lesion burden from paired T1-weighted and FLAIR MRI scans. It uses a deep learning segmentation model trained on multi-site clinical data and combines the lesion outputs with DLMUSE cortical and subcortical volumes into a merged feature CSV suitable for downstream analysis.
 
 ## What this pipeline produces

@@ -118,7 +118,7 @@ class ReadinessReport(BaseModel):
         default=None,
         description=(
             "Subject count check, present only for pipelines with min_subjects requirements "
-            "(e.g. harmonized pipelines). satisfied=False blocks running; "
-            "recommended_met=False should surface a warning to the user."
+            "(e.g. harmonized pipelines). recommended_met=False blocks running (treated the "
+            "same as a missing modality or CSV column), not just satisfied=False."
         ),
     )

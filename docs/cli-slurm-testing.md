@@ -47,7 +47,7 @@ env | grep NICHART_ || echo "clean shell"     # no stray overrides
 nichart --help
 nichart run --help                            # server flags present
 nichart status                                # → cannot connect (nothing running) — expected
-nichart run dummy_pipeline -P t0 --dry-run    # local validation, NO spawn; notes it *would* spawn
+nichart run test_pipeline -P t0 --dry-run    # local validation, NO spawn; notes it *would* spawn
 ```
 
 Expected: `--dry-run` never starts a server; it validates local inputs and, if no
@@ -61,7 +61,7 @@ With **no `.env`** at the repo root and a clean shell:
 
 ```bash
 mv .env .env.bak 2>/dev/null || true
-nichart run dummy_pipeline -P envfree --server spawn
+nichart run test_pipeline -P envfree --server spawn
 ```
 
 Expected:
@@ -74,7 +74,7 @@ Expected:
 Also confirm the guard:
 
 ```bash
-NICHART_JOB_BACKEND=batch nichart run dummy_pipeline -P b --server spawn
+NICHART_JOB_BACKEND=batch nichart run test_pipeline -P b --server spawn
 # → refused cleanly: Batch is cloud-only; use --server attach
 ```
 
@@ -87,7 +87,7 @@ Restore: `mv .env.bak .env`.
 Repo-root `.env` (from INSTALLATION.md §4) selecting SLURM. Then:
 
 ```bash
-nichart run dummy_pipeline -P slurm1 --server spawn
+nichart run test_pipeline -P slurm1 --server spawn
 ```
 
 Expected:

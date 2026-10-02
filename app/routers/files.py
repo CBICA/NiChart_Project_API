@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.models.errors import ErrorDetail
 from app.models.files import (
     DirectoryTree,
+    DownloadZipRequest,
     NiftiCommitRequest,
     NiftiCommitResult,
     NiftiStagingResult,
@@ -82,14 +83,42 @@ async def download_file(
     if zip or target.is_dir():
         if not target.is_dir():
             raise HTTPException(400, "zip=true requires a directory path")
-        data = file_service.zip_directory_bytes(target)
         return StreamingResponse(
-            iter([data]),
+            file_service.zip_directory_stream(target),
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{target.name}.zip"'},
         )
 
     return FileResponse(path=target, filename=target.name)
+
+
+@router.post(
+    "/files/archive",
+    summary="Bundle a multi-file/directory selection into one zip",
+    description=(
+        "Bundles an arbitrary set of files and/or directories into a single zip archive, "
+        "preserving each entry's path relative to the project root. Useful for downloading "
+        "a multi-selection from the file browser as one archive instead of one request per item. "
+        "Named to avoid 'download' in the URL, which some ad-blocker/privacy extensions filter."
+    ),
+    response_model=None,
+    responses={
+        200: {"description": "Zip stream."},
+        **_AUTH_ERRORS,
+    },
+)
+async def create_archive(
+    project_id: str,
+    body: DownloadZipRequest,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    return StreamingResponse(
+        file_service.zip_paths_stream(pdir, body.paths),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}.zip"'},
+    )
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -122,9 +151,12 @@ async def delete_file(
     "/files/upload/nifti",
     summary="Upload NIfTI file(s) to staging",
     description=(
-        "Accepts one or more ``.nii`` / ``.nii.gz`` files. Files land in the project "
-        "staging area and the server returns its best-effort MRID and modality inference. "
-        "Follow up with the commit endpoint to move them into the project."
+        "Accepts one or more ``.nii`` / ``.nii.gz`` files (including a folder upload, where "
+        "filenames carry relative directory paths). Files land in the project staging area "
+        "and the server returns its best-effort MRID and modality inference. If two entries "
+        "flatten to the same filename, the first one wins and the rest are reported in "
+        "``skipped_duplicates``. Follow up with the commit endpoint to move them into the "
+        "project."
     ),
     response_model=NiftiStagingResult,
     status_code=202,
@@ -153,7 +185,10 @@ async def upload_nifti(
         "Files land in the project staging area and the server returns its best-effort "
         "MRID and modality inference. Directory components in the archive path contribute "
         "to modality detection (e.g. ``fl/subject001.nii.gz`` infers modality ``fl``). "
-        "Follow up with the commit endpoint to move them into the project."
+        "Nested directories are flattened into a single staging folder; if two entries "
+        "flatten to the same filename, the first one wins and the rest are reported in "
+        "``skipped_duplicates``. Follow up with the commit endpoint to move them into the "
+        "project."
     ),
     response_model=NiftiStagingResult,
     status_code=202,
@@ -177,7 +212,10 @@ async def upload_nifti_zip(
     summary="Commit staged NIfTI files",
     description=(
         "Confirms MRID and modality mappings for staged files and moves them into "
-        "their final locations. Every staged file must appear in ``mappings``."
+        "their final locations. Every staged file must appear in ``mappings``. If a "
+        "subject already has a file at the target modality/MRID slot, the new upload "
+        "is left in place there and the mapping is reported in ``skipped`` instead of "
+        "``committed`` — existing scans are never overwritten by a re-upload."
     ),
     response_model=NiftiCommitResult,
     responses=_AUTH_ERRORS,

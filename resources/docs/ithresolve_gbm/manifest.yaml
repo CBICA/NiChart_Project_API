@@ -1,0 +1,11 @@
+title: "ITHResolve-GBM"
+description: "Deconvolution of glioblastoma DNA methylation profiles into cell-type composition and heterogeneity measures."
+pipelines:
+  - run_ithresolve_gbm
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

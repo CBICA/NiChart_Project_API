@@ -116,7 +116,7 @@ With the server connected, a researcher can say:
 The model handles the whole discover → check → upload → run → poll → interpret
 loop, and the researcher never touches JSON, the CLI, or the API.
 
-> Even pointed at `dummy_pipeline` (no data needed) this shows the full loop —
+> Even pointed at `test_pipeline` (no data needed) this shows the full loop —
 > handy for rehearsing before a real pipeline is wired up on the demo box.
 
 ---

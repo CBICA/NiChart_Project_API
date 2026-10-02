@@ -1,6 +1,11 @@
-pipeline_name: Image-to-Biomarker Brain Aging Scores
+pipeline_name: DL-BA
+root_pipeline: bascores
+harmonized: false
+modalities: [T1]
 description: |
   Brain age regression pipeline starting from T1 scans. Outputs attention maps alongside biomarker scores.
+
+docs_id: bascores
 
 categories:
   - image-to-biomarker

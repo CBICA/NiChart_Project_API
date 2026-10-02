@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -122,13 +123,91 @@ def resolve_file_path(project_path: Path, user_path: str) -> Path:
 
 # ── Directory zip streaming ───────────────────────────────────────────────────
 
-def zip_directory_bytes(directory: Path) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for item in sorted(directory.rglob("*")):
-            if item.is_file():
-                zf.write(item, item.relative_to(directory))
-    return buf.getvalue()
+class _StreamWriter:
+    """File-like adapter that lets zipfile.ZipFile write into a small drainable buffer
+    instead of an ever-growing in-memory archive — this is what lets us stream a zip
+    as it's built rather than holding the whole (potentially huge) archive in RAM and
+    only starting to respond once every entry has been compressed.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._pos = 0
+
+    def write(self, data: bytes) -> int:
+        self._buffer.extend(data)
+        self._pos += len(data)
+        return len(data)
+
+    def tell(self) -> int:
+        return self._pos
+
+    def flush(self) -> None:  # zipfile calls this defensively; nothing to do
+        pass
+
+    def drain(self) -> bytes:
+        data = bytes(self._buffer)
+        self._buffer.clear()
+        return data
+
+
+def _stream_zip_entries(entries: Iterable[tuple[Path, str]]) -> Iterator[bytes]:
+    """Stream a zip archive of (absolute_path, arcname) pairs, yielding bytes as each
+    entry is compressed instead of buffering the whole archive before returning.
+    """
+    writer = _StreamWriter()
+    with zipfile.ZipFile(writer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path, arcname in entries:
+            zf.write(path, arcname)
+            chunk = writer.drain()
+            if chunk:
+                yield chunk
+    chunk = writer.drain()
+    if chunk:
+        yield chunk
+
+
+def zip_directory_stream(directory: Path) -> Iterator[bytes]:
+    # Resolve the file list eagerly (a plain function, not a generator) so any error
+    # here surfaces immediately rather than after the StreamingResponse has already
+    # started sending the 200 + headers to the client.
+    entries = [
+        (item, str(item.relative_to(directory)))
+        for item in sorted(directory.rglob("*"))
+        if item.is_file()
+    ]
+    return _stream_zip_entries(entries)
+
+
+def _resolve_zip_path_entries(project_path: Path, paths: list[str]) -> list[tuple[Path, str]]:
+    seen: set[str] = set()
+    entries: list[tuple[Path, str]] = []
+    for user_path in paths:
+        target = resolve_file_path(project_path, user_path)
+        items = (
+            [item for item in sorted(target.rglob("*")) if item.is_file()]
+            if target.is_dir()
+            else [target]
+        )
+        for item in items:
+            arcname = str(item.relative_to(project_path))
+            if arcname in seen:
+                continue
+            seen.add(arcname)
+            entries.append((item, arcname))
+    return entries
+
+
+def zip_paths_stream(project_path: Path, paths: list[str]) -> Iterator[bytes]:
+    """Zip an arbitrary set of files/directories, keeping each entry's path relative to
+    the project root — so a multi-selection spanning several folders keeps its structure.
+
+    Path resolution/validation happens eagerly (this is a plain function, not a
+    generator), so an invalid path (e.g. traversal) raises immediately instead of
+    failing mid-stream after the response has already started.
+    """
+    entries = _resolve_zip_path_entries(project_path, paths)
+    return _stream_zip_entries(entries)
 
 
 # ── Participants CSV ──────────────────────────────────────────────────────────
@@ -290,22 +369,18 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     proposals = []
+    skipped_duplicates = []
     for filename, data in zip(filenames, file_data):
         safe_name = Path(filename).name
         if not (safe_name.endswith(".nii") or safe_name.endswith(".nii.gz")):
             shutil.rmtree(staging_dir)
             raise HTTPException(400, f"'{filename}' is not a .nii or .nii.gz file")
-        # Deduplicate: two uploads with the same basename get _1, _2 ... suffixes.
-        if safe_name.endswith(".nii.gz"):
-            stem, ext = safe_name[:-7], ".nii.gz"
-        else:
-            stem, ext = safe_name[:-4], ".nii"
+        # Flattening (e.g. a folder upload with the same basename in two
+        # subfolders) keeps the first occurrence and skips later duplicates.
         dest = staging_dir / safe_name
-        counter = 1
-        while dest.exists():
-            safe_name = f"{stem}_{counter}{ext}"
-            dest = staging_dir / safe_name
-            counter += 1
+        if dest.exists():
+            skipped_duplicates.append(filename)
+            continue
         assert_safe_path(staging_dir, dest)
         dest.write_bytes(data)
         # Infer from the original upload path so that directory components
@@ -317,7 +392,7 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
             inferred_modality=modality,
         ))
 
-    return NiftiStagingResult(staging_id=staging_id, proposals=proposals)
+    return NiftiStagingResult(staging_id=staging_id, proposals=proposals, skipped_duplicates=skipped_duplicates)
 
 
 def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> NiftiStagingResult:
@@ -338,27 +413,22 @@ def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> Nifti
             safe_unzip(archive, extract_dir)
 
             proposals = []
+            skipped_duplicates = []
             for nifti in sorted(extract_dir.rglob("*")):
                 if not (nifti.name.endswith(".nii") or nifti.name.endswith(".nii.gz")):
                     continue
                 safe_name = nifti.name
                 dest = staging_dir / safe_name
-                # Deduplicate colliding basenames across subdirectories.
+                rel = nifti.relative_to(extract_dir)
+                # Flattening nested folders: the first occurrence of a basename
+                # wins, later ones with the same flattened name are skipped.
                 if dest.exists():
-                    if safe_name.endswith(".nii.gz"):
-                        stem, ext = safe_name[:-7], ".nii.gz"
-                    else:
-                        stem, ext = safe_name[:-4], ".nii"
-                    counter = 1
-                    while dest.exists():
-                        safe_name = f"{stem}_{counter}{ext}"
-                        dest = staging_dir / safe_name
-                        counter += 1
+                    skipped_duplicates.append(str(rel))
+                    continue
                 assert_safe_path(staging_dir, dest)
                 shutil.copy2(nifti, dest)
                 # Pass the relative archive path so directory components contribute
                 # to modality inference (e.g. "fl/subject001.nii.gz").
-                rel = nifti.relative_to(extract_dir)
                 mrid, modality = infer_nifti_metadata(str(rel))
                 proposals.append(NiftiUploadProposal(
                     filename=safe_name,
@@ -369,7 +439,7 @@ def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> Nifti
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
 
-    return NiftiStagingResult(staging_id=staging_id, proposals=proposals)
+    return NiftiStagingResult(staging_id=staging_id, proposals=proposals, skipped_duplicates=skipped_duplicates)
 
 
 def commit_nifti_staging(
@@ -386,14 +456,25 @@ def commit_nifti_staging(
         raise HTTPException(404, f"Staging area '{staging_id}' not found")
 
     committed = []
+    skipped = []
     for mapping in mappings:
         src = staging_dir / mapping.filename
         assert_safe_path(staging_dir, src)
         if not src.exists():
             raise HTTPException(404, f"Staged file '{mapping.filename}' not found")
         target_dir = project_path / mapping.modality
-        target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{mapping.mrid}.nii.gz"
+        # Re-uploading a subject that already has a scan for this modality is a
+        # no-op: keep the existing file and drop the duplicate staged upload.
+        if target.exists():
+            src.unlink()
+            skipped.append(CommittedFile(
+                mrid=mapping.mrid,
+                modality=mapping.modality,
+                path=str(target.relative_to(project_path)),
+            ))
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), target)
         committed.append(CommittedFile(
             mrid=mapping.mrid,
@@ -405,7 +486,7 @@ def commit_nifti_staging(
     if staging_dir.exists() and not any(staging_dir.iterdir()):
         staging_dir.rmdir()
 
-    return NiftiCommitResult(committed=committed)
+    return NiftiCommitResult(committed=committed, skipped=skipped)
 
 
 def discard_nifti_staging(project_path: Path, staging_id: str) -> None:

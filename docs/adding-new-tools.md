@@ -360,7 +360,7 @@ maintaining the tool. Cover:
 6. Poll for completion: `GET /jobs/pipelines/<run_id>`
 7. Inspect results: `GET /projects/<id>/results/<pipeline_id>`
 
-The `dummy_pipeline` / `dummy_sleep` pair in `resources/pipelines/` and `resources/tools/`
+The `test_pipeline` / `test_sleep` pair in `resources/pipelines/` and `resources/tools/`
 can be used as a minimal smoke-test pattern that runs without any real imaging data.
 
 ---

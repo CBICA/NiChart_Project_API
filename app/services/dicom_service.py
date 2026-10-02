@@ -139,54 +139,49 @@ def inspect_dicom_series(project_path: Path, staging_id: str) -> list[SeriesInfo
 
 # ── Series file organisation ──────────────────────────────────────────────────
 
-def organize_series_files(
+def organize_series_files_bulk(
     project_path: Path,
     staging_id: str,
-    series_uid: str,
-) -> Path:
+    series_uids: set[str],
+) -> dict[str, tuple[Path, str | None]]:
     """
-    Copy all DICOM files belonging to ``series_uid`` into a series-specific
-    subdirectory within the staging area. Returns the subdirectory path.
+    Copy DICOM files belonging to each of ``series_uids`` into series-specific
+    subdirectories within the staging area, and capture each series' PatientID
+    along the way. A single pass over the staging directory serves every
+    requested series at once (rather than one full rescan per series), which
+    matters once a staging area holds a large folder/zip upload with many
+    series and files — this is also run off the event loop via
+    ``asyncio.to_thread`` by the caller, since it's a blocking, potentially
+    slow filesystem + DICOM-parsing operation.
 
-    The subdirectory is passed as the dcm2niix input mount.
+    Returns ``{series_uid: (series_dir, patient_id)}``. ``series_dir`` is
+    passed as the dcm2niix input mount; ``patient_id`` is the MRID fallback
+    when the client didn't supply one.
     """
     staging_dir = _resolve_staging(project_path, staging_id)
-    series_dir = staging_dir / series_uid
-    series_dir.mkdir(exist_ok=True)
+    series_dirs = {uid: staging_dir / uid for uid in series_uids}
+    for d in series_dirs.values():
+        d.mkdir(exist_ok=True)
+    patient_ids: dict[str, str | None] = dict.fromkeys(series_uids)
 
     for dcm_path in staging_dir.rglob("*"):
         if not dcm_path.is_file():
             continue
-        if dcm_path.is_relative_to(series_dir):
+        if any(dcm_path.is_relative_to(d) for d in series_dirs.values()):
             continue
         try:
             ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
-            if str(ds.get("SeriesInstanceUID", "")).strip() == series_uid:
-                shutil.copy2(dcm_path, series_dir / dcm_path.name)
-        except Exception:
-            continue
-
-    return series_dir
-
-
-def get_patient_id(
-    project_path: Path,
-    staging_id: str,
-    series_uid: str,
-) -> str | None:
-    """Return the PatientID tag from the first DICOM file matching series_uid."""
-    staging_dir = _resolve_staging(project_path, staging_id)
-    for dcm_path in staging_dir.rglob("*"):
-        if not dcm_path.is_file():
-            continue
-        try:
-            ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
-            if str(ds.get("SeriesInstanceUID", "")).strip() == series_uid:
+            uid = str(ds.get("SeriesInstanceUID", "")).strip()
+            if uid not in series_dirs:
+                continue
+            shutil.copy2(dcm_path, series_dirs[uid] / dcm_path.name)
+            if patient_ids.get(uid) is None:
                 pid = str(ds.get("PatientID", "")).strip()
-                return pid or None
+                patient_ids[uid] = pid or None
         except Exception:
             continue
-    return None
+
+    return {uid: (series_dirs[uid], patient_ids[uid]) for uid in series_uids}
 
 
 # ── Discard ───────────────────────────────────────────────────────────────────

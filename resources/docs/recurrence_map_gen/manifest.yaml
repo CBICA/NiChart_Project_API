@@ -1,0 +1,11 @@
+title: "Glioblastoma Recurrence Map"
+description: "Predictive infiltration/recurrence maps from preoperative multiparametric glioblastoma MRI."
+pipelines:
+  - run_recurrence_map_gen
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

@@ -23,6 +23,19 @@ class DirectoryTree(BaseModel):
     entries: list[FileEntry] = Field(default_factory=list)
 
 
+class DownloadZipRequest(BaseModel):
+    """Request body for bundling multiple files/directories into a single zip."""
+
+    paths: list[str] = Field(
+        min_length=1,
+        description=(
+            "Paths relative to the project root — a mix of files and directories is allowed. "
+            "Each entry keeps its project-relative path inside the resulting archive, so the "
+            "original directory structure is preserved."
+        ),
+    )
+
+
 # ── NIfTI upload / staging ───────────────────────────────────────────────────
 
 class NiftiUploadProposal(BaseModel):
@@ -44,6 +57,13 @@ class NiftiStagingResult(BaseModel):
     staging_id: str = Field(description="Opaque staging area identifier. Pass to the commit endpoint.")
     proposals: list[NiftiUploadProposal] = Field(
         description="Server's best-effort mapping of filenames to MRID and modality."
+    )
+    skipped_duplicates: list[str] = Field(
+        default=[],
+        description=(
+            "Original relative paths that were skipped because they flattened to the same "
+            "filename as an earlier entry in this upload (first occurrence wins)."
+        ),
     )
 
 
@@ -84,6 +104,13 @@ class NiftiCommitResult(BaseModel):
     """Response after a successful NIfTI commit."""
 
     committed: list[CommittedFile]
+    skipped: list[CommittedFile] = Field(
+        default=[],
+        description=(
+            "Entries whose target file already existed and were left untouched instead of "
+            "being overwritten."
+        ),
+    )
 
 
 # ── Participants CSV ──────────────────────────────────────────────────────────

@@ -1,4 +1,7 @@
-pipeline_name: dummy_pipeline
+pipeline_name: test_pipeline
+root_pipeline: test_pipeline
+harmonized: false
+modalities: []
 description: >
   Single-step pipeline that runs a configurable sleep and writes placeholder output.
   Used for testing the pipeline submission, step caching, provenance writing, and
@@ -8,20 +11,20 @@ categories:
 requires: []
 
 # User-overridable parameters.
-# These are exposed by GET /catalog/pipelines/dummy_pipeline and accepted
+# These are exposed by GET /catalog/pipelines/test_pipeline and accepted
 # as the `params` body field on POST /projects/{id}/jobs/pipelines.
 parameters:
   duration_seconds:
     type: int
     default: 10
-    description: How many seconds the dummy sleep should run.
+    description: How many seconds the test sleep should run.
     min: 1
     max: 600
 
 steps:
   - id: sleep
-    tool: dummy_sleep
+    tool: test_sleep
     inputs: {}
     outputs:
-      result: "${STUDY}/dummy_output"
+      result: "${STUDY}/test_output"
     # No step-level params: the user-supplied duration_seconds flows through directly.

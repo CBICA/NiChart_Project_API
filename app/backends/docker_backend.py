@@ -108,15 +108,20 @@ class DockerBackend(JobBackend):
             if mount.mount_type == "output_file":
                 # Mount the parent directory so Docker doesn't auto-create a directory
                 # at the file path when the output file doesn't exist yet.
-                host_dir = str(Path(host_path).parent)
+                # Create it via the API-container-local path — the host path string
+                # is only meaningful to the host's Docker daemon (as the bind-mount
+                # source); this container can't read or write it directly, since only
+                # the container-local path is actually bind-mounted into this
+                # container's own filesystem.
                 container_dir = str(Path(mount.path_in_container).parent)
-                Path(host_dir).mkdir(parents=True, exist_ok=True)
+                Path(container_path_str).parent.mkdir(parents=True, exist_ok=True)
+                host_dir = str(Path(host_path).parent)
                 volumes[host_dir] = {"bind": container_dir, "mode": mount.mode}
             elif mount.mount_type == "input_file":
                 # File already exists; bind it directly.
                 volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
             else:
-                Path(host_path).mkdir(parents=True, exist_ok=True)
+                Path(container_path_str).mkdir(parents=True, exist_ok=True)
                 volumes[host_path] = {"bind": mount.path_in_container, "mode": mount.mode}
 
         # Extra read-only mounts for symlink resolution in chunk jobs.

@@ -1,4 +1,7 @@
-pipeline_name: CCL-NMF Component Prediction
+pipeline_name: CCL-NMF
+root_pipeline: cclnmf
+harmonized: false
+modalities: [T1]
 description: |
   Prediction of Coupled Cross-Sectional Non-negative Matrix Factorization loading coefficients
   from T1-weighted MRI using DLMUSE brain volumes.

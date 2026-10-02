@@ -134,6 +134,6 @@ def test_pipeline_list_includes_docs_id(local_client):
 
 
 def test_pipeline_without_docs_id_returns_null(local_client):
-    resp = local_client.get("/catalog/pipelines/dummy_pipeline")
+    resp = local_client.get("/catalog/pipelines/test_pipeline")
     assert resp.status_code == 200
     assert resp.json()["docs_id"] is None

@@ -40,7 +40,7 @@ def test_submit_pipeline_returns_run_id(job_client):
     pid = _create_project(job_client)
     resp = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     )
     assert resp.status_code == 202
     data = resp.json()
@@ -60,7 +60,7 @@ def test_submit_unknown_pipeline(job_client):
 def test_submit_unknown_project(job_client):
     resp = job_client.post(
         "/projects/no-such-project/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     )
     assert resp.status_code == 404
 
@@ -72,7 +72,7 @@ def test_pipeline_completes_with_mock_backend(job_client):
     pid = _create_project(job_client, "completetest")
     submit_resp = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     )
     run_id = submit_resp.json()["run_id"]
 
@@ -88,7 +88,7 @@ def test_pipeline_with_params(job_client):
     pid = _create_project(job_client, "paramtest")
     resp = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline", "params": {"duration_seconds": 5}},
+        json={"pipeline_id": "test_pipeline", "params": {"duration_seconds": 5}},
     )
     assert resp.status_code == 202
 
@@ -150,7 +150,7 @@ def test_submitted_param_reaches_backend(tmp_path):
         client.post("/projects", json={"name": "paramflow"})
         resp = client.post(
             "/projects/paramflow/jobs/pipelines",
-            json={"pipeline_id": "dummy_pipeline", "params": {"duration_seconds": 250}},
+            json={"pipeline_id": "test_pipeline", "params": {"duration_seconds": 250}},
         )
         assert resp.status_code == 202
 
@@ -164,7 +164,7 @@ def test_pipeline_cache_reuse_default_true(job_client, tmp_path):
     for _ in range(2):
         job_client.post(
             f"/projects/{pid}/jobs/pipelines",
-            json={"pipeline_id": "dummy_pipeline", "reuse_cached_steps": True},
+            json={"pipeline_id": "test_pipeline", "reuse_cached_steps": True},
         )
     runs = job_client.get(f"/jobs/pipelines?project_id={pid}").json()
     assert len(runs) == 2
@@ -183,7 +183,7 @@ def test_list_runs_after_submit(job_client):
     pid = _create_project(job_client, "listtest")
     submit_resp = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     )
     run_id = submit_resp.json()["run_id"]
 
@@ -198,11 +198,11 @@ def test_list_runs_filter_by_project(job_client):
     pid_b = _create_project(job_client, "proj-b")
     run_a = job_client.post(
         f"/projects/{pid_a}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
     run_b = job_client.post(
         f"/projects/{pid_b}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
 
     resp_a = job_client.get(f"/jobs/pipelines?project_id={pid_a}")
@@ -215,14 +215,14 @@ def test_get_run_detail(job_client):
     pid = _create_project(job_client, "detailtest")
     run_id = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
 
     resp = job_client.get(f"/jobs/pipelines/{run_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["run_id"] == run_id
-    assert data["pipeline_id"] == "dummy_pipeline"
+    assert data["pipeline_id"] == "test_pipeline"
     assert "steps" in data
 
 
@@ -235,7 +235,7 @@ def test_get_run_logs(job_client):
     pid = _create_project(job_client, "logstest")
     run_id = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
 
     resp = job_client.get(f"/jobs/pipelines/{run_id}/logs")
@@ -254,7 +254,7 @@ def test_cancel_run(job_client):
     pid = _create_project(job_client, "canceltest")
     run_id = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
     resp = job_client.delete(f"/jobs/pipelines/{run_id}")
     assert resp.status_code == 204
@@ -271,14 +271,14 @@ def test_step_details_present(job_client):
     pid = _create_project(job_client, "steptest")
     run_id = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
 
     detail = job_client.get(f"/jobs/pipelines/{run_id}").json()
     assert len(detail["steps"]) == 1
     step = detail["steps"][0]
     assert step["step_id"] == "sleep"
-    assert step["tool_id"] == "dummy_sleep"
+    assert step["tool_id"] == "test_sleep"
     assert step["status"] in ("succeeded", "skipped")
 
 
@@ -289,7 +289,7 @@ def test_run_persisted_to_disk(job_client, tmp_path):
     pid = _create_project(job_client, "persisttest")
     run_id = job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     ).json()["run_id"]
 
     run_file = tmp_path / "_working" / "runs" / f"{run_id}.json"
@@ -310,7 +310,7 @@ def test_load_runs_from_disk_restores_history(tmp_path):
         "run_id": "fake-run-id",
         "user_id": "LOCAL_USER",
         "project_id": "myproject",
-        "pipeline_id": "dummy_pipeline",
+        "pipeline_id": "test_pipeline",
         "status": "succeeded",
         "submitted_at": "2024-01-01T00:00:00+00:00",
         "finished_at": "2024-01-01T00:01:00+00:00",
@@ -339,7 +339,7 @@ def test_load_runs_marks_interrupted_runs_failed(tmp_path):
         "run_id": "interrupted-run",
         "user_id": "LOCAL_USER",
         "project_id": "myproject",
-        "pipeline_id": "dummy_pipeline",
+        "pipeline_id": "test_pipeline",
         "status": "running",
         "submitted_at": "2024-01-01T00:00:00+00:00",
         "finished_at": None,
@@ -435,7 +435,7 @@ def test_finished_runs_endpoint_empty_on_second_call(job_client):
     pid = _create_project(job_client, "finishedtest")
     job_client.post(
         f"/projects/{pid}/jobs/pipelines",
-        json={"pipeline_id": "dummy_pipeline"},
+        json={"pipeline_id": "test_pipeline"},
     )
 
     r1 = job_client.get("/jobs/pipelines/finished")
@@ -463,7 +463,7 @@ def test_finished_runs_multiple_accumulate_between_polls(job_client):
     for _ in range(2):
         job_client.post(
             f"/projects/{pid}/jobs/pipelines",
-            json={"pipeline_id": "dummy_pipeline"},
+            json={"pipeline_id": "test_pipeline"},
         )
 
     # First poll: no prior cursor → both runs returned.

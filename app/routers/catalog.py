@@ -14,6 +14,7 @@ from app.models.catalog import (
     PipelineSummary,
     ToolDetail,
     ToolSummary,
+    VarGroupCatalogResponse,
 )
 from app.models.errors import ErrorDetail
 from app.services import catalog_service
@@ -124,6 +125,30 @@ async def get_centile_feature_metadata(
     settings: Settings = Depends(get_settings),
 ) -> CentileFeatureMetadataResponse:
     return catalog_service.load_centile_feature_metadata(settings.resources_path)
+
+
+@router.get(
+    "/var-groups",
+    summary="Get the curated variable-group and ROI-list catalog",
+    description=(
+        "Returns the cross-pipeline variable grouping taxonomy that drives the "
+        "variable browser: group -> variable, or group -> ROI sub-list -> variable "
+        "for large index-based ROI groups like DLMUSE/DLWMLS volumes. "
+        "\n\n"
+        "Maintained in static server-side config files "
+        "(``resources/dicts/dict_var_groups.yaml`` and ``dict_roi_lists.yaml``). "
+        "A group's variables are named explicitly via ``values``, or, for large "
+        "ROI-indexed sets, built from a ``prefix`` combined with an index from one "
+        "of the ``roi_lists`` — resolve display names via the owning pipeline's "
+        "``label_map`` (``GET /catalog/pipelines/{pipeline_id}``)."
+    ),
+    response_model=VarGroupCatalogResponse,
+    responses={},
+)
+async def get_var_group_catalog(
+    settings: Settings = Depends(get_settings),
+) -> VarGroupCatalogResponse:
+    return catalog_service.load_var_group_catalog(settings.resources_path, settings.pipelines_path)
 
 
 @router.get(

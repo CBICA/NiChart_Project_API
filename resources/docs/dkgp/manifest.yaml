@@ -1,0 +1,11 @@
+title: "DKGP"
+description: "Deep Kernel Gaussian Process modeling of biomarker trajectories with uncertainty quantification."
+pipelines:
+  - run_dkgp
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

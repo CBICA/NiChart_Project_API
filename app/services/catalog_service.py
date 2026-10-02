@@ -24,8 +24,11 @@ from app.models.catalog import (
     PipelineStep,
     PipelineSummary,
     ResourceSpec,
+    RoiList,
     ToolDetail,
     ToolSummary,
+    VarGroup,
+    VarGroupCatalogResponse,
 )
 
 
@@ -256,6 +259,9 @@ def get_pipeline(
         feature_groups=feature_groups,
         column_schemas=_parse_column_schemas(raw_requires),
         docs_id=data.get("docs_id"),
+        root_pipeline=data.get("root_pipeline"),
+        harmonized=bool(data.get("harmonized", False)),
+        modalities=data.get("modalities") or [],
     )
 
 
@@ -422,6 +428,53 @@ def load_centile_feature_metadata(resources_path: Path) -> CentileFeatureMetadat
     return CentileFeatureMetadataResponse(features=features)
 
 
+_VAR_GROUPS_PATH = Path("dicts") / "dict_var_groups.yaml"
+_ROI_LISTS_PATH = Path("dicts") / "dict_roi_lists.yaml"
+
+
+def load_var_group_catalog(resources_path: Path, pipelines_path: Path) -> VarGroupCatalogResponse:
+    """Load the curated cross-pipeline variable-group and ROI-list catalog.
+
+    Sourced from resources/dicts/dict_var_groups.yaml and dict_roi_lists.yaml. Groups
+    missing both (or declaring both) of the mutually exclusive `values`/`prefix` fields
+    are skipped rather than failing the whole catalog.
+    """
+    groups_path = resources_path / _VAR_GROUPS_PATH
+    lists_path = resources_path / _ROI_LISTS_PATH
+    groups_raw = _load_yaml(groups_path) if groups_path.exists() else {}
+    lists_raw = _load_yaml(lists_path) if lists_path.exists() else {}
+
+    groups: dict[str, VarGroup] = {}
+    for key, g in (groups_raw or {}).items():
+        has_values = bool(g.get("values"))
+        has_prefix = bool(g.get("prefix"))
+        if has_values == has_prefix:
+            continue
+        groups[key] = VarGroup(
+            key=key,
+            label=g.get("label", key),
+            desc=g.get("desc"),
+            category=g.get("category", "other"),
+            pipeline=g.get("pipeline") or [],
+            vtype=g.get("vtype"),
+            values=g.get("values"),
+            prefix=g.get("prefix"),
+        )
+
+    roi_lists: dict[str, RoiList] = {}
+    for key, v in (lists_raw or {}).items():
+        if not v.get("atlas"):
+            continue
+        roi_lists[key] = RoiList(
+            key=key,
+            desc=v.get("desc"),
+            atlas=v["atlas"],
+            values=v.get("values") or [],
+        )
+
+    return VarGroupCatalogResponse(groups=groups, roi_lists=roi_lists)
+
+
 def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:
     disabled = _load_disabled_pipelines(pipelines_path)
     result = []
@@ -441,6 +494,9 @@ def list_pipelines(pipelines_path: Path) -> list[PipelineSummary]:
                 harmonized_variant=data.get("harmonized_variant"),
                 base_variant=data.get("base_variant"),
                 docs_id=data.get("docs_id"),
+                root_pipeline=data.get("root_pipeline"),
+                harmonized=bool(data.get("harmonized", False)),
+                modalities=data.get("modalities") or [],
             ))
         except Exception:
             continue

@@ -1,4 +1,7 @@
-pipeline_name: DLMUSE Brain Segmentation (Harmonized)
+pipeline_name: DLMUSE (Harmonized)
+root_pipeline: dlmuse
+harmonized: true
+modalities: [T1]
 description: |
   Segmentation pipeline starting from T1-weighted MRI brain scans, with harmonization to the NiChart reference dataset.
 

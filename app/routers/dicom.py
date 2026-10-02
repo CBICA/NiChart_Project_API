@@ -9,6 +9,8 @@ DICOM → NIfTI conversion is a three-step interactive flow:
    job (dcm2niix running as a container). Returns a run_id for status polling.
 """
 
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from fastapi import File as FastAPIFile
 
@@ -101,7 +103,7 @@ async def list_dicom_series(
     settings: Settings = Depends(get_settings),
 ) -> DicomSeriesListing:
     pdir = file_service.resolve_project(settings, user, project_id)
-    series = dicom_service.inspect_dicom_series(pdir, staging_id)
+    series = await asyncio.to_thread(dicom_service.inspect_dicom_series, pdir, staging_id)
     return DicomSeriesListing(staging_id=staging_id, series=series)
 
 
@@ -132,13 +134,18 @@ async def convert_dicom(
 
     pdir = file_service.resolve_project(settings, user, project_id)
 
+    # Organizing is a blocking filesystem + DICOM-header-parsing sweep over the whole
+    # staging area; for a large folder/zip upload this can take long enough to stall
+    # the event loop (and time out the request), so it runs off-thread.
+    series_uids = {m.series_uid for m in body.series_mappings}
+    organized = await asyncio.to_thread(
+        dicom_service.organize_series_files_bulk, pdir, staging_id, series_uids
+    )
+
     direct_steps: list[job_service.DirectStep] = []
     for mapping in body.series_mappings:
-        series_dir = dicom_service.organize_series_files(pdir, staging_id, mapping.series_uid)
-
-        mrid = mapping.mrid
-        if not mrid:
-            mrid = dicom_service.get_patient_id(pdir, staging_id, mapping.series_uid) or "subject"
+        series_dir, patient_id = organized[mapping.series_uid]
+        mrid = mapping.mrid or patient_id or "subject"
 
         modality_dir = pdir / mapping.nichart_modality
         modality_dir.mkdir(parents=True, exist_ok=True)

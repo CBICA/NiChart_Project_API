@@ -291,7 +291,10 @@ def check_readiness(
     if csv_req is not None:
         all_ok = all_ok and csv_req.satisfied
     if subject_count_check is not None:
-        all_ok = all_ok and subject_count_check.satisfied
+        # The recommended threshold (not just the bare minimum) gates readiness — below
+        # it, harmonization is unreliable enough that the pipeline is treated as not ready,
+        # the same as a missing modality or CSV column, rather than a soft warning.
+        all_ok = all_ok and subject_count_check.recommended_met
 
     return ReadinessReport(
         pipeline_id=pipeline_id,

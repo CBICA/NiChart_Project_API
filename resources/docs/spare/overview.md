@@ -1,5 +1,11 @@
 # SPARE Brain Age & Disease Scores
 
+## Links
+
+- **Paper:** [Longitudinal progression of Alzheimer's-like patterns of atrophy in normal older adults: the SPARE-AD index](https://pubmed.ncbi.nlm.nih.gov/19416949/) (Davatzikos et al., *Brain*, 2009)
+- **GitHub:** [CBICA/spare_score](https://github.com/CBICA/spare_score)
+- **Documentation:** [spare_score docs](https://cbica.github.io/spare_score/)
+
 SPARE (Spatial Pattern of Abnormalities for Recognition of Early disease) scores are machine-learning biomarkers derived from structural MRI features. Each SPARE score captures a distinct pattern of brain change associated with aging or a specific neurological condition, expressed as a continuous value relative to a normative reference population.
 
 ## Available score sets

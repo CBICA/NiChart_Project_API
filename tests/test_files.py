@@ -92,6 +92,60 @@ def test_download_missing_file(data_client):
     assert resp.status_code == 404
 
 
+# ── Multi-select zip download ──────────────────────────────────────────────────
+
+def test_download_zip_mixed_files_and_dirs(data_client, tmp_path):
+    pid = _create_project(data_client)
+    root = tmp_path / "LOCAL_USER" / pid
+    (root / "top.txt").write_text("top")
+    d = root / "mydir"
+    d.mkdir()
+    (d / "a.txt").write_text("aaa")
+    (d / "b.txt").write_text("bbb")
+
+    resp = data_client.post(
+        f"/projects/{pid}/files/archive", json={"paths": ["top.txt", "mydir"]}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    buf = io.BytesIO(resp.content)
+    with zipfile.ZipFile(buf) as zf:
+        names = set(zf.namelist())
+    # Directory structure relative to the project root is preserved.
+    assert names == {"top.txt", "mydir/a.txt", "mydir/b.txt"}
+
+
+def test_download_zip_deduplicates_overlapping_selection(data_client, tmp_path):
+    pid = _create_project(data_client)
+    root = tmp_path / "LOCAL_USER" / pid
+    d = root / "mydir"
+    d.mkdir()
+    (d / "a.txt").write_text("aaa")
+
+    resp = data_client.post(
+        f"/projects/{pid}/files/archive", json={"paths": ["mydir", "mydir/a.txt"]}
+    )
+    assert resp.status_code == 200
+    buf = io.BytesIO(resp.content)
+    with zipfile.ZipFile(buf) as zf:
+        names = zf.namelist()
+    assert names.count("mydir/a.txt") == 1
+
+
+def test_download_zip_path_traversal_rejected(data_client):
+    pid = _create_project(data_client)
+    resp = data_client.post(
+        f"/projects/{pid}/files/archive", json={"paths": ["../../etc/passwd"]}
+    )
+    assert resp.status_code == 400
+
+
+def test_download_zip_requires_at_least_one_path(data_client):
+    pid = _create_project(data_client)
+    resp = data_client.post(f"/projects/{pid}/files/archive", json={"paths": []})
+    assert resp.status_code == 422
+
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 def test_delete_file(data_client, tmp_path):
@@ -223,6 +277,65 @@ def test_nifti_stage_and_commit(data_client, tmp_path):
     assert (tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz").exists()
 
 
+def test_nifti_zip_flatten_collision_first_wins(data_client, tmp_path):
+    pid = _create_project(data_client)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("subA/scan.nii.gz", b"AAAA")
+        zf.writestr("subB/scan.nii.gz", b"BBBB")
+    buf.seek(0)
+    resp = data_client.post(
+        f"/projects/{pid}/files/upload/nifti/zip",
+        files=[("file", ("upload.zip", buf, "application/zip"))],
+    )
+    assert resp.status_code == 202
+    staging = resp.json()
+    assert len(staging["proposals"]) == 1
+    assert staging["skipped_duplicates"] == ["subB/scan.nii.gz"]
+
+    staging_dir = tmp_path / "LOCAL_USER" / pid / "_upload" / "nifti" / staging["staging_id"]
+    assert (staging_dir / "scan.nii.gz").read_bytes() == b"AAAA"
+
+
+def test_nifti_commit_skips_existing_target(data_client, tmp_path):
+    pid = _create_project(data_client)
+
+    def upload_and_commit(content: bytes):
+        resp = data_client.post(
+            f"/projects/{pid}/files/upload/nifti",
+            files=[("files", ("sub001_T1.nii.gz", io.BytesIO(content), "application/gzip"))],
+        )
+        assert resp.status_code == 202
+        staging_id = resp.json()["staging_id"]
+        return data_client.post(
+            f"/projects/{pid}/files/stage/{staging_id}/commit",
+            json={"mappings": [{"filename": "sub001_T1.nii.gz", "mrid": "sub001", "modality": "t1"}]},
+        )
+
+    resp1 = upload_and_commit(b"\x00" * 348)
+    assert resp1.status_code == 200
+    body1 = resp1.json()
+    assert len(body1["committed"]) == 1
+    assert body1["skipped"] == []
+    target = tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz"
+    assert target.read_bytes() == b"\x00" * 348
+
+    # Re-upload the same subject/modality with different bytes — should be
+    # skipped, not overwritten.
+    resp2 = upload_and_commit(b"\xff" * 348)
+    assert resp2.status_code == 200
+    body2 = resp2.json()
+    assert body2["committed"] == []
+    assert len(body2["skipped"]) == 1
+    assert body2["skipped"][0]["mrid"] == "sub001"
+    assert body2["skipped"][0]["modality"] == "t1"
+    assert target.read_bytes() == b"\x00" * 348  # unchanged
+
+    # The duplicate staged file should have been cleaned up.
+    staging_root = tmp_path / "LOCAL_USER" / pid / "_upload" / "nifti"
+    assert not any(staging_root.iterdir()) if staging_root.exists() else True
+
+
 def test_nifti_stage_discard(data_client, tmp_path):
     pid = _create_project(data_client)
     resp = data_client.post(
@@ -305,7 +418,7 @@ def test_idat_upload_wrong_extension(data_client):
 def test_readiness_no_requirements(data_client):
     """Pipeline with empty requires → always satisfied."""
     pid = _create_project(data_client)
-    resp = data_client.get(f"/projects/{pid}/readiness/dummy_pipeline")
+    resp = data_client.get(f"/projects/{pid}/readiness/test_pipeline")
     assert resp.status_code == 200
     body = resp.json()
     assert body["satisfied"] is True
@@ -404,7 +517,7 @@ def test_readiness_via_api(data_client, tmp_path):
         f"/projects/{pid}/files/upload/csv",
         files={"file": ("participants.csv", io.BytesIO(csv_content), "text/csv")},
     )
-    # dummy_pipeline has no requirements — should be satisfied regardless
-    resp = data_client.get(f"/projects/{pid}/readiness/dummy_pipeline")
+    # test_pipeline has no requirements — should be satisfied regardless
+    resp = data_client.get(f"/projects/{pid}/readiness/test_pipeline")
     assert resp.status_code == 200
     assert resp.json()["satisfied"] is True

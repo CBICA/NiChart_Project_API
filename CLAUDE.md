@@ -43,9 +43,9 @@ NiChart_Project_API/
 │   └── models/                # all Pydantic request/response schemas
 ├── resources/
 │   ├── pipelines/
-│   │   └── dummy_pipeline.yaml   # single-step sleep pipeline for testing
+│   │   └── test_pipeline.yaml   # single-step sleep pipeline for testing
 │   └── tools/
-│       ├── dummy_sleep.yaml      # alpine sleep tool for testing
+│       ├── test_sleep.yaml      # alpine sleep tool for testing
 │       └── dcm2niix.yaml         # dcm2niix DICOM→NIfTI conversion tool
 ├── tests/                     # 105 tests, all passing
 │   ├── conftest.py            # RSA key fixtures, local_client, cloud_client, data_client,
@@ -91,7 +91,7 @@ docker compose run --rm -e NICHART_EXECUTION_MODE=local api pytest -v
 | Path security (`assert_safe_path`, `safe_unzip`) | Done |
 | Pydantic models (all schemas) | Done |
 | `ToolSpec` / `MountSpec` dataclasses + `JobHandle` / `JobBackend` ABCs | Done |
-| `dummy_sleep` tool YAML + `dummy_pipeline` pipeline YAML | Done |
+| `test_sleep` tool YAML + `test_pipeline` pipeline YAML | Done |
 | `dcm2niix` tool YAML | Done |
 | `README.md` + `scripts/dev.sh` + `scripts/test.sh` | Done |
 | `catalog_service.py` — YAML loading for pipelines, tools, + `load_tool_spec()` | Done |

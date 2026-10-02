@@ -1,0 +1,11 @@
+title: "RAVENS Maps"
+description: "Patient-specific regional brain volume abnormality maps via RAVENS voxel-based morphometry."
+pipelines:
+  - run_nichart_ravens
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

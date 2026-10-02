@@ -1,4 +1,7 @@
-pipeline_name: DLWMLS Deep Learning White Matter Lesion Segmentation (Harmonized)
+pipeline_name: DLWMLS (Harmonized)
+root_pipeline: dlwmls
+harmonized: true
+modalities: [T1, FLAIR]
 description: |
   White matter lesion segmentation pipeline starting from FLAIR-weighted and T1-weighted brain scans, with DLMUSE harmonization.
 
@@ -64,3 +67,11 @@ steps:
       csv_2: ${STUDY}/nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented_Volumes.csv
     outputs:
       out_csv: ${STUDY}/merged_dlmuse_dlwmls_harmonized/csv_out.csv
+
+results:
+  batch_features:
+    file: "nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented_Volumes.csv"
+    mrid_column: "MRID"
+    label_map: "atlases/muse/muse_mapping_derived.csv"
+    column_template: "DL_WMLS_Volume_{id}"
+    default_unit: "mm³"

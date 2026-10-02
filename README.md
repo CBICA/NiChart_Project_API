@@ -77,18 +77,18 @@ bash scripts/test.sh
 
 ## Dummy / synthetic job
 
-`resources/tools/dummy_sleep.yaml` defines a no-op tool that runs `sleep N` inside an
+`resources/tools/test_sleep.yaml` defines a no-op tool that runs `sleep N` inside an
 Alpine container. Use it to exercise the full pipeline API (submit → poll → complete)
 without needing any imaging data.
 
-`resources/pipelines/dummy_pipeline.yaml` wraps it in a single-step pipeline named
-`dummy_pipeline` with a default duration of 10 seconds.
+`resources/pipelines/test_pipeline.yaml` wraps it in a single-step pipeline named
+`test_pipeline` with a default duration of 10 seconds.
 
 Once the job backends are implemented you can submit it via:
 
 ```http
 POST /projects/{project_id}/jobs/pipelines
-{"pipeline_id": "dummy_pipeline"}
+{"pipeline_id": "test_pipeline"}
 ```
 
 ---

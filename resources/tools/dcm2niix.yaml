@@ -18,7 +18,7 @@ resources:
   memory: 4096
   gpus: 0
 container:
-  image: "ghcr.io/rordenlab/dcm2niix:latest"
+  image: "xnat/dcm2niix:latest"
   command: "dcm2niix -o /mnt/out -z y -f {mrid} /mnt/in"
 parameters:
   mrid:

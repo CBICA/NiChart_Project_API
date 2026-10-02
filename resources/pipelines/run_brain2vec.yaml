@@ -1,10 +1,15 @@
-pipeline_name: Brain2Vec Embedding Extraction
+pipeline_name: Brain2Vec
+root_pipeline: brain2vec
+harmonized: false
+modalities: [T1]
 description: |
   Extracts latent brain embeddings from T1-weighted MRI scans using the Brain2Vec
   masked autoencoder (ViT-Base). Each subject is encoded into a 768-dimensional
   feature vector. The output includes a tabular CSV and a raw JSON file of embeddings,
   suitable for downstream models for brain-age prediction, disease classification,
   or other phenotypic inference tasks.
+
+docs_id: brain2vec
 
 categories:
   - image-processing

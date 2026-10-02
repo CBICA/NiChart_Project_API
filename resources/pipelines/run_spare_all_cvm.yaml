@@ -1,4 +1,7 @@
-pipeline_name: SPARE Scores - All-Inclusive (T1 + FLAIR)
+pipeline_name: SPARE Scores (T1 + FLAIR)
+root_pipeline: spare
+harmonized: false
+modalities: [T1, FLAIR]
 description: |
   Pipeline which uses DLMUSE and DLWMLS features to produce all available CVM SPARE scores from T1 + FLAIR data.
 

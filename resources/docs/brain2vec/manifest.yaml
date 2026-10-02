@@ -1,0 +1,11 @@
+title: "Brain2Vec Embedding Extraction"
+description: "Latent brain embeddings from T1-weighted MRI using a masked autoencoder."
+pipelines:
+  - run_brain2vec
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown

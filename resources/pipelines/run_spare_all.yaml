@@ -1,4 +1,7 @@
-pipeline_name: SPARE Scores - All-Inclusive (T1 only)
+pipeline_name: SPARE Scores (T1 only)
+root_pipeline: spare
+harmonized: false
+modalities: [T1]
 description: |
   Pipeline which uses DLMUSE features to produce all available SPARE scores using T1 scans.
 

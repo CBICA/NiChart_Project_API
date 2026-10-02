@@ -251,7 +251,7 @@ nichart run run_spare_all --project s1 \
     --wait-until-done
 
 # Add more data to an existing project and re-run with a parameter override.
-nichart run dummy_pipeline --project s1 --existing \
+nichart run test_pipeline --project s1 --existing \
     --param duration_seconds=30 --no-reuse-cache
 
 # Point at a remote server.

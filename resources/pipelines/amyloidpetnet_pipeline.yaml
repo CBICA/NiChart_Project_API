@@ -1,10 +1,15 @@
 # NiChart pipeline definition for AmyloidPETNet inference.
 
-pipeline_name: AmyloidPETNet Pipeline
+pipeline_name: AmyloidPETNet
+root_pipeline: amyloidpetnet
+harmonized: false
+modalities: [PET]
 description: |
   Single-step inference pipeline that scores a flat directory of PET NIfTI
   images with AmyloidPETNet and produces a tabular CSV of amyloid-positivity
   scores (y_score) per subject.
+
+docs_id: amyloidpetnet
 
 categories:
   - amyloid
