@@ -268,14 +268,22 @@ class VarGroup(BaseModel):
     prefix: str | None = Field(
         default=None,
         description=(
-            "Column-name prefix for ROI-indexed variables, e.g. 'DL_MUSE_Volume_'. "
+            "Column-name prefix for ROI-indexed variables, e.g. 'DL_MUSE_Volume_'. May be "
+            "empty ('') when the CSV columns are the ROI names themselves (e.g. SynthSeg). "
             "Mutually exclusive with values."
+        ),
+    )
+    atlas: str | None = Field(
+        default=None,
+        description=(
+            "For prefix-based groups: the atlas whose roi_lists apply to this group "
+            "(matches RoiList.atlas), e.g. 'muse' or 'synthseg'."
         ),
     )
 
 
 class RoiList(BaseModel):
-    """A curated sub-list of ROI indices, used to narrow a prefix-based VarGroup.
+    """A curated sub-list of ROIs, used to narrow a prefix-based VarGroup.
 
     Defined in ``resources/dicts/dict_roi_lists.yaml``.
     """
@@ -283,7 +291,12 @@ class RoiList(BaseModel):
     key: str = Field(description="List identifier (YAML top-level key), e.g. 'list_muse-all'.")
     desc: str | None = Field(default=None, description="Human-readable description of this list.")
     atlas: str = Field(description="Atlas these indices belong to, e.g. 'muse'.")
-    values: list[int] = Field(description="ROI index values in this list.")
+    values: list[int | str] = Field(
+        description=(
+            "ROIs in this list: integer indices (e.g. MUSE) or ROI names when the atlas's "
+            "CSV columns are named by region (e.g. SynthSeg)."
+        ),
+    )
 
 
 class VarGroupCatalogResponse(BaseModel):
