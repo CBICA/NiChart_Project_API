@@ -28,11 +28,12 @@ parameters: {}
 
 resources:
   vcpus: 4
-  memory: 8192  # peak observed ~6.1 GiB on CPU; 8 GiB gives headroom
-  gpus: 1       # requires ≥12 GiB VRAM (SynthSeg 2.0 full-resolution U-Net)
+  memory: 12288  # estimate — raised for --parc; not re-measured (prior non-parc peak ~6.1 GiB on CPU)
+  gpus: 1        # with --parc (cortical parcellation) needs ≥16 GiB VRAM — OOMs on an 11 GiB card
+                 # (GTX 1080 Ti); schedule on a 16 GiB+ GPU (T4-16G / V100 / L4 / A100)
 
-time_per_subject_seconds: 120.0  # estimated GPU (V100/A100); CPU measured at ~454 s
+time_per_subject_seconds: 240.0  # estimate — --parc adds a parcellation network; not re-measured on GPU
 
 container:
-  image: cbica/synthseg:conda-0.2-wrapped-gpu
+  image: cbica/synthseg:conda-0.3-wrapped-gpu
   command: "{t1_img} {synthseg_seg} {synthseg_vol}"
