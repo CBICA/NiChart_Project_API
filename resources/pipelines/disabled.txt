@@ -7,3 +7,8 @@
 #
 # Disabled pipelines are excluded from GET /catalog/pipelines and return 404
 # on GET /catalog/pipelines/{id}. The YAML files themselves are left in place.
+
+run_nichart_ravens_fireants   # superseded by run_nichart_ravens_toolkit_fireants (RavensToolkit rewrite)
+run_nichart_ravens
+run_nichart_ravens_toolkit
+run_brain2vec_ba
