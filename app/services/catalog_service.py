@@ -160,7 +160,8 @@ def _build_catalog_features(
                 constituents = [int(c.strip()) for c in row[2:] if c.strip()]
                 if not constituents:
                     constituents = [label_id]
-                col_name = batch_spec.column_template.replace("{id}", str(label_id))
+                # {name}: atlases whose CSV columns are ROI names (e.g. SynthSeg).
+                col_name = batch_spec.column_template.replace("{id}", str(label_id)).replace("{name}", display_name)
                 unit = (batch_spec.column_units or {}).get(col_name, batch_spec.default_unit)
                 label_map[col_name] = LabelInfo(
                     display_name=display_name, label_ids=constituents, unit=unit
@@ -447,7 +448,8 @@ def load_var_group_catalog(resources_path: Path, pipelines_path: Path) -> VarGro
     groups: dict[str, VarGroup] = {}
     for key, g in (groups_raw or {}).items():
         has_values = bool(g.get("values"))
-        has_prefix = bool(g.get("prefix"))
+        # An empty prefix is valid: the columns are the ROI values themselves (e.g. SynthSeg).
+        has_prefix = g.get("prefix") is not None
         if has_values == has_prefix:
             continue
         groups[key] = VarGroup(
@@ -459,6 +461,7 @@ def load_var_group_catalog(resources_path: Path, pipelines_path: Path) -> VarGro
             vtype=g.get("vtype"),
             values=g.get("values"),
             prefix=g.get("prefix"),
+            atlas=g.get("atlas"),
         )
 
     roi_lists: dict[str, RoiList] = {}

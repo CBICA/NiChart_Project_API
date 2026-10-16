@@ -79,6 +79,14 @@ def test_get_var_group_catalog(local_client):
     assert roi_list["atlas"] == "muse"
     assert 47 in roi_list["values"]
 
+    # Name-based ROI groups: empty prefix, ROI lists hold region names, linked by atlas.
+    synthseg_group = data["groups"]["group_synthseg-vol"]
+    assert synthseg_group["prefix"] == ""
+    assert synthseg_group["atlas"] == "synthseg"
+    synthseg_list = data["roi_lists"]["list_synthseg-all"]
+    assert synthseg_list["atlas"] == "synthseg"
+    assert "left hippocampus" in synthseg_list["values"]
+
 
 def test_var_group_catalog_requires_no_auth(local_client):
     resp = local_client.get("/catalog/var-groups", headers={})
