@@ -49,6 +49,25 @@ class NiftiUploadProposal(BaseModel):
         default=None,
         description="Modality inferred from the filename (see GET /catalog/modalities), or null if not detectable.",
     )
+    basename_mrid: str = Field(
+        default="",
+        description=(
+            "The filename with only its .nii/.nii.gz extension removed, and nothing else "
+            "stripped. Offer this to let the user keep the original names instead of the "
+            "inferred MRID."
+        ),
+    )
+    mrid_source: Literal["shared_suffix", "existing_subject", "modality_token", "basename"] = Field(
+        default="basename",
+        description=(
+            "How inferred_mrid was derived. 'shared_suffix': a trailing string shared by "
+            "every file of this modality in the upload was removed (see "
+            "NiftiStagingResult.stripped_suffixes). 'existing_subject': the stem begins with "
+            "an MRID already committed to this project. 'modality_token': a modality token "
+            "and any tokens after it were removed from this filename alone. 'basename': "
+            "nothing was removed beyond the extension, so inferred_mrid equals basename_mrid."
+        ),
+    )
 
 
 class NiftiStagingResult(BaseModel):
@@ -63,6 +82,16 @@ class NiftiStagingResult(BaseModel):
         description=(
             "Original relative paths that were skipped because they flattened to the same "
             "filename as an earlier entry in this upload (first occurrence wins)."
+        ),
+    )
+    stripped_suffixes: dict[str, str] = Field(
+        default={},
+        description=(
+            "Modality code -> the trailing string removed from every file of that modality "
+            "because they all shared it (e.g. {'t1': '_T1_brain'}). Files whose modality "
+            "could not be inferred are grouped under the empty-string key. Empty when no "
+            "group had a shared suffix. Show this to explain the proposed MRIDs; the "
+            "original names are available per file as basename_mrid."
         ),
     )
 

@@ -388,13 +388,36 @@ proposals for user confirmation before committing.
 POST /projects/{project_id}/files/upload/nifti
 Content-Type: multipart/form-data
 files: [...]   (one or many .nii / .nii.gz)
-→ { staging_id, proposals: [{ filename, inferred_mrid, inferred_modality }] }
+→ { staging_id, proposals: [{ filename, inferred_mrid, inferred_modality,
+                             basename_mrid, mrid_source }], stripped_suffixes }
 ```
-Files land in `{study}/_upload/nifti/`. Inference:
-- `inferred_mrid`: strip known suffixes (`_T1`, `_T1w`, `_FL`, `_FLAIR`, `_T2`, `_T1CE`,
-  `_ADC`, `.nii`, `.nii.gz`) and common trailing separators.
-- `inferred_modality`: detect from filename substring (`_T1`→`t1`, `_FL`/`_FLAIR`→`fl`,
-  `_T2`→`t2`, `_T1CE`→`t1ce`, `_ADC`→`adc`); `null` if not detectable.
+Files land in `{study}/_upload/nifti/`. MRIDs are proposed for the batch as a whole
+(`build_nifti_proposals`), resolved per inferred-modality group because the MRID becomes
+the file stem inside one modality directory, so only same-modality collisions matter.
+Within a group, in order:
+
+1. **Shared suffix** — if every stem ends with the same string, remove it from all of
+   them. The cut moves forward to the first separator inside the shared part, and is
+   rejected if it spans more than `modalities.MAX_SHARED_SUFFIX_TOKENS` (2) tokens, since
+   a longer run is usually part of the ID (`-Guys-0828-T1` on a two-file IXI batch). This
+   is the only rule that can see a non-modality suffix such as a site tag (`_MPRAGE`).
+2. **Existing subject** — otherwise, if a stem extends an MRID already committed to the
+   project at a separator boundary, propose that MRID (longest match). A candidate wanted
+   by two files in the group is applied to neither.
+3. **Modality token** (`modalities.strip_to_mrid`) — otherwise cut at the *last* modality
+   token preceded by a separator (`_`, `-` or `.`) and followed only by further
+   separator-led tokens, so `sub01_T1_brain` and `sub01-FLAIR-reg` both give `sub01`.
+4. **Collision guard** — any MRID two files in a group would share reverts to the full
+   stem for both; committing them would otherwise silently overwrite one.
+
+`mrid_source` reports which rule applied, `stripped_suffixes` maps modality → the suffix
+step 1 removed (files with no inferred modality are keyed `""`), and `basename_mrid` is
+the stem with only the extension removed. `inferred_mrid` is a default: the client always
+sends the final `mrid` at commit.
+
+- `inferred_modality`: detected from a modality token in the filename (`_T1`/`-T1`→`t1`,
+  `_FL`/`_FLAIR`→`fl`, `_T2`→`t2`, `_T1CE`→`t1ce`, `_ADC`→`adc`, `_PET`→`pet`), else from
+  the parent directory name on folder/zip uploads; `null` if not detectable.
 
 **Step 2 — Commit:**
 ```

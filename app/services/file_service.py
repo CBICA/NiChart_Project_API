@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -380,24 +381,141 @@ def participants_template_csv(project_path: Path) -> str:
 # All modality logic lives in app.modalities (the single source of truth).
 
 
-def infer_nifti_metadata(original_path: str) -> tuple[str | None, str | None]:
-    """Infer MRID and modality from an upload path.
+def infer_modality_for_path(original_path: str) -> str | None:
+    """Infer the modality for an upload path.
 
-    MRID is derived from the basename (suffixes and modality tags stripped).
-    Modality is detected from the basename first; if not found, the parent
-    directory name is checked against known modality codes. This allows uploads
-    like ``fl/subject001.nii.gz`` to resolve correctly even when the filename
-    itself carries no modality indicator.
+    Detected from the basename first; if not found, the parent directory name is
+    checked against known modality codes. This allows uploads like
+    ``fl/subject001.nii.gz`` to resolve correctly even when the filename itself
+    carries no modality indicator.
     """
     p = Path(original_path)
-    basename = p.name
-    modality = modalities.infer_modality(basename)
+    modality = modalities.infer_modality(p.name)
     if modality is None:
         parent = p.parent.name.lower()
         if modalities.is_valid(parent):
             modality = parent
+    return modality
+
+
+def infer_nifti_metadata(original_path: str) -> tuple[str | None, str | None]:
+    """Infer MRID and modality from a single upload path.
+
+    This is the per-file view. ``build_nifti_proposals`` is what the staging
+    endpoints use: it sees the whole batch and can do better.
+    """
+    basename = Path(original_path).name
     mrid = modalities.strip_to_mrid(basename)
-    return mrid or None, modality
+    return mrid or None, infer_modality_for_path(original_path)
+
+
+def _existing_subject_match(stem: str, existing: set[str]) -> str | None:
+    """The longest committed MRID that *stem* extends, or None.
+
+    ``sub01-FL-reg`` matches a committed ``sub01``, so a later single-file upload
+    lands on the subject that is already in the project instead of inventing a
+    near-duplicate. The match must end at a separator, so ``sub011`` does not
+    match a committed ``sub01``.
+    """
+    candidates = [
+        mrid for mrid in existing
+        if len(stem) > len(mrid) and stem.startswith(mrid) and stem[len(mrid)] in modalities.SEPARATORS
+    ]
+    return max(candidates, key=len) if candidates else None
+
+
+def build_nifti_proposals(
+    project_path: Path,
+    entries: list[tuple[str, str]],
+) -> tuple[list[NiftiUploadProposal], dict[str, str]]:
+    """Propose an MRID and modality for every file in one staging request.
+
+    *entries* are ``(path_to_infer_from, staged_filename)`` pairs; the first may
+    carry directory components (``fl/sub01.nii.gz``) that inform the modality.
+
+    Proposals are resolved per modality group, because the MRID becomes the file
+    stem inside the modality directory, so only same-modality collisions matter.
+    Within a group, in order:
+
+    1. If every stem shares a trailing string, remove it from all of them. This
+       is the only rule that can recognise a non-modality suffix like a site tag.
+    2. Otherwise, per file: prefer an MRID already committed to the project, then
+       fall back to removing a modality token from that filename alone.
+    3. Finally, any MRID that two files in the group would share is reverted to
+       the full stem for both, since committing them would silently overwrite one
+       with the other.
+
+    Returns the proposals in *entries* order, and the suffix removed per group.
+    """
+    records: list[dict] = [
+        {
+            "filename": staged_name,
+            "stem": modalities.nifti_stem(staged_name),
+            "modality": infer_modality_for_path(inference_path),
+        }
+        for inference_path, staged_name in entries
+    ]
+
+    existing = set(collect_project_mrids(project_path))
+    stripped_suffixes: dict[str, str] = {}
+
+    groups: dict[str | None, list[dict]] = {}
+    for record in records:
+        groups.setdefault(record["modality"], []).append(record)
+
+    for modality, group in groups.items():
+        stems = [r["stem"] for r in group]
+
+        shared = modalities.apply_shared_suffix(stems)
+        if shared is not None:
+            cut = modalities.shared_suffix_cut(stems)
+            assert cut is not None  # apply_shared_suffix returned a mapping
+            stripped_suffixes[modality or ""] = cut
+            for record in group:
+                record["mrid"] = shared[record["stem"]]
+                record["source"] = "shared_suffix"
+            continue
+
+        for record in group:
+            mrid = modalities.strip_to_mrid(record["filename"])
+            record["mrid"] = mrid or None
+            record["source"] = "modality_token" if mrid and mrid != record["stem"] else "basename"
+
+        # Prefer a subject already in the project. A candidate wanted by two
+        # files in the group is applied to neither: they are probably two scans
+        # of that subject, which cannot both take its name in one directory, and
+        # picking one of them would come down to upload order.
+        candidates = {
+            id(record): _existing_subject_match(record["stem"], existing)
+            for record in group
+        }
+        claimed = Counter(c for c in candidates.values() if c is not None)
+        for record in group:
+            candidate = candidates[id(record)]
+            if candidate is None or candidate == record["mrid"] or claimed[candidate] > 1:
+                continue
+            if candidate in {r["mrid"] for r in group if r is not record}:
+                continue
+            record["mrid"] = candidate
+            record["source"] = "existing_subject"
+
+        counts = Counter(r["mrid"] for r in group if r["mrid"])
+        for record in group:
+            if record["mrid"] and counts[record["mrid"]] > 1:
+                record["mrid"] = record["stem"]
+                record["source"] = "basename"
+
+    proposals = [
+        NiftiUploadProposal(
+            filename=r["filename"],
+            inferred_mrid=r["mrid"],
+            inferred_modality=r["modality"],
+            basename_mrid=r["stem"],
+            mrid_source=r["source"],
+        )
+        for r in records
+    ]
+    return proposals, stripped_suffixes
 
 
 # ── NIfTI staging ─────────────────────────────────────────────────────────────
@@ -407,7 +525,7 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
     staging_dir = project_path / "_upload" / "nifti" / staging_id
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    proposals = []
+    entries: list[tuple[str, str]] = []
     skipped_duplicates = []
     for filename, data in zip(filenames, file_data):
         safe_name = Path(filename).name
@@ -422,16 +540,19 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
             continue
         assert_safe_path(staging_dir, dest)
         dest.write_bytes(data)
-        # Infer from the original upload path so that directory components
+        # Keep the original upload path so that directory components
         # (e.g. "fl/subject001.nii.gz") contribute to modality detection.
-        mrid, modality = infer_nifti_metadata(filename)
-        proposals.append(NiftiUploadProposal(
-            filename=safe_name,
-            inferred_mrid=mrid,
-            inferred_modality=modality,
-        ))
+        entries.append((filename, safe_name))
 
-    return NiftiStagingResult(staging_id=staging_id, proposals=proposals, skipped_duplicates=skipped_duplicates)
+    # MRIDs are proposed for the batch as a whole, once every file is known.
+    proposals, stripped_suffixes = build_nifti_proposals(project_path, entries)
+
+    return NiftiStagingResult(
+        staging_id=staging_id,
+        proposals=proposals,
+        skipped_duplicates=skipped_duplicates,
+        stripped_suffixes=stripped_suffixes,
+    )
 
 
 def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> NiftiStagingResult:
@@ -451,7 +572,7 @@ def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> Nifti
             extract_dir.mkdir()
             safe_unzip(archive, extract_dir)
 
-            proposals = []
+            entries: list[tuple[str, str]] = []
             skipped_duplicates = []
             for nifti in sorted(extract_dir.rglob("*")):
                 if not (nifti.name.endswith(".nii") or nifti.name.endswith(".nii.gz")):
@@ -466,19 +587,22 @@ def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> Nifti
                     continue
                 assert_safe_path(staging_dir, dest)
                 shutil.copy2(nifti, dest)
-                # Pass the relative archive path so directory components contribute
+                # Keep the relative archive path so directory components contribute
                 # to modality inference (e.g. "fl/subject001.nii.gz").
-                mrid, modality = infer_nifti_metadata(str(rel))
-                proposals.append(NiftiUploadProposal(
-                    filename=safe_name,
-                    inferred_mrid=mrid,
-                    inferred_modality=modality,
-                ))
+                entries.append((str(rel), safe_name))
+
+            # A zip can mix modalities, so group and propose once all are known.
+            proposals, stripped_suffixes = build_nifti_proposals(project_path, entries)
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
 
-    return NiftiStagingResult(staging_id=staging_id, proposals=proposals, skipped_duplicates=skipped_duplicates)
+    return NiftiStagingResult(
+        staging_id=staging_id,
+        proposals=proposals,
+        skipped_duplicates=skipped_duplicates,
+        stripped_suffixes=stripped_suffixes,
+    )
 
 
 def commit_nifti_staging(

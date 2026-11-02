@@ -36,8 +36,8 @@ A project is a named workspace (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`). All data li
 
 ### NIfTI staging flow (two steps, requires UI)
 
-1. `POST /projects/{id}/files/upload/nifti` — returns `{ staging_id, proposals: [{ filename, inferred_mrid, inferred_modality }] }`. Files sit in a staging area.
-2. Show the user a table of proposals. They can correct the MRID and modality (t1 / fl / t2 / t1ce / adc) for each file.
+1. `POST /projects/{id}/files/upload/nifti` — returns `{ staging_id, proposals: [{ filename, inferred_mrid, inferred_modality, basename_mrid, mrid_source }], stripped_suffixes }`. Files sit in a staging area.
+2. Show the user a table of proposals. They can correct the MRID and modality (t1 / fl / t2 / t1ce / adc / pet) for each file. `inferred_mrid` is a default, not a constraint: `mrid_source` says how it was derived, `stripped_suffixes` names the trailing string removed from a whole modality group (e.g. `{"t1": "_T1_brain"}`), and `basename_mrid` is the untouched stem, so "use the original names" needs no second request.
 3. `POST /projects/{id}/files/stage/{staging_id}/commit` with `{ mappings: [{ filename, mrid, modality }] }` — moves files to their final locations.
 4. `DELETE /projects/{id}/files/stage/{staging_id}` to discard.
 
