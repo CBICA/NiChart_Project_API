@@ -252,3 +252,65 @@ def test_min_subjects_without_constraints_is_unchanged(tmp_path):
     assert sc.constraints == []
     assert sc.actual == 5
     assert sc.satisfied and sc.recommended_met
+
+
+# ── Per-group minimums (``per``) ──────────────────────────────────────────────
+
+CN_PER_BATCH = [{**CN_CONTROLS[0], "per": "Batch"}]
+
+
+def _batched(project, batches):
+    """batches: {batch: (n_cn, n_other)} → project with a Batch column."""
+    rows = []
+    for batch, (n_cn, n_other) in batches.items():
+        for i in range(n_cn):
+            rows.append({"MRID": f"{batch}_cn{i:03d}", "DX": "CN", "Batch": batch})
+        for i in range(n_other):
+            rows.append({"MRID": f"{batch}_ad{i:03d}", "DX": "AD", "Batch": batch})
+    _write_imaging(project, [r["MRID"] for r in rows])
+    _write_participants(project, rows, columns=("MRID", "DX", "Batch"))
+
+
+def test_per_batch_fails_when_one_batch_is_short(tmp_path):
+    """40 controls in total pass a project-wide minimum, but not 20 + 20 per batch."""
+    _batched(tmp_path, {"A": (20, 5), "B": (20, 5)})
+    c = _check(tmp_path, _requires(constraints=CN_PER_BATCH)).subject_count.constraints[0]
+
+    assert c.per == "Batch"
+    assert [(g.value, g.actual, g.satisfied) for g in c.groups] == [("A", 20, False), ("B", 20, False)]
+    assert c.actual == 20               # smallest group
+    assert not c.satisfied
+    assert len(c.matching_mrids) == 40  # still every matching subject
+
+
+def test_per_batch_satisfied_when_every_batch_has_enough(tmp_path):
+    _batched(tmp_path, {"A": (30, 0), "B": (35, 10)})
+    report = _check(tmp_path, _requires(constraints=CN_PER_BATCH))
+    c = report.subject_count.constraints[0]
+
+    assert c.actual == 30
+    assert all(g.satisfied for g in c.groups)
+    assert c.satisfied and report.subject_count.satisfied
+
+
+def test_per_batch_includes_batches_without_matches(tmp_path):
+    _batched(tmp_path, {"A": (30, 0), "B": (0, 12)})
+    c = _check(tmp_path, _requires(constraints=CN_PER_BATCH)).subject_count.constraints[0]
+
+    assert [(g.value, g.actual) for g in c.groups] == [("A", 30), ("B", 0)]
+    assert c.actual == 0 and not c.satisfied
+
+
+def test_per_column_missing_is_unevaluable(tmp_path):
+    _cohort(tmp_path, n_cn=40, n_other=0)  # no Batch column
+    c = _check(tmp_path, _requires(constraints=CN_PER_BATCH)).subject_count.constraints[0]
+
+    assert c.unevaluable_reason and "'Batch'" in c.unevaluable_reason
+    assert not c.satisfied
+    assert c.groups == []
+
+
+def test_without_per_groups_is_empty(tmp_path):
+    _cohort(tmp_path, n_cn=30, n_other=0)
+    c = _check(tmp_path, _requires(constraints=CN_CONTROLS)).subject_count.constraints[0]
+    assert c.per is None and c.groups == []

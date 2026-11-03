@@ -50,6 +50,15 @@ class CsvRequirement(BaseModel):
     )
 
 
+class SubjectConstraintGroup(BaseModel):
+    """Count for one value of a constraint's ``per`` column (e.g. one batch)."""
+
+    value: str = Field(description="The group's value in the per column; '' for blank cells.")
+    actual: int = Field(description="Subjects in this group matching every condition.")
+    satisfied: bool = Field(description="True if actual >= the constraint's required.")
+    recommended_met: bool = Field(description="True if actual >= the constraint's recommended.")
+
+
 class SubjectConstraintCheck(BaseModel):
     """Readiness check for a minimum count of subjects matching a predicate.
 
@@ -66,9 +75,17 @@ class SubjectConstraintCheck(BaseModel):
         default_factory=list,
         description="Conditions defining this cohort, combined with AND.",
     )
-    actual: int = Field(description="Subjects with imaging whose CSV row matches every condition.")
+    actual: int = Field(
+        description=(
+            "Subjects with imaging whose CSV row matches every condition. With ``per``, "
+            "the smallest group's count — so actual >= required still means satisfied."
+        )
+    )
     required: int = Field(
-        description="Minimum matching subjects. Defaults to the parent min_subjects.required."
+        description=(
+            "Minimum matching subjects (per group when ``per`` is set). Defaults to the "
+            "parent min_subjects.required."
+        )
     )
     recommended: int = Field(
         description="Recommended matching subjects. Defaults to this constraint's required."
@@ -79,6 +96,18 @@ class SubjectConstraintCheck(BaseModel):
     )
     matching_mrids: list[str] = Field(
         default_factory=list, description="MRIDs counted towards this constraint."
+    )
+    per: str | None = Field(
+        default=None,
+        description="participants.csv column the minimum applies within, if any (e.g. 'Batch').",
+    )
+    groups: list[SubjectConstraintGroup] = Field(
+        default_factory=list,
+        description=(
+            "With ``per``: one entry per value of that column among subjects with imaging "
+            "and a CSV row, including groups with no matching subjects (actual 0). "
+            "Sorted by value. Empty without ``per``."
+        ),
     )
     unevaluable_reason: str | None = Field(
         default=None,
