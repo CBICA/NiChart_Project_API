@@ -240,6 +240,9 @@ async def commit_nifti(
 ) -> NiftiCommitResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     result = file_service.commit_nifti_staging(pdir, staging_id, body.mappings)
+    had_participants = file_service.participants_csv_exists(pdir)
+    result.participants_added = file_service.sync_participants_with_images(pdir)
+    result.participants_created = not had_participants and result.participants_added > 0
     await file_service.publish_uploads(settings, user, project_id, pdir)
     return result
 
@@ -312,6 +315,7 @@ async def upload_bids(
     contents = await file.read()
     usage_service.record_upload("bids", settings.execution_mode, files=1, total_bytes=len(contents))
     file_service.store_bids_upload(pdir, contents, file.filename or "")
+    file_service.sync_participants_with_images(pdir)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -340,6 +344,7 @@ async def upload_bids_files(
         files=len(pairs), total_bytes=sum(len(d) for _n, d in pairs),
     )
     file_service.store_bids_files(pdir, pairs)
+    file_service.sync_participants_with_images(pdir)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
