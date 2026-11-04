@@ -133,6 +133,17 @@ class NiftiCommitResult(BaseModel):
     """Response after a successful NIfTI commit."""
 
     committed: list[CommittedFile]
+    participants_added: int = Field(
+        default=0,
+        description=(
+            "Rows added to participants/participants.csv for newly imaged subjects "
+            "(the file is created if it didn't exist)."
+        ),
+    )
+    participants_created: bool = Field(
+        default=False,
+        description="True when participants/participants.csv did not exist and was created by this commit.",
+    )
     skipped: list[CommittedFile] = Field(
         default=[],
         description=(

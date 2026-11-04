@@ -10,6 +10,8 @@ DICOM → NIfTI conversion is a three-step interactive flow:
 """
 
 import asyncio
+import logging
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from fastapi import File as FastAPIFile
@@ -28,6 +30,25 @@ from app.models.errors import ErrorDetail
 from app.services import dicom_service, file_service, job_service, usage_service
 
 router = APIRouter(prefix="/projects/{project_id}/files/dicom", tags=["DICOM"])
+
+_log = logging.getLogger(__name__)
+
+
+async def _sync_participants_after_convert(
+    settings: Settings, user: CurrentUser, project_id: str, pdir: Path
+) -> None:
+    """Add rows to participants.csv for subjects the conversion just produced.
+
+    Queued after the conversion task; Starlette runs background tasks in order, so
+    the converted NIfTIs are on disk by now. Only MRIDs that actually exist in the
+    modality directories are added, so a failed conversion adds nothing. Errors are
+    logged, not raised — there's no request left to report them to.
+    """
+    try:
+        if file_service.sync_participants_with_images(pdir):
+            await file_service.publish_uploads(settings, user, project_id, pdir)
+    except Exception:
+        _log.exception("participants.csv sync after DICOM conversion failed for %s", project_id)
 
 _AUTH_ERRORS = {
     401: {"model": ErrorDetail, "description": "Missing or invalid token."},
@@ -184,6 +205,7 @@ async def convert_dicom(
         study_dir=pdir,
         execution_mode=settings.execution_mode,
     )
+    background_tasks.add_task(_sync_participants_after_convert, settings, user, project_id, pdir)
     return DicomConvertResult(run_id=run.run_id)
 
 

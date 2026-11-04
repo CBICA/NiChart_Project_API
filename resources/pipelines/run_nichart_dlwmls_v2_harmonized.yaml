@@ -29,9 +29,21 @@ requires:
       - name: Sex
         type: categorical
         values: [M, F]
+      - name: DX
+        type: string
   - min_subjects:
-      required: 3
+      required: 30
       recommended: 30
+      # Same rule as run_dlmuse_harmonized: harmonization parameters are estimated from
+      # CN subjects separately for every batch, so each Batch needs 30 CN subjects.
+      constraints:
+        - label: Cognitively normal controls
+          per: Batch
+          required: 30
+          recommended: 30
+          where:
+            - column: DX
+              equals: CN
 
 steps:
   - id: run_dlmuse

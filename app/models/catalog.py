@@ -332,6 +332,14 @@ class SubjectConstraintSpec(BaseModel):
         default_factory=list,
         description="Conditions defining this cohort, combined with AND.",
     )
+    per: str | None = Field(
+        default=None,
+        description=(
+            "Optional participants.csv column to group by, e.g. 'Batch': the minimum "
+            "then applies within every value of that column (each batch needs "
+            "`required` matching subjects), not to the project as a whole."
+        ),
+    )
     required: int = Field(description="Minimum matching subjects needed to run at all.")
     recommended: int = Field(
         description="Recommended number of matching subjects for reliable results."

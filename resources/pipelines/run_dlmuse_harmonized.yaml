@@ -36,8 +36,11 @@ requires:
       # participants.csv row matching every condition under `where`; conditions
       # combine with AND. String matches are case-insensitive. `required` /
       # `recommended` default to the parent values above.
+      # `per: Batch` applies the minimum within each batch: harmonization parameters
+      # are estimated from CN subjects, separately for every batch.
       constraints:
         - label: Cognitively normal controls
+          per: Batch
           where:
             - column: DX
               equals: CN

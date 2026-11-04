@@ -23,6 +23,7 @@ from app.models.readiness import (
     ImagingRequirement,
     ReadinessReport,
     SubjectConstraintCheck,
+    SubjectConstraintGroup,
     SubjectCountRequirement,
 )
 from app import modalities
@@ -273,17 +274,22 @@ def _check_subject_constraints(
     on. For harmonization that is the right denominator: ComBat fits on
     subjects with both a scan and valid covariates.
 
+    With ``per`` (e.g. ``Batch``) the minimum applies within each value of that
+    column: harmonization estimates its parameters per batch, so every batch needs
+    enough controls. Every value present among evaluable subjects becomes a group,
+    including ones with no matching subject, and ``actual`` is the smallest count.
+
     Thresholds arrive already defaulted by ``catalog_service.parse_min_subjects``.
     """
     checks: list[SubjectConstraintCheck] = []
 
     for spec in constraints:
-        absent = sorted(
-            p.column for p in spec.where if p.column.lower() not in columns
-        )
+        named = [p.column for p in spec.where] + ([spec.per] if spec.per else [])
+        absent = sorted({c for c in named if c.lower() not in columns})
 
         unevaluable: str | None = None
         matching: list[str] = []
+        group_counts: dict[str, int] = {}
         if not spec.where:
             unevaluable = "constraint declares no usable 'where' conditions"
         elif absent:
@@ -297,13 +303,30 @@ def _check_subject_constraints(
                 row = rows.get(mrid)
                 if row is None:
                     continue  # imaging but no covariates — cannot be evaluated
+                group = row.get(spec.per.lower(), "") if spec.per else None
+                if group is not None:
+                    group_counts.setdefault(group, 0)
                 if all(
                     _matches_predicate(row.get(p.column.lower(), ""), p)
                     for p in spec.where
                 ):
                     matching.append(mrid)
+                    if group is not None:
+                        group_counts[group] += 1
 
-        actual = len(matching)
+        groups = [
+            SubjectConstraintGroup(
+                value=value,
+                actual=n,
+                satisfied=n >= spec.required,
+                recommended_met=n >= spec.recommended,
+            )
+            for value, n in sorted(group_counts.items())
+        ]
+        if spec.per:
+            actual = min(group_counts.values()) if group_counts else 0
+        else:
+            actual = len(matching)
         checks.append(SubjectConstraintCheck(
             label=spec.label,
             where=spec.where,
@@ -314,6 +337,8 @@ def _check_subject_constraints(
             recommended_met=unevaluable is None and actual >= spec.recommended,
             matching_mrids=matching,
             unevaluable_reason=unevaluable,
+            per=spec.per,
+            groups=groups,
         ))
 
     return checks

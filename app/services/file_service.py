@@ -343,6 +343,66 @@ def collect_project_mrids(project_path: Path) -> list[str]:
     return sorted(mrids)
 
 
+def participants_csv_exists(project_path: Path) -> bool:
+    return (project_path / _PARTICIPANTS_PATH).exists()
+
+
+# Values given to new subjects when participants.csv is created or extended from images.
+DEFAULT_BATCH = "Batch1"
+DEFAULT_DX = "CN"
+
+
+def sync_participants_with_images(project_path: Path) -> int:
+    """Create or extend participants.csv so every imaged subject has a row.
+
+    Run after any image ingestion (NIfTI commit, BIDS upload, DICOM conversion).
+    With no participants.csv (or a header-only one), a file is written with one row
+    per MRID found in the modality directories: ``MRID, Batch, DX`` defaulting to
+    DEFAULT_BATCH / DEFAULT_DX (a header-only file keeps its own columns instead).
+    Otherwise only MRIDs missing from the file are appended, getting the defaults in
+    whichever of Batch/DX the file has and blanks elsewhere. Existing rows, their
+    values and the column order are never changed, and rows are never removed — a
+    subject whose images were deleted keeps its row.
+
+    A participants.csv without an MRID column is left untouched: it can't be
+    extended, and rewriting it would discard the user's data.
+
+    Returns the number of rows added.
+    """
+    mrids = collect_project_mrids(project_path)
+    if not mrids:
+        return 0
+
+    csv_path = project_path / _PARTICIPANTS_PATH
+    columns: list[str] = ["MRID", "Batch", "DX"]
+    existing_rows: list[dict] = []
+    if csv_path.exists():
+        with csv_path.open(newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames or [])
+            if fieldnames:
+                if not any(c.lower() == "mrid" for c in fieldnames):
+                    return 0
+                existing_rows = [r.model_dump() for r in read_participants(project_path).rows]
+                # read_participants canonicalises the MRID column name; keep the rest as-is.
+                columns = ["MRID"] + [c for c in fieldnames if c.lower() != "mrid"]
+
+    present = {str(r.get("MRID", "")).strip() for r in existing_rows}
+    defaults = {"Batch": DEFAULT_BATCH, "DX": DEFAULT_DX}
+    new_rows = [
+        {c: (mrid if c == "MRID" else defaults.get(c, "")) for c in columns}
+        for mrid in mrids
+        if mrid not in present
+    ]
+    if not new_rows:
+        return 0
+
+    # Pin the column order (write_participants takes it from the rows' key order).
+    rows = [{c: r.get(c, "") for c in columns} for r in existing_rows] + new_rows
+    write_participants(project_path, rows)
+    return len(new_rows)
+
+
 def participants_template_csv(project_path: Path) -> str:
     """Build a participants CSV template string.
 

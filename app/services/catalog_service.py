@@ -153,9 +153,11 @@ def parse_min_subjects(raw_requires: list | None) -> MinSubjectsSpec | None:
             child_recommended = int(
                 raw.get("recommended", raw.get("required", recommended))
             )
+            per = raw.get("per")
             constraints.append(SubjectConstraintSpec(
                 label=raw.get("label"),
                 where=predicates,
+                per=str(per) if per else None,
                 required=child_required,
                 recommended=child_recommended,
             ))

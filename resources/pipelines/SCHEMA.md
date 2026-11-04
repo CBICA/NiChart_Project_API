@@ -107,6 +107,10 @@ requires:
         - label: Cognitively normal controls   # Optional. Shown in the UI.
           required: 30                         # Optional. Defaults to the parent's.
           recommended: 30                      # Optional. Defaults to this `required`.
+          per: Batch                           # Optional. Minimum applies within each value of
+                                               # this column (every batch needs 30), not overall.
+                                               # Missing column → unevaluable. Readiness reports
+                                               # each group; `actual` is the smallest group's count.
           where:
             - column: DX
               equals: CN                       # Exact value, case-insensitive.
