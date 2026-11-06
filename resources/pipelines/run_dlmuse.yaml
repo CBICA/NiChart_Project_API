@@ -61,5 +61,8 @@ results:
       display_name: "DLMUSE segmentation"
       # Verified affine-identical to the subject's stored t1/{MRID}.nii.gz.
       underlay: t1
+      content: labels
+      # Single image output, so batch_features.label_output_id is unnecessary:
+      # there is nothing for a feature's label_ids to be ambiguous between.
   atlas: "atlases/muse/MNI152_1mm_LPS.nii.gz"
   atlas_segmentation: "atlases/muse/MNI152_1mm_LPS_DLMUSE.nii.gz"

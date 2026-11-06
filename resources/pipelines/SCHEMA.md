@@ -252,6 +252,20 @@ results:
       type: "segmentation_nifti"              # Output type hint for the UI renderer.
                                               # Use "nifti" for non-segmentation NIfTIs.
       display_name: "My Segmentation"         # Optional. Label in the MRI panel.
+      content: labels                         # Optional. What the voxel values mean, and
+                                              # so how a viewer may draw them:
+                                              #   labels    - values are region IDs, comparable
+                                              #               to label_map[*].label_ids, so one
+                                              #               feature can be highlighted inside
+                                              #               the volume.
+                                              #   mask      - any non-zero voxel is "in"; there
+                                              #               is nothing to pick out within it.
+                                              #   intensity - a continuous map (density,
+                                              #               probability, attention) needing a
+                                              #               colour scale, not a threshold.
+                                              # Omit when unverified: clients are told to treat
+                                              # an unknown kind as "do not draw", so a wrong
+                                              # value is worse than none.
       underlay: t1                            # Optional, but declare it if you know it.
                                               # Which image this output is registered to,
                                               # so a viewer can overlay it on anatomy it
@@ -267,6 +281,13 @@ results:
                                               # nothing. Verify with the affine, not the
                                               # directory name -- two outputs of one tool
                                               # can land in different spaces.
+
+  # Which per_subject output the label_map's label_ids are voxel values in.
+  # Only needed when the pipeline has more than one image output and the target
+  # would otherwise be ambiguous: DLWMLS emits a region-labelled volume and a
+  # binary mask, and the IDs mean nothing in the mask. Must name an id declared
+  # under per_subject. Omit it for a single-output pipeline.
+  # label_output_id: "segmentation"
 
   # Atlas files for the centile/overlay viewer.
   # Paths are relative to the resources/ directory.
@@ -394,4 +415,5 @@ steps:
 #       type: "segmentation_nifti"
 #       display_name: "My Segmentation"
 #       underlay: t1          # modality code, or "atlas" for template space
+#       content: labels       # labels | mask | intensity
 ```

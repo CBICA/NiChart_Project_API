@@ -252,7 +252,10 @@ def _build_catalog_features(
                 col_name = batch_spec.column_template.replace("{id}", str(label_id)).replace("{name}", display_name)
                 unit = (batch_spec.column_units or {}).get(col_name, batch_spec.default_unit)
                 label_map[col_name] = LabelInfo(
-                    display_name=display_name, label_ids=constituents, unit=unit
+                    display_name=display_name,
+                    label_ids=constituents,
+                    unit=unit,
+                    output_id=batch_spec.label_output_id,
                 )
                 primary_ids[col_name] = label_id
     except Exception:
@@ -339,6 +342,7 @@ def get_pipeline(
             feature_groups=bf_raw.get("feature_groups"),
             column_units=bf_raw.get("column_units"),
             default_unit=bf_raw.get("default_unit"),
+            label_output_id=bf_raw.get("label_output_id"),
         )
         label_map, feature_groups = _build_catalog_features(resources_path, batch_spec)
 
@@ -378,6 +382,7 @@ def get_pipeline(
                 type=ps.type,
                 display_name=ps.display_name,
                 underlay=ps.underlay,
+                content=ps.content,
             )
             for ps in _parse_per_subject(results_raw.get("per_subject"), pipeline_id)
         ],
@@ -502,6 +507,10 @@ class BatchFeaturesSpec:
     feature_groups: list[dict] | None = None  # [{name, label_id_range: [lo, hi]}]
     column_units: dict[str, str] | None = None  # per-column unit overrides, keyed by column name
     default_unit: str | None = None             # unit for columns not in column_units
+    # Which per_subject output this label_map's label_ids index into. Only
+    # meaningful for a pipeline with more than one image output; None when the
+    # pipeline has a single output, or none, or has not said.
+    label_output_id: str | None = None
     # Semantic feature definitions keyed by column name (for LLM/UI interpretation).
     features: dict[str, "FeatureDefinition"] | None = None
 
@@ -516,11 +525,46 @@ class PerSubjectSpec:
     # code (the subject's own image in that directory), UNDERLAY_ATLAS for an
     # output in template space, or None when the pipeline has not said.
     underlay: str | None = None
+    # What the voxel values mean, which decides how a viewer may draw them.
+    # One of CONTENT_KINDS, or None when the pipeline has not said.
+    content: str | None = None
 
 
 # A per-subject output in template space is displayed over the pipeline's
 # declared atlas rather than over any image belonging to the subject.
 UNDERLAY_ATLAS = "atlas"
+
+# How a viewer may interpret the voxels of a per-subject output.
+#   labels    - values are region IDs, comparable to label_map[*].label_ids, so a
+#               single feature can be highlighted within the volume.
+#   mask      - any non-zero voxel is "in"; nothing to pick out within it.
+#   intensity - a continuous map (density, probability, attention). Not a mask:
+#               thresholding at zero would be meaningless, so it needs a colour
+#               scale rather than a region highlight.
+CONTENT_KINDS = ("labels", "mask", "intensity")
+
+
+def _check_label_output_id(
+    batch_features: "BatchFeaturesSpec | None",
+    per_subject: list["PerSubjectSpec"],
+    pipeline_id: str,
+) -> None:
+    """Fail if batch_features.label_output_id does not name a declared output.
+
+    The field exists so a client knows which overlay a feature's label_ids index
+    into. Pointing at an output that does not exist would send it looking for an
+    overlay it can never find, or silently back to a heuristic.
+    """
+    if batch_features is None or batch_features.label_output_id is None:
+        return
+    known = [ps.id for ps in per_subject]
+    if batch_features.label_output_id not in known:
+        raise HTTPException(
+            500,
+            f"Pipeline '{pipeline_id}' declares batch_features.label_output_id "
+            f"'{batch_features.label_output_id}', which is not one of its per_subject "
+            f"outputs ({', '.join(known) or 'none declared'}).",
+        )
 
 
 def _parse_per_subject(raw_list: list | None, pipeline_id: str) -> list["PerSubjectSpec"]:
@@ -541,6 +585,13 @@ def _parse_per_subject(raw_list: list | None, pipeline_id: str) -> list["PerSubj
                 f"underlay '{underlay}', which is neither '{UNDERLAY_ATLAS}' nor a known "
                 f"modality code ({', '.join(modalities.CODES)}).",
             )
+        content = entry.get("content")
+        if content is not None and content not in CONTENT_KINDS:
+            raise HTTPException(
+                500,
+                f"Pipeline '{pipeline_id}' per_subject output '{entry.get('id')}' declares "
+                f"content '{content}', which is not one of {', '.join(CONTENT_KINDS)}.",
+            )
         specs.append(
             PerSubjectSpec(
                 id=entry["id"],
@@ -548,6 +599,7 @@ def _parse_per_subject(raw_list: list | None, pipeline_id: str) -> list["PerSubj
                 type=entry.get("type", "nifti"),
                 display_name=entry.get("display_name"),
                 underlay=underlay,
+                content=content,
             )
         )
     return specs
@@ -589,9 +641,11 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             column_units=bf_raw.get("column_units"),
             default_unit=bf_raw.get("default_unit"),
             features=features,
+            label_output_id=bf_raw.get("label_output_id"),
         )
 
     per_subject = _parse_per_subject(raw.get("per_subject"), pipeline_id)
+    _check_label_output_id(batch_features, per_subject, pipeline_id)
 
     return PipelineResultsSpec(
         batch_features=batch_features,

@@ -56,6 +56,7 @@ def _load_label_map(
     label_map_rel: str,
     column_template: str,
     csv_columns: set[str],
+    label_output_id: str | None = None,
 ) -> dict[str, LabelInfo] | None:
     """
     Parse a muse_mapping_derived-style CSV into {column_name -> LabelInfo}.
@@ -94,6 +95,7 @@ def _load_label_map(
                     result[col_name] = LabelInfo(
                         display_name=display_name,
                         label_ids=constituents,
+                        output_id=label_output_id,
                     )
     except Exception:
         return None
@@ -122,7 +124,8 @@ def _build_batch_features(
         label_map = None
         if spec.label_map:
             label_map = _load_label_map(
-                resources_path, spec.label_map, spec.column_template, col_set
+                resources_path, spec.label_map, spec.column_template, col_set,
+                label_output_id=spec.label_output_id,
             )
             # Stamp units onto label_map entries if declared in the pipeline YAML.
             if label_map and (spec.column_units or spec.default_unit):
@@ -184,6 +187,7 @@ def _build_per_subject(
         type=spec.type,
         display_name=spec.display_name,
         underlay=spec.underlay,
+        content=spec.content,
         subjects=subjects,
     )
 

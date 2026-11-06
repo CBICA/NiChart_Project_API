@@ -27,6 +27,16 @@ class PerSubjectOutput(BaseModel):
             "Use as a subtitle in the MRI panel (fall back to id when absent)."
         ),
     )
+    content: str | None = Field(
+        default=None,
+        description=(
+            "What the voxel values mean: ``labels`` (region IDs comparable to "
+            "``label_map[*].label_ids``), ``mask`` (any non-zero voxel is in), or "
+            "``intensity`` (a continuous map needing a colour scale, not a threshold). "
+            "Null means undeclared; treat an unrecognised value as 'do not draw'. "
+            "Same value as in the pipeline's catalog entry."
+        ),
+    )
     underlay: str | None = Field(
         default=None,
         description=(

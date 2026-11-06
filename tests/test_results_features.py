@@ -179,3 +179,136 @@ def test_an_unknown_underlay_is_rejected_at_parse_time(tmp_path):
     with pytest.raises(HTTPException) as exc:
         catalog_service.get_pipeline_results_spec(tmp_path, "bad")
     assert "not_a_modality" in str(exc.value.detail)
+
+
+# ── per_subject content + which output a feature's label_ids index into ──────
+
+def _two_output_setup(tmp_path: Path, label_output_id: str = "rois") -> tuple[Path, Path, Path]:
+    """A pipeline with two image outputs, only one of which carries label IDs."""
+    pipelines = tmp_path / "pipelines"
+    resources = tmp_path / "resources"
+    project = tmp_path / "project"
+    resources.mkdir(parents=True, exist_ok=True)
+
+    _write(resources / "labels.csv", "601,GM,1,2\n602,WM,3\n")
+    _write(
+        pipelines / "two_out.yaml",
+        f"""
+        pipeline_name: Two Out
+        steps: []
+        results:
+          batch_features:
+            file: "out/vols.csv"
+            mrid_column: "MRID"
+            label_map: "labels.csv"
+            column_template: "V_{{id}}"
+            label_output_id: {label_output_id}
+          per_subject:
+            - id: rois
+              pattern: "seg/{{MRID}}_rois.nii.gz"
+              type: "segmentation_nifti"
+              underlay: t1
+              content: labels
+            - id: plain_mask
+              pattern: "mask/{{MRID}}_mask.nii.gz"
+              type: "segmentation_nifti"
+              underlay: fl
+              content: mask
+        """,
+    )
+    _write(project / "out" / "vols.csv", "MRID,V_601,V_602\nsub-01,10,20\n")
+    _write(project / "seg" / "sub-01_rois.nii.gz", "x")
+    _write(project / "mask" / "sub-01_mask.nii.gz", "x")
+    return project, resources, pipelines
+
+
+def test_results_reports_content_per_output(tmp_path):
+    project, resources, pipelines = _two_output_setup(tmp_path)
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    by_id = {ps.id: ps for ps in detail.per_subject}
+    assert (by_id["rois"].content, by_id["rois"].underlay) == ("labels", "t1")
+    assert (by_id["plain_mask"].content, by_id["plain_mask"].underlay) == ("mask", "fl")
+    assert by_id["rois"].subjects["sub-01"].available is True
+
+
+def test_results_label_map_names_the_output_its_ids_index_into(tmp_path):
+    """Without this, a client cannot tell which of two overlays a feature's
+    label_ids mean anything in."""
+    project, resources, pipelines = _two_output_setup(tmp_path)
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    label_map = detail.batch_features.label_map
+    assert set(label_map) == {"V_601", "V_602"}
+    assert all(info.output_id == "rois" for info in label_map.values())
+    assert label_map["V_601"].label_ids == [1, 2]
+
+
+def test_label_output_id_must_name_a_declared_output(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from app.services import catalog_service
+
+    _, _, pipelines = _two_output_setup(tmp_path, label_output_id="no_such_output")
+    with pytest.raises(HTTPException) as exc:
+        catalog_service.get_pipeline_results_spec(pipelines, "two_out")
+    assert "no_such_output" in str(exc.value.detail)
+
+
+def test_unknown_content_kind_is_rejected_at_parse_time(tmp_path):
+    import pytest
+    from fastapi import HTTPException
+
+    from app.services import catalog_service
+
+    (tmp_path / "bad.yaml").write_text(
+        "pipeline_name: Bad\n"
+        "steps: []\n"
+        "results:\n"
+        "  per_subject:\n"
+        "    - id: seg\n"
+        "      pattern: out/{MRID}_seg.nii.gz\n"
+        "      content: heatmap\n"
+    )
+    with pytest.raises(HTTPException) as exc:
+        catalog_service.get_pipeline_results_spec(tmp_path, "bad")
+    assert "heatmap" in str(exc.value.detail)
+
+
+def test_catalog_declares_content_for_the_dlwmls_outputs(local_client):
+    body = local_client.get("/catalog/pipelines/run_nichart_dlwmls_v2").json()
+    by_id = {ps["id"]: ps for ps in body["per_subject"]}
+
+    assert by_id["wml_segmentation_rois"]["content"] == "labels"
+    assert by_id["wml_segmentation"]["content"] == "mask"
+    # The region IDs only mean something in the labelled volume.
+    assert all(
+        info["output_id"] == "wml_segmentation_rois"
+        for info in body["label_map"].values()
+    )
+
+
+def test_single_output_pipelines_leave_output_id_null(local_client):
+    """Nothing to disambiguate, so the field stays absent rather than being
+    filled in for its own sake."""
+    body = local_client.get("/catalog/pipelines/run_dlmuse").json()
+    assert [ps["content"] for ps in body["per_subject"]] == ["labels"]
+    assert all(info["output_id"] is None for info in body["label_map"].values())
+
+
+def test_declared_content_kinds_are_known(local_client):
+    from app.services.catalog_service import CONTENT_KINDS
+
+    for summary in local_client.get("/catalog/pipelines").json():
+        detail = local_client.get(f"/catalog/pipelines/{summary['id']}").json()
+        for ps in detail["per_subject"]:
+            assert ps["content"] is None or ps["content"] in CONTENT_KINDS, (
+                f"{summary['id']} / {ps['id']} declares content {ps['content']!r}"
+            )

@@ -377,6 +377,17 @@ class LabelInfo(BaseModel):
     """
 
     display_name: str = Field(description="Human-readable region name.")
+    output_id: str | None = Field(
+        default=None,
+        description=(
+            "The per-subject output whose voxel values ``label_ids`` index into, naming "
+            "an entry in ``per_subject``. Set when a pipeline has more than one image "
+            "output and so the target is otherwise ambiguous — DLWMLS, for instance, "
+            "emits both a region-labelled volume and a binary mask, and these IDs only "
+            "mean anything in the former. Null when the pipeline has a single image "
+            "output, or none, in which case there is nothing to disambiguate."
+        ),
+    )
     label_ids: list[int] | None = Field(
         default=None,
         description=(
@@ -526,6 +537,19 @@ class PerSubjectOutputSpec(BaseModel):
     display_name: str | None = Field(
         default=None,
         description="Human-readable label for this output; fall back to ``id`` when absent.",
+    )
+    content: str | None = Field(
+        default=None,
+        description=(
+            "What the voxel values mean, which decides how the output may be drawn. "
+            "``labels``: values are region IDs comparable to ``label_map[*].label_ids``, "
+            "so one feature can be highlighted inside the volume. ``mask``: any non-zero "
+            "voxel is in, with nothing to pick out within it. ``intensity``: a continuous "
+            "map (density, probability, attention) that needs a colour scale rather than a "
+            "region highlight — drawing it as a mask would be meaningless. "
+            "Null means undeclared. Treat an unrecognised value as 'do not draw': new "
+            "kinds may be added here, and guessing at one renders as confident nonsense."
+        ),
     )
     underlay: str | None = Field(
         default=None,

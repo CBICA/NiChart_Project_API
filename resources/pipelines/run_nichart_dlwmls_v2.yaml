@@ -63,6 +63,11 @@ results:
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_WMLS_Volume_{id}"
     default_unit: "mm³"
+    # These label_ids are MUSE region IDs, and only the region-labelled output
+    # carries them as voxel values; the FLAIR-space output is a 0/1 mask where
+    # they would highlight nothing. Verified: the 30 distinct non-zero values
+    # across a 4-subject run are all IDs present in muse_mapping_derived.csv.
+    label_output_id: wml_segmentation_rois
   per_subject:
     # Verified against a real run of cbica/nichart_dlwmls:0.0.3 (4 subjects):
     # both files exist with these names, and each shares its underlay's grid
@@ -77,6 +82,7 @@ results:
       type: "segmentation_nifti"
       display_name: "White matter lesions by region (T1 space)"
       underlay: t1
+      content: labels
     - id: "wml_segmentation"
       # The raw binary lesion mask, in the LPS-reoriented FLAIR grid. That grid
       # equals fl/{MRID}.nii.gz only when the uploaded FLAIR was already LPS,
@@ -86,3 +92,4 @@ results:
       type: "segmentation_nifti"
       display_name: "White matter lesion mask (FLAIR space)"
       underlay: fl
+      content: mask      # verified {0, 1}

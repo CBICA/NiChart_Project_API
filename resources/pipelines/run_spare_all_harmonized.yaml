@@ -3,7 +3,6 @@ description: |
   Pipeline which uses harmonized DLMUSE features to produce all available SPARE scores using T1 scans.
 
 docs_id: spare
-umbrella_id: spare
 harmonized: true
 base_variant: run_spare_all
 root_pipeline: spare
