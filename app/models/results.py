@@ -154,6 +154,14 @@ class PipelineResultSummary(BaseModel):
     per_subject_ids: list[str] = Field(
         description="IDs of declared per-subject output types."
     )
+    has_outputs: bool = Field(
+        default=False,
+        description=(
+            "True if any output of this pipeline exists in the project: the batch feature "
+            "CSV, or at least one per-subject file. Every catalog pipeline is listed, so "
+            "use this to show only pipelines that have actually produced something."
+        ),
+    )
     has_atlas: bool = Field(
         description="True if the atlas resource file is present on the server."
     )

@@ -249,6 +249,9 @@ def list_pipeline_results(
     pipelines_path: Path,
 ) -> list[PipelineResultSummary]:
     summaries = []
+    # Subjects to probe per-subject output patterns with; the batch CSV's own MRIDs only
+    # matter when that CSV exists, and then has_outputs is already true.
+    subject_mrids = _collect_mrids(project_path, None)
     for pipeline_summary in list_pipelines(pipelines_path):
         spec = get_pipeline_results_spec(pipelines_path, pipeline_summary.id)
         if spec is None:
@@ -258,6 +261,12 @@ def list_pipeline_results(
             project_path / spec.batch_features.file
         ).is_file()
 
+        has_per_subject = any(
+            (project_path / ps.pattern.replace("{MRID}", mrid)).exists()
+            for ps in spec.per_subject
+            for mrid in subject_mrids
+        )
+
         summaries.append(PipelineResultSummary(
             pipeline_id=pipeline_summary.id,
             pipeline_name=pipeline_summary.name,
@@ -265,6 +274,7 @@ def list_pipeline_results(
             expected_batch_features_file=spec.batch_features.file if spec.batch_features else None,
             per_subject_ids=[ps.id for ps in spec.per_subject],
             has_atlas=_resource_path_if_exists(resources_path, spec.atlas) is not None,
+            has_outputs=has_batch or has_per_subject,
         ))
 
     return summaries
