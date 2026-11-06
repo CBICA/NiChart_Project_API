@@ -7,6 +7,8 @@ description: |
   produces, per subject, a warped image in template space plus the SyN warp
   field (usable downstream for template-space analyses / RAVENS-style workflows).
 
+docs_id: fireants
+
 categories:
   - registration
 

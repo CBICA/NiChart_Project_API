@@ -1,0 +1,11 @@
+title: "FireANTs MNI Registration"
+description: "GPU-accelerated rigid, affine, and deformable registration of T1-weighted MRI to the MNI152 template."
+pipelines:
+  - run_fireants_mni_registration
+
+sections:
+  - id: overview
+    title: "Overview"
+    file: overview.md
+    audience: user
+    type: markdown
