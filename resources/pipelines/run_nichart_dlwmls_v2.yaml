@@ -17,17 +17,6 @@ categories:
 requires:
   - needs_T1
   - needs_FLAIR
-  - needs_demographics
-  - csv_has_columns:
-      - name: MRID
-        type: string
-      - name: Age
-        type: float
-        min: 0
-        max: 120
-      - name: Sex
-        type: categorical
-        values: [M, F]
 
 steps:
   - id: run_dlmuse
