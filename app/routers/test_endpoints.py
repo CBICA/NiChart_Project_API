@@ -23,9 +23,15 @@ class ExpireProjectRequest(BaseModel):
     name: str = Field(description="Project name. Same rules as POST /projects.")
     expires_in_minutes: int = Field(
         default=30,
-        ge=1,
+        ge=-525600,
         le=1440,
-        description="How many minutes from now the project should appear to expire.",
+        description=(
+            "How many minutes from now the project should appear to expire. Negative "
+            "values put the expiry in the past, which is how the automatic deletion of "
+            "long-expired projects is exercised: a value more negative than "
+            "PROJECT_EXPIRY_GRACE_HOURS means the next query for this project deletes "
+            "it and answers 404."
+        ),
     )
 
 
@@ -36,7 +42,9 @@ class ExpireProjectRequest(BaseModel):
         "Creates a project and sets a local retention override so that "
         "``GET /projects/{project_id}/retention`` returns an expiry time of "
         "``now + expires_in_minutes``. "
-        "Useful for testing the frontend warning UI without waiting 7 days. "
+        "Useful for testing the frontend warning UI without waiting 7 days, and — with "
+        "a negative ``expires_in_minutes`` — the automatic deletion that follows the "
+        "grace window. "
         "\n\n"
         "The override is stored in ``_working/retention_expires_at_override`` inside "
         "the project directory. It is cleared if the user calls the real "

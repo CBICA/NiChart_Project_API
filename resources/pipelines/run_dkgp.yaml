@@ -55,13 +55,13 @@ steps:
       dlmuse_vol: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
       demog_csv: ${STUDY}/participants/participants.csv
     outputs:
-      spare_all_csv: ${STUDY}/ml_biomarkers/SPARE_ALL.csv
+      spare_all_csv: ${STUDY}/spare_all/SPARE_ALL.csv
 
   - id: run_dkgp
     tool: dkgp
     inputs:
       dlmuse_vol: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
       demog_csv: ${STUDY}/participants/participants.csv
-      spare_csv: ${STUDY}/ml_biomarkers/SPARE_ALL.csv
+      spare_csv: ${STUDY}/spare_all/SPARE_ALL.csv
     outputs:
       dkgp_out: ${STUDY}/dkgp_results

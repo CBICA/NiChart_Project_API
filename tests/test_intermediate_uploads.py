@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-PIPELINE = "run_spare_all_cvm"
+PIPELINE = "run_spare_all_cvm_harmonized"
 START = "merge_feature_csvs"
-DLMUSE_VOL_SLOT = "run_nichart_dlmuse.dlmuse_vol"
+DLMUSE_VOL_SLOT = "harmonize_dlmuse.dlmuse_vol_harmonized"
 DLWMLS_SLOT = "run_nichart_dlwmls.nichart_dlwmls_out"
 
 PROJECT = "proj1"
@@ -40,11 +40,12 @@ def _slot(body, slot_id):
     return next(s for s in body["slots"] if s["slot_id"] == slot_id)
 
 
-def _upload(client, files, *, slot_id=DLMUSE_VOL_SLOT, replace=False, project=PROJECT):
+def _upload(client, files, *, slot_id=DLMUSE_VOL_SLOT, replace=False, project=PROJECT,
+            pipeline=PIPELINE):
     return client.post(
         f"/projects/{project}/files/upload/intermediate",
         data={
-            "pipeline_id": PIPELINE,
+            "pipeline_id": pipeline,
             "start_from_step": START,
             "slot_id": slot_id,
             "replace": str(replace).lower(),
@@ -60,8 +61,8 @@ def _csv_bytes() -> bytes:
 
 # ── Slot classification ───────────────────────────────────────────────────────
 
-def test_slots_classified_for_spare_all_cvm(data_client):
-    """Starting run_spare_all_cvm at merge_feature_csvs yields exactly two
+def test_slots_classified_for_spare_all_cvm_harmonized(data_client):
+    """Starting run_spare_all_cvm_harmonized at merge_feature_csvs yields exactly two
     upload slots, one generated output and participants.csv as project input."""
     _make_project(data_client)
     body = _inputs(data_client).json()
@@ -84,9 +85,9 @@ def test_dlmuse_vol_slot_requires_the_csv_the_next_step_reads(data_client):
     _make_project(data_client)
     slot = _slot(_inputs(data_client).json(), DLMUSE_VOL_SLOT)
 
-    assert slot["path"] == "dlmuse_vol"
+    assert slot["path"] == "dlmuse_vol_harmonized"
     assert slot["type"] == "directory"
-    assert slot["produced_by_step"] == "run_nichart_dlmuse"
+    assert slot["produced_by_step"] == "harmonize_dlmuse"
     assert slot["status"] == "missing"
     assert slot["present"] is False
 
@@ -99,7 +100,7 @@ def test_dlmuse_vol_slot_requires_the_csv_the_next_step_reads(data_client):
     assert required["source"] == "pipeline_path"
 
     assert [c["step_id"] for c in slot["consumed_by"]] == ["merge_feature_csvs"]
-    assert slot["consumed_by"][0]["path"] == "dlmuse_vol/DLMUSE_Volumes.csv"
+    assert slot["consumed_by"][0]["path"] == "dlmuse_vol_harmonized/DLMUSE_Volumes.csv"
 
 
 def test_participants_slot_points_at_its_own_uploader(data_client):
@@ -155,11 +156,20 @@ def test_slot_becomes_met_once_the_required_csv_is_uploaded(data_client):
 def test_csv_missing_a_required_column_is_invalid_not_merely_present(data_client):
     """nichart_dlmuse declares DLMUSE_Volumes.csv carries DL_MUSE_Volume_702, and
     merge_feature_csvs_by_mrid declares it reads MRID. A file that parses but
-    lacks a declared column is invalid, not merely present."""
+    lacks a declared column is invalid, not merely present.
+
+    Uses run_nichart_dlwmls_v2 rather than this module's pipeline: the union is
+    only observable where both the producing and the consuming tool declare
+    columns for the same path, and harmonize_dlmuse -- which produces the slot
+    in the harmonized pipeline -- declares only MRID for its output.
+    """
     _make_project(data_client)
-    resp = _upload(data_client, [
-        ("files", ("DLMUSE_Volumes.csv", b"MRID\nS1\n", "text/csv")),
-    ])
+    resp = _upload(
+        data_client,
+        [("files", ("DLMUSE_Volumes.csv", b"MRID\nS1\n", "text/csv"))],
+        pipeline="run_nichart_dlwmls_v2",
+        slot_id="run_dlmuse.dlmuse_vol",
+    )
     assert resp.status_code == 200, resp.text
     slot = resp.json()["slot"]
 
@@ -229,7 +239,7 @@ def test_path_traversal_fails_the_whole_request(data_client, tmp_path):
     assert resp.status_code == 400
     assert "nothing was saved" in resp.json()["detail"]
     # The valid file in the same request was not written either.
-    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol").exists()
+    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized").exists()
 
 
 def test_absolute_path_fails_the_whole_request(data_client):
@@ -332,7 +342,7 @@ def test_unknown_slot_is_rejected(data_client):
 
 def test_upload_merges_by_default(data_client, tmp_path):
     _make_project(data_client)
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
 
     _upload(data_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))])
     _upload(data_client, [("files", ("extra.csv", b"MRID\nS9\n", "text/csv"))])
@@ -343,7 +353,7 @@ def test_upload_merges_by_default(data_client, tmp_path):
 
 def test_same_name_is_overwritten_on_merge(data_client, tmp_path):
     _make_project(data_client)
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
 
     _upload(data_client, [("files", ("DLMUSE_Volumes.csv", b"MRID\nOLD\n", "text/csv"))])
     _upload(data_client, [("files", ("DLMUSE_Volumes.csv", b"MRID\nNEW\n", "text/csv"))])
@@ -353,7 +363,7 @@ def test_same_name_is_overwritten_on_merge(data_client, tmp_path):
 
 def test_replace_clears_the_slot_first(data_client, tmp_path):
     _make_project(data_client)
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
 
     _upload(data_client, [("files", ("stale.csv", b"MRID\nS0\n", "text/csv"))])
     resp = _upload(
@@ -375,7 +385,7 @@ def test_subdirectories_are_preserved_for_folder_slots(data_client, tmp_path):
         ("files", ("nested/inner.csv", b"MRID\nS2\n", "text/csv")),
     ])
     assert resp.status_code == 200, resp.text
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
     assert (slot_dir / "nested" / "inner.csv").exists()
 
 
@@ -415,12 +425,12 @@ def test_zip_single_top_level_directory_is_stripped(data_client, tmp_path):
     _make_project(data_client)
     resp = _upload_zip(
         data_client,
-        _zip_bytes({"DLMUSE_Volumes.csv": _csv_bytes()}, top="dlmuse_vol"),
+        _zip_bytes({"DLMUSE_Volumes.csv": _csv_bytes()}, top="dlmuse_vol_harmonized"),
     )
     assert resp.status_code == 200, resp.text
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
     assert (slot_dir / "DLMUSE_Volumes.csv").exists()
-    assert not (slot_dir / "dlmuse_vol").exists()
+    assert not (slot_dir / "dlmuse_vol_harmonized").exists()
 
 
 def test_zip_macos_metadata_is_skipped(data_client):
@@ -442,7 +452,7 @@ def test_zip_with_traversal_member_fails_the_whole_request(data_client, tmp_path
     payload = _zip_bytes({"../escaped.csv": b"MRID\n", "DLMUSE_Volumes.csv": _csv_bytes()})
     resp = _upload_zip(data_client, payload)
     assert resp.status_code == 400
-    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol").exists()
+    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized").exists()
 
 
 def test_zip_with_symlink_member_fails_the_whole_request(data_client, tmp_path):
@@ -455,7 +465,7 @@ def test_zip_with_symlink_member_fails_the_whole_request(data_client, tmp_path):
         zf.writestr("DLMUSE_Volumes.csv", _csv_bytes())
     resp = _upload_zip(data_client, buf.getvalue())
     assert resp.status_code == 400
-    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol").exists()
+    assert not (tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized").exists()
 
 
 # ── Cache interaction ─────────────────────────────────────────────────────────
@@ -467,13 +477,13 @@ def test_upload_clears_the_producing_steps_cache_entry(data_client, tmp_path):
 
     _make_project(data_client)
     study = tmp_path / "LOCAL_USER" / PROJECT
-    inputs = {"t1_img": str(study / "t1")}
-    outputs = {"dlmuse_vol": str(study / "dlmuse_vol"), "dlmuse_seg": str(study / "dlmuse_seg")}
-    key = job_service._cache_key("nichart_dlmuse", inputs, {})
+    inputs = {"dlmuse_vol_unharmonized": str(study / "dlmuse_vol" / "DLMUSE_Volumes.csv")}
+    outputs = {"dlmuse_vol_harmonized": str(study / "dlmuse_vol_harmonized")}
+    key = job_service._cache_key("harmonize_dlmuse", inputs, {})
 
     metadata = {}
     job_service._mark_cached(
-        metadata, key, "run-old", tool_id="nichart_dlmuse",
+        metadata, key, "run-old", tool_id="harmonize_dlmuse",
         inputs=inputs, outputs=outputs,
     )
     job_service._save_metadata(study, metadata)
@@ -493,15 +503,17 @@ def test_legacy_cache_entry_without_outputs_is_still_not_reused(data_client, tmp
 
     _make_project(data_client)
     study = tmp_path / "LOCAL_USER" / PROJECT
-    inputs = {"t1_img": str(study / "t1")}
-    outputs = {"dlmuse_vol": str(study / "dlmuse_vol")}
+    unharmonized = study / "dlmuse_vol" / "DLMUSE_Volumes.csv"
+    inputs = {"dlmuse_vol_unharmonized": str(unharmonized)}
+    outputs = {"dlmuse_vol_harmonized": str(study / "dlmuse_vol_harmonized")}
     key = "legacy-key"
 
     # Old-shape entry: status/finished_time/run_id only. finished_time is set
     # after the inputs exist, so the mtime rule is satisfied and the only thing
     # that can invalidate this entry is the manual upload.
     (study / "_working").mkdir(parents=True, exist_ok=True)
-    (study / "t1").mkdir(parents=True, exist_ok=True)
+    unharmonized.parent.mkdir(parents=True, exist_ok=True)
+    unharmonized.write_bytes(_csv_bytes())
     job_service._save_metadata(study, {
         key: {
             "status": "success",
@@ -566,15 +578,15 @@ def test_upload_is_recorded_for_provenance(data_client, tmp_path):
     assert len(log["uploads"]) == 1
     record = log["uploads"][0]
     assert record["slot_id"] == DLMUSE_VOL_SLOT
-    assert record["path"] == "dlmuse_vol"
-    assert record["produced_by_step"] == "run_nichart_dlmuse"
+    assert record["path"] == "dlmuse_vol_harmonized"
+    assert record["produced_by_step"] == "harmonize_dlmuse"
     assert record["files"] == 1
     assert record["user_id"] == "LOCAL_USER"
     assert record["uploaded_at_ts"] > 0
 
-    marker = json.loads((study / "dlmuse_vol" / "_provenance.json").read_text())
+    marker = json.loads((study / "dlmuse_vol_harmonized" / "_provenance.json").read_text())
     assert marker["source"] == "manual_intermediate_upload"
-    assert marker["step_id"] == "run_nichart_dlmuse"
+    assert marker["step_id"] == "harmonize_dlmuse"
 
 
 def test_manual_upload_log_is_hidden_from_the_file_browser(data_client):
@@ -598,7 +610,7 @@ def test_plan_marks_steps_that_consume_manual_uploads(data_client):
     assert resp.status_code == 200, resp.text
     steps = {s["step_id"]: s for s in resp.json()["steps"]}
     assert steps["merge_feature_csvs"]["uses_manual_uploads"] is True
-    assert steps["run_spare_all_cvm"]["uses_manual_uploads"] is False
+    assert steps["run_spare_all_cvm_harmonized"]["uses_manual_uploads"] is False
 
 
 # ── Feature flag ──────────────────────────────────────────────────────────────
@@ -706,7 +718,7 @@ def test_cloud_upload_pushes_the_slot_to_s3(cloud_upload_client, tmp_path):
 
     ups = [c for c in cloud_upload_client.calls if c[0] == "up"]
     # The slot's own files go up first, keyed under the slot's prefix...
-    assert ups[0][3] == "fsx/LOCAL_USER/proj1/dlmuse_vol"
+    assert ups[0][3] == "fsx/LOCAL_USER/proj1/dlmuse_vol_harmonized"
     assert ups[0][4] == ["DLMUSE_Volumes.csv"]
     # ...then the project, carrying the cache and upload-record bookkeeping.
     assert ups[-1][3] == "fsx/LOCAL_USER/proj1"
@@ -719,7 +731,7 @@ def test_cloud_slot_push_happens_before_the_local_write(
     local disk for a run to pick up and then silently lose."""
     from app.services import s3_sync_service
 
-    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol"
+    slot_dir = tmp_path / "LOCAL_USER" / PROJECT / "dlmuse_vol_harmonized"
     _make_project(cloud_upload_client)
 
     seen: dict[str, bool] = {}
@@ -751,7 +763,7 @@ def test_cloud_replace_clears_the_remote_prefix_too(cloud_upload_client):
     )
     assert resp.status_code == 200, resp.text
     deletes = [c for c in cloud_upload_client.calls if c[0] == "delete"]
-    assert deletes == [("delete", "test-bucket", "fsx/LOCAL_USER/proj1/dlmuse_vol")]
+    assert deletes == [("delete", "test-bucket", "fsx/LOCAL_USER/proj1/dlmuse_vol_harmonized")]
 
 
 def test_local_mode_does_not_touch_s3(data_client, monkeypatch):
@@ -814,8 +826,8 @@ def test_run_detail_records_manual_uploads_in_place_at_submit(job_client, tmp_pa
     assert len(detail["manual_uploads"]) == 1
     record = detail["manual_uploads"][0]
     assert record["slot_id"] == DLMUSE_VOL_SLOT
-    assert record["path"] == "dlmuse_vol"
-    assert record["produced_by_step"] == "run_nichart_dlmuse"
+    assert record["path"] == "dlmuse_vol_harmonized"
+    assert record["produced_by_step"] == "harmonize_dlmuse"
 
 
 def test_run_detail_has_no_manual_uploads_for_an_ordinary_run(job_client):

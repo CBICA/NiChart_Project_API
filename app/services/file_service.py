@@ -4,8 +4,10 @@ File-system operations for projects and files within them.
 All user-supplied paths are validated via path_security before any I/O.
 """
 
+import asyncio
 import csv
 import io
+import logging
 import re
 import shutil
 import tempfile
@@ -13,7 +15,7 @@ import uuid
 import zipfile
 from collections import Counter
 from collections.abc import Iterable, Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
@@ -32,13 +34,15 @@ from app.models.files import (
     ParticipantsList,
 )
 from app.models.projects import Project
-from app.services import s3_sync_service
+from app.services import retention_service, s3_sync_service
 from app.services.path_security import (
     PathEscapeError,
     assert_safe_path,
     assert_safe_upload_filename,
     safe_unzip,
 )
+
+_log = logging.getLogger(__name__)
 
 
 # ── Project helpers ───────────────────────────────────────────────────────────
@@ -80,6 +84,13 @@ async def publish_uploads(
     success for an upload that a later run would discard is the failure mode
     this exists to prevent.
 
+    Succeeding also refreshes the project's retention countdown: adding data to
+    a project is active use, and the clock is driven by the heartbeat marker
+    alone, so an upload of a thousand files would otherwise leave the project
+    exactly as close to deletion as it was before. Done after the push, on the
+    same reasoning as pipeline submission: a request that failed must not keep a
+    project alive.
+
     No-op outside cloud mode, or when no data bucket is configured.
     """
     if settings.execution_mode != "cloud" or not settings.s3_data_bucket:
@@ -95,6 +106,13 @@ async def publish_uploads(
             "Upload was written locally but could not be saved to cloud storage, "
             f"so it is not safe to use in a run yet: {exc}",
         )
+    await retention_service.touch_project(
+        settings.s3_data_bucket,
+        settings.s3_data_prefix,
+        user.sub,
+        project_id,
+        activity="upload",
+    )
 
 
 # ── Project CRUD ──────────────────────────────────────────────────────────────
@@ -120,9 +138,139 @@ def create_project(settings: Settings, user: CurrentUser, name: str) -> Project:
     return Project(id=name, created_at=datetime.fromtimestamp(pdir.stat().st_mtime))
 
 
-def delete_project(settings: Settings, user: CurrentUser, project_id: str) -> None:
+async def delete_project(settings: Settings, user: CurrentUser, project_id: str) -> None:
+    """Delete a project the user asked to delete, locally and in cloud storage.
+
+    The cloud copy goes first. The two stores are deleted in the order that
+    leaves a recoverable state when the second step fails: if S3 cannot be
+    cleared the local tree is left alone and the caller gets a 502, so the
+    project is still whole and the request can simply be retried. Deleting
+    locally first and then failing would leave objects under a prefix nothing
+    reaches any more, paid for and invisible.
+
+    Note that the sync in the other direction is purely additive — nothing else
+    in the server ever deletes a remote object for a project — so skipping this
+    would keep the data, and its heartbeat, alive in S3 until the retention
+    window elapsed.
+    """
     pdir = resolve_project(settings, user, project_id)
+    if settings.s3_data_bucket:
+        prefix = s3_sync_service.project_prefix(
+            settings.s3_data_prefix, user.sub, project_id
+        )
+        try:
+            await s3_sync_service.delete_s3_prefix(settings.s3_data_bucket, prefix)
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                "Project could not be deleted from cloud storage, so nothing was "
+                f"deleted. Please try again: {exc}",
+            )
     shutil.rmtree(pdir)
+
+
+async def reap_project_if_expired(
+    settings: Settings, user: CurrentUser, project_id: str
+) -> bool:
+    """Resolve a project's expiry and reap it if it is past the grace window.
+
+    For callers that have no expiry in hand. One that already resolved the
+    expiry — the retention endpoints, which have to report it — should call
+    ``reap_if_past_grace`` directly rather than read the marker twice.
+    """
+    try:
+        pdir = resolve_project(settings, user, project_id)
+    except HTTPException:
+        return False  # deleted by something else since the caller listed it
+    expiry = await retention_service.resolve_expiry(
+        bucket=settings.s3_data_bucket,
+        prefix=settings.s3_data_prefix,
+        user_id=user.sub,
+        project_id=project_id,
+        project_dir=pdir,
+        retention_days=settings.project_retention_days,
+    )
+    return await reap_if_past_grace(settings, user, project_id, pdir, expiry)
+
+
+async def reap_if_past_grace(
+    settings: Settings,
+    user: CurrentUser,
+    project_id: str,
+    project_dir: Path,
+    expiry: datetime | None,
+) -> bool:
+    """Delete a project that has been expired for longer than the grace window.
+
+    Returns True when the project was deleted, in which case the caller must
+    behave as though it had never existed. Returns False when the project is
+    live, when its expiry is unknown (see ``retention_service.resolve_expiry``),
+    or when it is expired but still inside the grace window.
+
+    This is the API-side half of retention: the heartbeat marks a project as due
+    for deletion, and a sweep elsewhere is meant to collect it. Reaping here
+    makes the server's answers consistent with its own clock, so a project it
+    reports as long expired cannot still be listed, browsed and run.
+
+    Deletion order is the opposite of ``delete_project``'s, because the failure
+    to avoid is the opposite one. Nobody is waiting on this, so the local tree
+    goes first and makes the project vanish as promised; if the S3 delete then
+    fails it is logged with the prefix and the data stays recoverable, rather
+    than the project half-existing in listings. The grace window is wide enough
+    that the loud log has time to be acted on.
+
+    ``project_dir`` must already have been resolved through ``resolve_project``:
+    this deletes a tree, and the containment check is what makes that safe.
+    """
+    overdue = retention_service.overdue_by(expiry)
+    if overdue is None or overdue < timedelta(hours=settings.project_expiry_grace_hours):
+        return False
+
+    _log.warning(
+        "Deleting project %r (user %r): retention expired at %s, %s ago, which is "
+        "past the %dh grace window.",
+        project_id, user.sub, expiry.isoformat(), overdue, settings.project_expiry_grace_hours,
+    )
+    try:
+        shutil.rmtree(project_dir)
+    except OSError:
+        _log.exception(
+            "Could not delete the local copy of expired project %r (user %r); "
+            "leaving it in place and keeping its cloud copy so the next query retries.",
+            project_id, user.sub,
+        )
+        return False
+
+    if settings.s3_data_bucket:
+        prefix = s3_sync_service.project_prefix(
+            settings.s3_data_prefix, user.sub, project_id
+        )
+        try:
+            await s3_sync_service.delete_s3_prefix(settings.s3_data_bucket, prefix)
+        except Exception:
+            _log.exception(
+                "Expired project %r (user %r) was deleted locally but its cloud copy "
+                "could not be removed. Objects remain under s3://%s/%s/ and are no "
+                "longer reachable through the API; they need deleting by hand.",
+                project_id, user.sub, settings.s3_data_bucket, prefix,
+            )
+    return True
+
+
+async def reap_expired_projects(
+    settings: Settings, user: CurrentUser, project_ids: list[str]
+) -> set[str]:
+    """Reap every expired project among ``project_ids``; return the ids deleted.
+
+    One concurrent pass, so listing a user's projects costs one round trip to S3
+    rather than one per project.
+    """
+    if not project_ids:
+        return set()
+    reaped = await asyncio.gather(
+        *(reap_project_if_expired(settings, user, pid) for pid in project_ids)
+    )
+    return {pid for pid, gone in zip(project_ids, reaped) if gone}
 
 
 # ── File listing ──────────────────────────────────────────────────────────────

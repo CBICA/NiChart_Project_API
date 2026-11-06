@@ -42,11 +42,11 @@ steps:
       demog_csv: ${STUDY}/participants/participants.csv
       dlmuse_vol: ${STUDY}/dlmuse_vol/DLMUSE_Volumes.csv
     outputs:
-      surrealgan_csv: ${STUDY}/ml_biomarkers/SurrealGAN_RScores.csv
+      surrealgan_csv: ${STUDY}/surrealgan/SurrealGAN_RScores.csv
 
 results:
   batch_features:
-    file: "ml_biomarkers/SurrealGAN_RScores.csv"
+    file: "surrealgan/SurrealGAN_RScores.csv"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

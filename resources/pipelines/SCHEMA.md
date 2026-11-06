@@ -252,6 +252,21 @@ results:
       type: "segmentation_nifti"              # Output type hint for the UI renderer.
                                               # Use "nifti" for non-segmentation NIfTIs.
       display_name: "My Segmentation"         # Optional. Label in the MRI panel.
+      underlay: t1                            # Optional, but declare it if you know it.
+                                              # Which image this output is registered to,
+                                              # so a viewer can overlay it on anatomy it
+                                              # aligns with. Either a modality code (see
+                                              # GET /catalog/modalities) meaning the
+                                              # subject's own {modality}/{MRID}.nii.gz,
+                                              # or "atlas" for an output in template
+                                              # space, which belongs over the atlas
+                                              # declared below. Omit it only when the
+                                              # space is genuinely unverified: clients
+                                              # are told not to overlay an undeclared
+                                              # output, so a guess here is worse than
+                                              # nothing. Verify with the affine, not the
+                                              # directory name -- two outputs of one tool
+                                              # can land in different spaces.
 
   # Atlas files for the centile/overlay viewer.
   # Paths are relative to the resources/ directory.
@@ -378,4 +393,5 @@ steps:
 #       pattern: "my_output/{MRID}_seg.nii.gz"
 #       type: "segmentation_nifti"
 #       display_name: "My Segmentation"
+#       underlay: t1          # modality code, or "atlas" for template space
 ```

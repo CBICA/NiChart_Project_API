@@ -9,6 +9,8 @@
 # on GET /catalog/pipelines/{id}. The YAML files themselves are left in place.
 
 run_nichart_ravens_fireants   # superseded by run_nichart_ravens_toolkit_fireants (RavensToolkit rewrite)
-run_nichart_ravens
-run_nichart_ravens_toolkit
-run_brain2vec_ba
+run_nichart_ravens # Old ravens, superseded
+run_nichart_ravens_toolkit # CPU-only
+run_brain2vec_ba # not validated yet, brain2vec still in
+run_fireants_mni_registration # was a test, not needed separately
+run_spare_all_cvm # No models available for unharmonized/cvm combo

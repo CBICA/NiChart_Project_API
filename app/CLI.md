@@ -169,6 +169,14 @@ Each flag/argument is documented via `--help` on the subcommand.
 | `nichart retention show <project>` | When the project expires, and time remaining. |
 | `nichart retention refresh <project>` | Reset the retention timer to the full window. |
 
+The timer resets on its own whenever a project is used — a pipeline submission or
+any upload — so only an idle project ever runs out. Once a project is more than
+`NICHART_PROJECT_EXPIRY_GRACE_HOURS` (default 24) past its expiry, the server
+deletes it, locally and in cloud storage, the next time anything asks about it;
+both commands above then report it as not found. A project whose expiry has
+passed but is still inside that window is shown with a past expiry and can still
+be refreshed.
+
 ### All-in-one
 
 | Command | Description |

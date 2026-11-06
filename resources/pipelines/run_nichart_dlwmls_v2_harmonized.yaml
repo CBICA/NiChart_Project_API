@@ -87,3 +87,26 @@ results:
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_WMLS_Volume_{id}"
     default_unit: "mm³"
+  per_subject:
+    # Verified against a real run of cbica/nichart_dlwmls:0.0.3 (4 subjects):
+    # both files exist with these names, and each shares its underlay's grid
+    # and affine exactly. Nested one level inside the step's output directory,
+    # which is why scripts/check_pipeline_tool_filenames.py cannot cross-check
+    # these patterns against the tool's declared `contents`.
+    - id: "wml_segmentation_rois"
+      # Lesions labelled by DLMUSE ROI id, after FLAIR->T1 registration. Same
+      # grid as t1/{MRID}.nii.gz and dlmuse_seg/{MRID}_DLMUSE.nii.gz, so it
+      # overlays on the T1 like the DLMUSE segmentation does.
+      pattern: "nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented/{MRID}_DLWMLS_DLMUSE_Segmented.nii.gz"
+      type: "segmentation_nifti"
+      display_name: "White matter lesions by region (T1 space)"
+      underlay: t1
+    - id: "wml_segmentation"
+      # The raw binary lesion mask, in the LPS-reoriented FLAIR grid. That grid
+      # equals fl/{MRID}.nii.gz only when the uploaded FLAIR was already LPS,
+      # which is the case for images NiChart has reoriented but not guaranteed
+      # for arbitrary uploads -- see the note in the reply/commit message.
+      pattern: "nichart_dlwmls_out/DLWMLS_FLAIR/{MRID}_FL_LPS_DLWMLS.nii.gz"
+      type: "segmentation_nifti"
+      display_name: "White matter lesion mask (FLAIR space)"
+      underlay: fl

@@ -59,5 +59,7 @@ results:
       pattern: "dlmuse_seg/{MRID}_DLMUSE.nii.gz"
       type: "segmentation_nifti"
       display_name: "DLMUSE segmentation"
+      # Verified affine-identical to the subject's stored t1/{MRID}.nii.gz.
+      underlay: t1
   atlas: "atlases/muse/MNI152_1mm_LPS.nii.gz"
   atlas_segmentation: "atlases/muse/MNI152_1mm_LPS_DLMUSE.nii.gz"

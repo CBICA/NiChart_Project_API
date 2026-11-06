@@ -30,7 +30,14 @@ _COMMON_ERRORS = {
 @router.get(
     "",
     summary="List projects",
-    description="Returns all projects owned by the authenticated user.",
+    description=(
+        "Returns all projects owned by the authenticated user."
+        "\n\n"
+        "Projects whose retention expired more than PROJECT_EXPIRY_GRACE_HOURS ago are "
+        "deleted as part of serving this request and are not listed. Expired projects "
+        "still inside the grace window are listed as normal; the client is expected to "
+        "warn about them (see ``GET /projects/{project_id}/retention``)."
+    ),
     response_model=list[Project],
     responses={401: _COMMON_ERRORS[401]},
 )
@@ -38,7 +45,11 @@ async def list_projects(
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
 ) -> list[Project]:
-    return file_service.list_projects(settings, user)
+    projects = file_service.list_projects(settings, user)
+    reaped = await file_service.reap_expired_projects(
+        settings, user, [p.id for p in projects]
+    )
+    return [p for p in projects if p.id not in reaped]
 
 
 @router.post(
@@ -85,16 +96,28 @@ async def create_project(
 @router.delete(
     "/{project_id}",
     summary="Delete a project",
-    description="Permanently deletes the project and all its data. Irreversible.",
+    description=(
+        "Permanently deletes the project and all its data. Irreversible."
+        "\n\n"
+        "When a data bucket is configured the project's objects are deleted from cloud "
+        "storage as part of this request. If that fails nothing at all is deleted and "
+        "the response is 502, so the request can be retried."
+    ),
     status_code=204,
-    responses={k: _COMMON_ERRORS[k] for k in (401, 404)},
+    responses={
+        **{k: _COMMON_ERRORS[k] for k in (401, 404)},
+        502: {
+            "model": ErrorDetail,
+            "description": "Cloud storage could not be cleared; nothing was deleted.",
+        },
+    },
 )
 async def delete_project(
     project_id: str,
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    file_service.delete_project(settings, user, project_id)
+    await file_service.delete_project(settings, user, project_id)
 
 
 # ── Retention endpoints ───────────────────────────────────────────────────────
@@ -117,6 +140,11 @@ _RETENTION_ERRORS = {
         "created before this feature shipped; the Lambda sweep will backfill the heartbeat "
         "on its next daily run, after which this endpoint will return a value."
         "\n\n"
+        "An expiry already more than PROJECT_EXPIRY_GRACE_HOURS in the past means the "
+        "project is deleted as part of serving this request, and the response is 404. A "
+        "project whose expiry is in the past but within the grace window is returned "
+        "normally, with ``expires_at`` in the past, for the client to warn about."
+        "\n\n"
         "Cloud mode only — returns 404 in local mode."
     ),
     response_model=RetentionInfo,
@@ -128,22 +156,21 @@ async def get_retention(
     settings: Settings = Depends(get_settings),
 ) -> RetentionInfo:
     pdir = file_service.resolve_project(settings, user, project_id)
-    override = retention_service.read_retention_override(pdir)
-    if override is not None:
-        return RetentionInfo(expires_at=override)
-    if not settings.s3_data_bucket:
-        raise HTTPException(404, "Retention tracking is not available in local mode.")
-    last_modified = await retention_service.read_heartbeat(
+    expiry = await retention_service.resolve_expiry(
         bucket=settings.s3_data_bucket,
         prefix=settings.s3_data_prefix,
         user_id=user.sub,
         project_id=project_id,
+        project_dir=pdir,
+        retention_days=settings.project_retention_days,
     )
-    if last_modified is None:
+    if await file_service.reap_if_past_grace(settings, user, project_id, pdir, expiry):
+        raise HTTPException(404, f"Project '{project_id}' not found")
+    if expiry is None:
+        if not settings.s3_data_bucket:
+            raise HTTPException(404, "Retention tracking is not available in local mode.")
         raise HTTPException(404, "Retention heartbeat not found — the project may not have one yet.")
-    return RetentionInfo(
-        expires_at=retention_service.expires_at(last_modified, settings.project_retention_days)
-    )
+    return RetentionInfo(expires_at=expiry)
 
 
 @router.post(
@@ -156,6 +183,11 @@ async def get_retention(
         "If the heartbeat was previously absent (legacy project) this call creates it, "
         "which is equivalent to a fresh creation. "
         "\n\n"
+        "A project already more than PROJECT_EXPIRY_GRACE_HOURS past its expiry cannot be "
+        "revived: it is deleted as part of serving this request and the response is 404, "
+        "the same as any other query. Refreshing it instead would make a project's "
+        "survival depend on which endpoint the client happened to call first."
+        "\n\n"
         "Cloud mode only — returns 404 in local mode."
     ),
     response_model=RetentionInfo,
@@ -167,6 +199,8 @@ async def refresh_retention(
     settings: Settings = Depends(get_settings),
 ) -> RetentionInfo:
     pdir = file_service.resolve_project(settings, user, project_id)
+    if await file_service.reap_project_if_expired(settings, user, project_id):
+        raise HTTPException(404, f"Project '{project_id}' not found")
     retention_service.clear_retention_override(pdir)  # test override no longer applies after a real refresh
     if not settings.s3_data_bucket:
         raise HTTPException(404, "Retention tracking is not available in local mode.")

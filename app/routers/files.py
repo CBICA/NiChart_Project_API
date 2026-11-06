@@ -26,6 +26,7 @@ from app.services import (
     file_service,
     provenance_service,
     readiness_service,
+    retention_service,
     usage_service,
 )
 
@@ -181,7 +182,15 @@ async def upload_nifti(
         "nifti", settings.execution_mode,
         files=len(file_data), total_bytes=sum(len(d) for d in file_data),
     )
-    return file_service.stage_nifti_files(pdir, filenames, file_data)
+    result = file_service.stage_nifti_files(pdir, filenames, file_data)
+    # Staged files are excluded from the S3 sync, so this is the one upload path
+    # that does not go through publish_uploads and has to refresh the retention
+    # countdown itself. Uploading is use, whether or not it has been committed yet.
+    await retention_service.touch_project(
+        settings.s3_data_bucket, settings.s3_data_prefix,
+        user.sub, project_id, activity="upload",
+    )
+    return result
 
 
 # ── NIfTI upload — zip ───────────────────────────────────────────────────────
@@ -213,7 +222,12 @@ async def upload_nifti_zip(
     pdir = file_service.resolve_project(settings, user, project_id)
     contents = await file.read()
     usage_service.record_upload("nifti", settings.execution_mode, files=1, total_bytes=len(contents))
-    return file_service.stage_nifti_zip(pdir, contents, file.filename or "")
+    result = file_service.stage_nifti_zip(pdir, contents, file.filename or "")
+    await retention_service.touch_project(  # see upload_nifti
+        settings.s3_data_bucket, settings.s3_data_prefix,
+        user.sub, project_id, activity="upload",
+    )
+    return result
 
 
 # ── NIfTI upload — commit ─────────────────────────────────────────────────────

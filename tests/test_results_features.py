@@ -98,3 +98,84 @@ def test_no_features_block_yields_none(tmp_path):
     )
     assert detail.batch_features is not None
     assert detail.batch_features.feature_definitions is None
+
+
+# ── per_subject underlay ─────────────────────────────────────────────────────
+#
+# The field exists so a viewer can draw an overlay on anatomy it is registered
+# to. DLWMLS is the case that forced it: its two per-subject outputs are in
+# different spaces, one on the subject's T1 grid and one on the FLAIR grid.
+
+def test_catalog_exposes_per_subject_outputs_with_underlays(local_client):
+    body = local_client.get("/catalog/pipelines/run_nichart_dlwmls_v2").json()
+    by_id = {ps["id"]: ps for ps in body["per_subject"]}
+
+    assert by_id["wml_segmentation_rois"]["underlay"] == "t1"
+    assert by_id["wml_segmentation"]["underlay"] == "fl"
+    assert by_id["wml_segmentation_rois"]["type"] == "segmentation_nifti"
+    assert by_id["wml_segmentation_rois"]["display_name"]
+    assert "{MRID}" in by_id["wml_segmentation_rois"]["pattern"]
+
+
+def test_harmonized_variant_declares_the_same_underlays(local_client):
+    """The two pipelines differ in harmonization, not in what DLWMLS writes."""
+    plain = local_client.get("/catalog/pipelines/run_nichart_dlwmls_v2").json()
+    harm = local_client.get("/catalog/pipelines/run_nichart_dlwmls_v2_harmonized").json()
+    assert [(p["id"], p["underlay"]) for p in plain["per_subject"]] == \
+           [(p["id"], p["underlay"]) for p in harm["per_subject"]]
+
+
+def test_per_subject_is_empty_for_a_pipeline_without_subject_outputs(local_client):
+    body = local_client.get("/catalog/pipelines/run_dlmuse_harmonized").json()
+    assert isinstance(body["per_subject"], list)
+
+
+def test_results_endpoint_reports_the_same_underlay_as_the_catalog(data_client):
+    """A client can pair an overlay with its background from either endpoint."""
+    assert data_client.post("/projects", json={"name": "underlayproj"}).status_code == 201
+    results = data_client.get("/projects/underlayproj/results/run_nichart_dlwmls_v2").json()
+    catalog = data_client.get("/catalog/pipelines/run_nichart_dlwmls_v2").json()
+
+    assert {p["id"]: p["underlay"] for p in results["per_subject"]} == \
+           {p["id"]: p["underlay"] for p in catalog["per_subject"]}
+    assert {p["id"]: p["underlay"] for p in results["per_subject"]} == \
+           {"wml_segmentation_rois": "t1", "wml_segmentation": "fl"}
+
+
+def test_declared_underlays_are_real_modality_codes(local_client):
+    """Guards against a typo reaching a client, which would surface as an
+    overlay drawn over the wrong volume rather than as an error."""
+    from app import modalities
+    from app.services.catalog_service import UNDERLAY_ATLAS
+
+    for summary in local_client.get("/catalog/pipelines").json():
+        detail = local_client.get(f"/catalog/pipelines/{summary['id']}").json()
+        for ps in detail["per_subject"]:
+            underlay = ps["underlay"]
+            if underlay is None:
+                continue
+            assert underlay == UNDERLAY_ATLAS or modalities.is_valid(underlay), (
+                f"{summary['id']} / {ps['id']} declares underlay {underlay!r}"
+            )
+
+
+def test_an_unknown_underlay_is_rejected_at_parse_time(tmp_path):
+    """A bad value must not be silently dropped: the viewer has to be able to
+    trust that a non-null underlay resolves to something."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.services import catalog_service
+
+    (tmp_path / "bad.yaml").write_text(
+        "pipeline_name: Bad\n"
+        "steps: []\n"
+        "results:\n"
+        "  per_subject:\n"
+        "    - id: seg\n"
+        "      pattern: out/{MRID}_seg.nii.gz\n"
+        "      underlay: not_a_modality\n"
+    )
+    with pytest.raises(HTTPException) as exc:
+        catalog_service.get_pipeline_results_spec(tmp_path, "bad")
+    assert "not_a_modality" in str(exc.value.detail)

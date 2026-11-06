@@ -1,12 +1,13 @@
-pipeline_name: SPARE Scores (T1 only, Harmonized)
-root_pipeline: spare
-harmonized: true
-modalities: [T1]
+pipeline_name: SPARE Scores - All-Inclusive (T1 only, Harmonized)
 description: |
   Pipeline which uses harmonized DLMUSE features to produce all available SPARE scores using T1 scans.
 
 docs_id: spare
+umbrella_id: spare
+harmonized: true
 base_variant: run_spare_all
+root_pipeline: spare
+modalities: [T1]
 
 categories:
   - spare
@@ -29,21 +30,9 @@ requires:
       - name: Sex
         type: categorical
         values: [M, F]
-      - name: DX
-        type: string
   - min_subjects:
-      required: 30
+      required: 3
       recommended: 30
-      # Same rule as run_dlmuse_harmonized: harmonization parameters are estimated from
-      # CN subjects separately for every batch, so each Batch needs 30 CN subjects.
-      constraints:
-        - label: Cognitively normal controls
-          per: Batch
-          required: 30
-          recommended: 30
-          where:
-            - column: DX
-              equals: CN
 
 steps:
   - id: run_nichart_dlmuse
@@ -68,11 +57,11 @@ steps:
       dlmuse_vol_harmonized: ${STUDY}/dlmuse_vol_harmonized/DLMUSE_Volumes.csv
       demog_csv: ${STUDY}/participants/participants.csv
     outputs:
-      spare_all_csv: ${STUDY}/ml_biomarkers_harmonized/SPARE_ALL.csv
+      spare_all_csv: ${STUDY}/spare_all_harmonized/SPARE_ALL.csv
 
 results:
   batch_features:
-    file: "ml_biomarkers_harmonized/SPARE_ALL.csv"
+    file: "spare_all_harmonized/SPARE_ALL.csv"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

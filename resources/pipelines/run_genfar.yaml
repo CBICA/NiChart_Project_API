@@ -44,4 +44,16 @@ steps:
     inputs:
       t1_dir: ${STUDY}/t1_mni_icbm152
     outputs:
-      output_dir: ${STUDY}/ml_biomarkers
+      output_dir: ${STUDY}/genfar
+
+results:
+  batch_features:
+    file: "genfar/features_combined.csv"
+    mrid_column: "MRID"
+    # Feature interpretation for the LLM / UI. Document each output column here —
+    # see resources/pipelines/SCHEMA.md (results → features). Completeness is
+    # checked by scripts/check_feature_docs.py.
+    # TODO: replace {} with entries — definition (required), units, direction,
+    #       interpretation, keywords, references + DOIs.
+    features: {}
+

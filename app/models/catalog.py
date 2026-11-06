@@ -501,6 +501,48 @@ class CentileFeatureMetadataResponse(BaseModel):
     )
 
 
+class PerSubjectOutputSpec(BaseModel):
+    """A per-subject output a pipeline will produce, as declared in its YAML.
+
+    The catalog view: what this pipeline *would* emit per subject, available
+    before anything has been run. ``GET /projects/{id}/results/{pipeline_id}``
+    reports the same outputs with per-MRID availability and download paths.
+    """
+
+    id: str = Field(description="Output identifier, unique within the pipeline.")
+    pattern: str = Field(
+        description=(
+            "Path template relative to the project directory, with ``{MRID}`` standing "
+            "in for each subject ID. Informational here: use the ``download_path`` from "
+            "the results endpoint to fetch a file, rather than expanding this yourself."
+        )
+    )
+    type: str = Field(
+        description=(
+            "Renderer hint. ``segmentation_nifti`` for a label volume to draw as a "
+            "coloured overlay, ``nifti`` for a greyscale image."
+        )
+    )
+    display_name: str | None = Field(
+        default=None,
+        description="Human-readable label for this output; fall back to ``id`` when absent.",
+    )
+    underlay: str | None = Field(
+        default=None,
+        description=(
+            "Which background image this output is registered to, so a viewer can "
+            "overlay it on anatomy it actually aligns with. Either a modality code "
+            "(see GET /catalog/modalities) meaning the subject's own image in that "
+            "modality — fetch it from the project's ``{modality}/{MRID}.nii.gz`` — or "
+            "``\"atlas\"``, meaning the output is in template space and belongs over "
+            "``atlas_resource_path``. "
+            "Null means the pipeline has not declared it: do not guess, since drawing "
+            "an overlay over a mismatched volume produces a confidently wrong picture. "
+            "Offer the file for download and skip the overlay, or ask the user."
+        ),
+    )
+
+
 class PipelineDetail(PipelineSummary):
     """Full pipeline definition including ordered steps and user-configurable parameters."""
 
@@ -523,6 +565,15 @@ class PipelineDetail(PipelineSummary):
             "min_subjects requirement. Lets a client show what a pipeline needs "
             "before any data is uploaded; GET /projects/{id}/readiness/{pipeline_id} "
             "reports how a specific project measures up."
+        ),
+    )
+    per_subject: list[PerSubjectOutputSpec] = Field(
+        default_factory=list,
+        description=(
+            "Per-subject outputs this pipeline declares, in the order given in its "
+            "YAML. Empty when the pipeline produces no per-subject files. Lets a "
+            "client show what a run will yield, and which background image each "
+            "overlay belongs on, before the run happens."
         ),
     )
     atlas_resource_path: str | None = Field(

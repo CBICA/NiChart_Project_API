@@ -63,11 +63,11 @@ steps:
       merged_dlwmls_dlmuse_csv: ${STUDY}/merged_dlmuse_dlwmls/csv_out.csv
       demog_csv: ${STUDY}/participants/participants.csv
     outputs:
-      spare_all_cvm_csv: ${STUDY}/ml_biomarkers/SPARE_ALL_CVM.csv
+      spare_all_cvm_csv: ${STUDY}/spare_all_cvm/SPARE_ALL_CVM.csv
 
 results:
   batch_features:
-    file: "ml_biomarkers/SPARE_ALL_CVM.csv"
+    file: "spare_all_cvm/SPARE_ALL_CVM.csv"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

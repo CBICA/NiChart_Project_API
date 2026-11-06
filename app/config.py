@@ -235,6 +235,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    project_expiry_grace_hours: int = Field(
+        default=24,
+        ge=0,
+        description=(
+            "How long past its expiry a project is still served before the API deletes "
+            "it itself. The server reaps lazily, when a project's retention is queried, "
+            "so this window is also the minimum age of a project the API will delete: a "
+            "clock that is only just past zero is reported as expired but left alone."
+        ),
+    )
+
     # Custom CA bundle — needed when an SSL-inspection proxy (e.g. corporate VPN)
     # intercepts outbound HTTPS and presents a self-signed chain.
     # Point this at the PEM file containing the extra root CA(s).

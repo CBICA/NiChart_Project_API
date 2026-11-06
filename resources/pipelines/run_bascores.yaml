@@ -45,12 +45,12 @@ steps:
     inputs:
       t1_img: ${STUDY}/t1_mni
     outputs:
-      out_csv: ${STUDY}/ml_biomarkers/SPARE_BA_Image.csv
-      out_attention: ${STUDY}/spare_ba_image_attention
+      out_csv: ${STUDY}/dl-ba/SPARE_BA_Image.csv
+      out_attention: ${STUDY}/dl-ba_attention
 
 results:
   batch_features:
-    file: "ml_biomarkers/SPARE_BA_Image.csv"
+    file: "dl-ba/SPARE_BA_Image.csv"
     mrid_column: "MRID"
     # `features` is OPTIONAL here: the ROI volume columns are documented via
     # `label_map` + `column_template` below. Add entries only for non-ROI summary
@@ -73,6 +73,6 @@ results:
         label_id_range: [1, 207]
   per_subject:
     - id: "dl-ba-attention"
-      pattern: "spare_ba_image_attention/{MRID}_DLICV_aligned.nii.gz"
+      pattern: "dl-ba_attention/{MRID}_DLICV_aligned.nii.gz"
       type: "segmentation_nifti"
       display_name: "DL-BA Attention Maps"

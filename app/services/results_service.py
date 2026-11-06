@@ -179,7 +179,13 @@ def _build_per_subject(
             available=available,
             download_path=rel_path if available else None,
         )
-    return PerSubjectOutput(id=spec.id, type=spec.type, display_name=spec.display_name, subjects=subjects)
+    return PerSubjectOutput(
+        id=spec.id,
+        type=spec.type,
+        display_name=spec.display_name,
+        underlay=spec.underlay,
+        subjects=subjects,
+    )
 
 
 def _resource_path_if_exists(resources_path: Path, rel_path: str | None) -> str | None:

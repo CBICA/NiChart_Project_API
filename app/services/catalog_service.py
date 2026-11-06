@@ -11,9 +11,11 @@ from typing import Any
 import yaml
 from fastapi import HTTPException
 
+from app import modalities
 from app.backends.base import ContentRule, MountSpec, ToolSpec
 from app.models.results import FeatureDefinition
 from app.models.catalog import (
+    PerSubjectOutputSpec,
     CentileFeatureMetadataResponse,
     ColumnSpec,
     FeatureDisplayMeta,
@@ -369,6 +371,16 @@ def get_pipeline(
         },
         atlas_resource_path=_res(results_raw.get("atlas")),
         atlas_segmentation_resource_path=_res(results_raw.get("atlas_segmentation")),
+        per_subject=[
+            PerSubjectOutputSpec(
+                id=ps.id,
+                pattern=ps.pattern,
+                type=ps.type,
+                display_name=ps.display_name,
+                underlay=ps.underlay,
+            )
+            for ps in _parse_per_subject(results_raw.get("per_subject"), pipeline_id)
+        ],
         label_map=label_map,
         feature_groups=feature_groups,
         column_schemas=_parse_column_schemas(raw_requires),
@@ -500,6 +512,45 @@ class PerSubjectSpec:
     pattern: str
     type: str = "nifti"
     display_name: str | None = None
+    # Which image this output is meant to be displayed on top of: a modality
+    # code (the subject's own image in that directory), UNDERLAY_ATLAS for an
+    # output in template space, or None when the pipeline has not said.
+    underlay: str | None = None
+
+
+# A per-subject output in template space is displayed over the pipeline's
+# declared atlas rather than over any image belonging to the subject.
+UNDERLAY_ATLAS = "atlas"
+
+
+def _parse_per_subject(raw_list: list | None, pipeline_id: str) -> list["PerSubjectSpec"]:
+    """Parse ``results.per_subject`` entries, validating each ``underlay``.
+
+    An unknown underlay is a packaging error, not user input, so it fails loudly
+    rather than reaching a client as a value it cannot resolve: the UI has to
+    pick a background image from this field, and silently dropping a typo would
+    surface as an overlay drawn on the wrong anatomy.
+    """
+    specs: list[PerSubjectSpec] = []
+    for entry in raw_list or []:
+        underlay = entry.get("underlay")
+        if underlay is not None and underlay != UNDERLAY_ATLAS and not modalities.is_valid(underlay):
+            raise HTTPException(
+                500,
+                f"Pipeline '{pipeline_id}' per_subject output '{entry.get('id')}' declares "
+                f"underlay '{underlay}', which is neither '{UNDERLAY_ATLAS}' nor a known "
+                f"modality code ({', '.join(modalities.CODES)}).",
+            )
+        specs.append(
+            PerSubjectSpec(
+                id=entry["id"],
+                pattern=entry["pattern"],
+                type=entry.get("type", "nifti"),
+                display_name=entry.get("display_name"),
+                underlay=underlay,
+            )
+        )
+    return specs
 
 
 @dataclass
@@ -540,15 +591,7 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             features=features,
         )
 
-    per_subject = [
-        PerSubjectSpec(
-            id=s["id"],
-            pattern=s["pattern"],
-            type=s.get("type", "nifti"),
-            display_name=s.get("display_name"),
-        )
-        for s in (raw.get("per_subject") or [])
-    ]
+    per_subject = _parse_per_subject(raw.get("per_subject"), pipeline_id)
 
     return PipelineResultsSpec(
         batch_features=batch_features,

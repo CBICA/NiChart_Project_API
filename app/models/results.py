@@ -27,6 +27,19 @@ class PerSubjectOutput(BaseModel):
             "Use as a subtitle in the MRI panel (fall back to id when absent)."
         ),
     )
+    underlay: str | None = Field(
+        default=None,
+        description=(
+            "Background image this output is registered to. Either a modality code "
+            "(see GET /catalog/modalities), meaning the subject's own image at "
+            "``{modality}/{MRID}.nii.gz`` in this project, or ``\"atlas\"``, meaning "
+            "the output is in template space and belongs over the pipeline's "
+            "``atlas_resource_path`` from GET /catalog/pipelines/{pipeline_id}. "
+            "Null means undeclared: offer the download but do not overlay it on a "
+            "guess, because a mismatched volume renders as plausible-looking nonsense. "
+            "Same value as in the pipeline's catalog entry."
+        ),
+    )
     subjects: dict[str, PerSubjectFileStatus] = Field(
         description="Map of MRID → file availability and download path."
     )
