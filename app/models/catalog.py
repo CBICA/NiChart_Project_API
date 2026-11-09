@@ -634,6 +634,16 @@ class PipelineDetail(PipelineSummary):
             "feature_groups in its YAML."
         ),
     )
+    batch_features_display_name: str | None = Field(
+        default=None,
+        description=(
+            "Heading for the pipeline's batch feature table as a whole, e.g. "
+            "'Regional WML volumes'. Flattened here alongside ``label_map`` and "
+            "``feature_groups``, and identical to ``batch_features.display_name`` "
+            "on GET /projects/{id}/results/{pipeline_id}. Null when the pipeline "
+            "declares no heading, or declares no batch features at all."
+        ),
+    )
     column_schemas: dict[str, ColumnSpec] = Field(
         default_factory=dict,
         description=(

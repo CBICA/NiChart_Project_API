@@ -12,6 +12,7 @@ count reflects the population a pipeline can actually run on.
 """
 
 import csv
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 
 from app.models.catalog import SubjectConstraintSpec, SubjectPredicate
@@ -99,38 +100,106 @@ def _check_idat(project_path: Path) -> IdatRequirement:
     )
 
 
-def _read_csv_coverage(project_path: Path) -> tuple[int, dict[str, list[str]], set[str]]:
-    """Return ``(total_subjects, {column_name: [mrids_with_empty_value]}, all_lowercase_columns)``.
+def _processed_subjects(
+    imaging_checks: list[ImagingRequirement],
+    complete_sets: CompleteSetsRequirement | None,
+) -> set[str] | None:
+    """The subjects a pipeline would actually run on, or None if it has no imaging requirement.
 
-    The third element is the set of all column names (lowercase) present in the CSV,
-    including MRID. The second dict covers only non-MRID columns.
-    Returns ``(0, {}, set())`` when the CSV is absent or has no MRID column.
+    With two or more required modalities only the complete sets are processed; with
+    one, every subject in that modality directory. None is not an empty set: it
+    means the pipeline names no imaging requirement at all, and the CSV check then
+    falls back to judging the CSV on its own rows, since there is no imaging
+    population to compare against.
+    """
+    if complete_sets is not None:
+        return set(complete_sets.complete_mrids)
+    if imaging_checks:
+        return set(imaging_checks[0].mrids)
+    return None
+
+
+@dataclass
+class _CsvCoverage:
+    """participants.csv measured against the subjects a pipeline would process."""
+
+    total_rows: int = 0
+    # Keyed by the column's name as spelled in the CSV header.
+    col_missing: dict[str, list[str]] = dc_field(default_factory=dict)
+    all_cols_lower: set[str] = dc_field(default_factory=set)
+    subjects_without_row: list[str] = dc_field(default_factory=list)
+    rows_without_images: int = 0
+    # The population every per-column verdict was computed over, so the value
+    # check below can use exactly the same one.
+    evaluated: set[str] = dc_field(default_factory=set)
+
+
+def _read_csv_coverage(project_path: Path, processed: set[str] | None) -> _CsvCoverage:
+    """Measure participants.csv against ``processed``, the subjects that would be run.
+
+    A required column counts as missing for a processed subject whose value is
+    blank *and* for one with no row at all: both leave the pipeline without that
+    covariate. Judging the CSV on its own rows instead — which is what this did
+    before — returned "ready" for a project whose CSV described a different
+    cohort entirely, since every row it did have was complete.
+
+    Rows for subjects with no images are counted but never held against the
+    pipeline: a shared demographics sheet covering a whole study is normal, and a
+    blank Age on a subject this run will not touch costs nothing.
+
+    ``processed`` of None means the pipeline declares no imaging requirement, and
+    the CSV's own rows become the population, preserving the only sensible
+    reading when there is nothing to compare against.
+
+    An absent CSV, an empty one, or one with no MRID column yields an empty
+    coverage: the required-column checks below already fail the report, and
+    reporting every subject as row-less on top of that would tell a user to fix
+    MRIDs when what they need is to upload a file at all.
     """
     csv_path = project_path / _PARTICIPANTS_CSV
+    empty = _CsvCoverage(evaluated=set() if processed is None else set(processed))
     if not csv_path.exists():
-        return 0, {}, set()
+        return empty
     with csv_path.open(newline="") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
         if not fieldnames:
-            return 0, {}, set()
+            return empty
         all_cols_lower = {k.lower() for k in fieldnames}
         col_map = {k.lower(): k for k in fieldnames}
         mrid_col = col_map.get("mrid")
         if not mrid_col:
-            return 0, {}, all_cols_lower
+            empty.all_cols_lower = all_cols_lower
+            return empty
         data_cols = [c for c in fieldnames if c != mrid_col]
-        missing: dict[str, list[str]] = {c: [] for c in data_cols}
-        total = 0
+        values: dict[str, dict[str, str]] = {}
+        row_mrids: list[str] = []
         for row in reader:
             mrid = (row.get(mrid_col) or "").strip()
             if not mrid:
                 continue
-            total += 1
-            for col in data_cols:
-                if not (row.get(col) or "").strip():
-                    missing[col].append(mrid)
-    return total, missing, all_cols_lower
+            row_mrids.append(mrid)
+            # A repeated MRID keeps its last row, matching read_participants.
+            values[mrid] = {c: (row.get(c) or "").strip() for c in data_cols}
+
+    evaluated = set(values) if processed is None else processed
+    return _CsvCoverage(
+        # Unchanged: the number of rows in the file, duplicates included.
+        total_rows=len(row_mrids),
+        col_missing={
+            col: sorted(m for m in evaluated if not values.get(m, {}).get(col))
+            for col in data_cols
+        },
+        all_cols_lower=all_cols_lower,
+        subjects_without_row=(
+            [] if processed is None else sorted(processed - set(values))
+        ),
+        rows_without_images=(
+            0 if processed is None
+            else sum(1 for m in row_mrids if m not in processed)
+        ),
+        evaluated=evaluated,
+    )
 
 
 def _validate_cell(value: str, schema: dict) -> bool:
@@ -161,8 +230,13 @@ def _validate_cell(value: str, schema: dict) -> bool:
 def _check_csv_values(
     project_path: Path,
     col_schemas: dict[str, dict],
+    evaluated: set[str],
 ) -> dict[str, list[str]]:
-    """Return {column_name: [mrids_with_invalid_values]} for columns with non-string schemas."""
+    """Return {column_name: [mrids_with_invalid_values]} for columns with non-string schemas.
+
+    Restricted to ``evaluated`` — the subjects the pipeline would process — so a
+    bad Age on a subject with no images cannot make the run unready.
+    """
     schemas_to_check = {
         name: s for name, s in col_schemas.items()
         if s.get("type", "string") != "string" and name.lower() != "mrid"
@@ -184,7 +258,7 @@ def _check_csv_values(
             return {}
         for row in reader:
             mrid = (row.get(mrid_col) or "").strip()
-            if not mrid:
+            if not mrid or mrid not in evaluated:
                 continue
             for col_name, schema in schemas_to_check.items():
                 actual_col = col_map.get(col_name.lower())
@@ -392,10 +466,19 @@ def check_readiness(
     if needs_idat:
         idat_check = _check_idat(project_path)
 
+    # The subjects this pipeline would actually run on. Every check below judges
+    # that population rather than whatever else the project directory holds.
+    processed = _processed_subjects(imaging_checks, complete_sets_check)
+
     csv_req: CsvRequirement | None = None
     if csv_columns_required:
-        total, col_missing, all_cols_lower = _read_csv_coverage(project_path)
-        col_invalid = _check_csv_values(project_path, col_schemas)
+        # Covariates are judged against the subjects that would actually run, not
+        # against whatever rows the CSV happens to contain.
+        coverage = _read_csv_coverage(project_path, processed)
+        total, col_missing, all_cols_lower = (
+            coverage.total_rows, coverage.col_missing, coverage.all_cols_lower,
+        )
+        col_invalid = _check_csv_values(project_path, col_schemas, coverage.evaluated)
         col_map = {k.lower(): k for k in col_missing}
         column_checks: list[ColumnCheck] = []
         csv_satisfied = True
@@ -418,15 +501,31 @@ def check_readiness(
                 ))
                 if missing_mrids or invalid_mrids:
                     csv_satisfied = False
+        # A processed subject with no row at all fails the check too. It is
+        # already implied by every required column being missing for it, but the
+        # remedy differs — an MRID that does not match the images, rather than a
+        # value left blank — so it is reported in its own right.
+        if coverage.subjects_without_row:
+            csv_satisfied = False
         csv_req = CsvRequirement(
             required_columns=column_checks,
             total_subjects=total,
+            subjects_without_row=coverage.subjects_without_row,
+            rows_without_images=coverage.rows_without_images,
             satisfied=csv_satisfied,
         )
 
     subject_count_check: SubjectCountRequirement | None = None
     if min_subjects_spec is not None:
-        project_mrids = collect_project_mrids(project_path)
+        # Count the subjects this pipeline would process, not every MRID in the
+        # project: 40 PET scans do not meet a T1 pipeline's 30-subject minimum,
+        # and 35 T1s with only 20 matching FLAIRs do not meet it either. Both
+        # read as satisfied while this counted across all modality directories.
+        # Pipelines declaring no imaging requirement keep the project-wide count.
+        project_mrids = (
+            sorted(processed) if processed is not None
+            else collect_project_mrids(project_path)
+        )
         actual = len(project_mrids)
 
         # Per-cohort minimums, e.g. "at least 30 subjects with DX == CN".

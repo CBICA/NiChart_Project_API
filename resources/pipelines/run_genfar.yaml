@@ -49,6 +49,7 @@ steps:
 results:
   batch_features:
     file: "genfar/features_combined.csv"
+    display_name: "GenFAR Features"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

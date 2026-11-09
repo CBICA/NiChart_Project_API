@@ -46,6 +46,7 @@ steps:
 results:
   batch_features:
     file: "cclnmf/CCLNMF_prediction_loadings.csv"
+    display_name: "CCLNMF Loadings"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

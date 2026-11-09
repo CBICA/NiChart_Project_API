@@ -36,6 +36,7 @@ outputs:
 results:
   batch_features:
     file: "synthseg_vol/volumes.csv"
+    display_name: "SynthSeg Regional Volumes"
     # NOTE: verify this against the actual volumes.csv header. SynthSeg's native
     # output labels the subject column "subject"; if the wrapper doesn't rename
     # it to MRID, set mrid_column accordingly or the results will be empty.

@@ -110,6 +110,19 @@ class BatchFeaturesResult(BaseModel):
     """Summary of the pipeline's batch-level feature CSV."""
 
     available: bool
+    display_name: str | None = Field(
+        default=None,
+        description=(
+            "Heading for this table as a whole, e.g. 'Regional WML volumes'. "
+            "Declared as ``results.batch_features.display_name`` in the pipeline "
+            "YAML and identical to ``batch_features_display_name`` on "
+            "GET /catalog/pipelines/{id}. Present whether or not the CSV exists, "
+            "since it describes the declaration rather than the file. Null when "
+            "the pipeline has not declared one, in which case a client supplies "
+            "its own heading — the per-column names in ``label_map`` and "
+            "``feature_definitions`` are unaffected either way."
+        ),
+    )
     download_path: str | None = Field(
         default=None,
         description="Relative path for use with GET /projects/{id}/files/download.",

@@ -78,6 +78,7 @@ outputs:
 results:
   batch_features:
     file: "brain2vec/Brain2Vec_Embeddings.csv"
+    display_name: "Brain2Vec Embeddings"
     mrid_column: "MRID"
     default_unit: "a.u."
     # Feature interpretation for the LLM / UI. Document the output columns here —

@@ -41,12 +41,51 @@ class ColumnCheck(BaseModel):
 
 
 class CsvRequirement(BaseModel):
-    """Aggregate readiness check for all required participants.csv columns."""
+    """Aggregate readiness check for all required participants.csv columns.
+
+    Judged against the subjects the pipeline would process — the complete sets
+    when it needs more than one modality, otherwise the MRIDs in its single
+    required modality directory. Rows for subjects with no images are reported
+    but never held against the pipeline. A pipeline with no imaging requirement
+    is judged on the CSV's own rows instead.
+    """
 
     required_columns: list[ColumnCheck] = Field(description="Per-column check results.")
-    total_subjects: int = Field(description="Total subjects (rows) in participants.csv.")
+    total_subjects: int = Field(
+        description=(
+            "Total rows in participants.csv with a non-empty MRID — the size of the "
+            "file, not of the population checked. Compare with the imaging MRIDs, or "
+            "with ``rows_without_images``, to see how much of it this pipeline uses."
+        )
+    )
+    subjects_without_row: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Processed subjects with no participants.csv row at all, which makes this "
+            "check unsatisfied. Distinct from a required column's ``subjects_missing`` "
+            "because the remedy differs: a missing row almost always means the MRIDs do "
+            "not match the uploaded images (a suffix, a rename), fixed with the MRID "
+            "tools in the participants editor, whereas a blank value means data to fill "
+            "in. Empty when the project has no images yet — the imaging check reports "
+            "that — and when participants.csv is absent or has no MRID column, since "
+            "the remedy there is to upload a file, not to correct IDs."
+        ),
+    )
+    rows_without_images: int = Field(
+        default=0,
+        description=(
+            "participants.csv rows whose MRID is not a processed subject. Informational "
+            "only and never a reason for ``satisfied`` to be false: a demographics sheet "
+            "covering a whole study, or rows for scans yet to be uploaded, are both "
+            "normal. Zero for a pipeline with no imaging requirement."
+        ),
+    )
     satisfied: bool = Field(
-        description="True if every required column exists and is non-empty for all subjects."
+        description=(
+            "True if every required column exists, and every subject the pipeline would "
+            "process has a row with a non-empty, schema-valid value in it. False when "
+            "any processed subject lacks a row (see ``subjects_without_row``)."
+        )
     )
 
 
@@ -122,7 +161,16 @@ class SubjectConstraintCheck(BaseModel):
 class SubjectCountRequirement(BaseModel):
     """Readiness check for a minimum subject count, used by harmonized pipelines."""
 
-    actual: int = Field(description="Unique MRIDs detected across all modality directories.")
+    actual: int = Field(
+        description=(
+            "Subjects the pipeline would process: those with a complete set of its "
+            "required modalities, or the MRIDs in its single required modality. Falls "
+            "back to unique MRIDs across every modality directory only for a pipeline "
+            "that declares no imaging requirement. Unlike each constraint's ``actual``, "
+            "this does not require a participants.csv row — the CSV check reports that "
+            "separately, so a pipeline needing no covariates is not blocked by it."
+        )
+    )
     required: int = Field(description="Minimum total subjects needed to run the pipeline at all.")
     recommended: int = Field(
         description="Recommended total number of subjects for reliable results."

@@ -34,6 +34,7 @@ outputs:
 results:
   batch_features:
     file: "dlmuse_vol/DLMUSE_Volumes.csv"
+    display_name: "Regional Volumes"
     mrid_column: "MRID"
     # `features` is OPTIONAL here: the ROI volume columns are documented via
     # `label_map` + `column_template` below. Add entries only for non-ROI summary

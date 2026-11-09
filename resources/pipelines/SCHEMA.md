@@ -181,6 +181,15 @@ results:
     file: "relative/path/to/output.csv"   # Relative to the project root.
     mrid_column: "MRID"                    # Name of the subject-ID column (default: MRID).
 
+    # Optional heading for the table as a whole, shown above it by the UI. The
+    # pipeline_name already titles the result; declare this when the table is
+    # one of several things the pipeline produces, or when its contents are not
+    # obvious from the pipeline name ("Regional WML volumes", "SPARE scores").
+    # Omit it rather than restating pipeline_name: a client that gets null uses
+    # its own heading, which is the better default. Must be a non-empty string;
+    # a blank value is rejected when the pipeline is parsed.
+    display_name: "Regional WML volumes"
+
     # Unit annotations for feature columns.
     # default_unit applies to all columns not listed in column_units.
     # column_units provides per-column overrides.
@@ -408,6 +417,7 @@ steps:
 #   batch_features:
 #     file: "my_output/results.csv"
 #     mrid_column: "MRID"
+#     display_name: "My Feature Table"   # optional heading for the table
 #     default_unit: "mm³"
 #   per_subject:
 #     - id: "segmentation"

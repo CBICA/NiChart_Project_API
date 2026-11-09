@@ -183,7 +183,12 @@ def test_an_unknown_underlay_is_rejected_at_parse_time(tmp_path):
 
 # ── per_subject content + which output a feature's label_ids index into ──────
 
-def _two_output_setup(tmp_path: Path, label_output_id: str = "rois") -> tuple[Path, Path, Path]:
+def _two_output_setup(
+    tmp_path: Path,
+    label_output_id: str = "rois",
+    default_unit: str | None = None,
+    display_name: str | None = None,
+) -> tuple[Path, Path, Path]:
     """A pipeline with two image outputs, only one of which carries label IDs."""
     pipelines = tmp_path / "pipelines"
     resources = tmp_path / "resources"
@@ -191,6 +196,8 @@ def _two_output_setup(tmp_path: Path, label_output_id: str = "rois") -> tuple[Pa
     resources.mkdir(parents=True, exist_ok=True)
 
     _write(resources / "labels.csv", "601,GM,1,2\n602,WM,3\n")
+    unit_line = f'default_unit: "{default_unit}"' if default_unit else ""
+    name_line = f'display_name: "{display_name}"' if display_name else ""
     _write(
         pipelines / "two_out.yaml",
         f"""
@@ -203,6 +210,8 @@ def _two_output_setup(tmp_path: Path, label_output_id: str = "rois") -> tuple[Pa
             label_map: "labels.csv"
             column_template: "V_{{id}}"
             label_output_id: {label_output_id}
+            {unit_line}
+            {name_line}
           per_subject:
             - id: rois
               pattern: "seg/{{MRID}}_rois.nii.gz"
@@ -248,6 +257,34 @@ def test_results_label_map_names_the_output_its_ids_index_into(tmp_path):
     assert set(label_map) == {"V_601", "V_602"}
     assert all(info.output_id == "rois" for info in label_map.values())
     assert label_map["V_601"].label_ids == [1, 2]
+
+
+def test_output_id_survives_declared_units(tmp_path):
+    """Units are stamped onto label_map entries after they are built, and that
+    rebuild must not drop the rest of the entry. Every real segmentation
+    pipeline declares a unit, so this is the configuration clients actually see."""
+    project, resources, pipelines = _two_output_setup(tmp_path, default_unit="mm³")
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    label_map = detail.batch_features.label_map
+    assert all(info.unit == "mm³" for info in label_map.values())
+    assert all(info.output_id == "rois" for info in label_map.values())
+    assert label_map["V_601"].label_ids == [1, 2]
+    assert label_map["V_601"].display_name == "GM"
+
+
+def test_results_and_catalog_agree_on_output_id_for_dlwmls(data_client):
+    """The two endpoints build label_map by different code paths; a client must
+    get the same answer from either."""
+    assert data_client.post("/projects", json={"name": "outputidproj"}).status_code == 201
+    catalog = data_client.get("/catalog/pipelines/run_nichart_dlwmls_v2").json()
+    assert all(
+        info["output_id"] == "wml_segmentation_rois"
+        for info in catalog["label_map"].values()
+    )
 
 
 def test_label_output_id_must_name_a_declared_output(tmp_path):
@@ -312,3 +349,85 @@ def test_declared_content_kinds_are_known(local_client):
             assert ps["content"] is None or ps["content"] in CONTENT_KINDS, (
                 f"{summary['id']} / {ps['id']} declares content {ps['content']!r}"
             )
+
+
+# ── batch_features.display_name ──────────────────────────────────────────────
+#
+# A heading for the table as a whole. Everything else in batch_features names a
+# column; without this a client has to invent the heading above them.
+
+def test_declared_heading_reaches_the_results_detail(tmp_path):
+    project, resources, pipelines = _two_output_setup(
+        tmp_path, display_name="Regional WML volumes"
+    )
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    assert detail.batch_features.display_name == "Regional WML volumes"
+    assert detail.batch_features.available is True
+
+
+def test_heading_is_reported_even_when_the_csv_is_absent(tmp_path):
+    """It describes the declaration, not the file, so a client can title a table
+    it is about to produce — or explain which table is missing."""
+    project, resources, pipelines = _two_output_setup(
+        tmp_path, display_name="Regional WML volumes"
+    )
+    (project / "out" / "vols.csv").unlink()
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    assert detail.batch_features.available is False
+    assert detail.batch_features.display_name == "Regional WML volumes"
+
+
+def test_heading_is_null_when_undeclared(tmp_path):
+    project, resources, pipelines = _two_output_setup(tmp_path)
+
+    detail = results_service.get_pipeline_result_detail(
+        project, resources, pipelines, "two_out", "Two Out"
+    )
+
+    assert detail.batch_features.display_name is None
+
+
+def test_catalog_reports_the_same_heading_as_the_results_detail(tmp_path, local_client):
+    """Same value from either endpoint, as with underlay and content."""
+    from app.services import catalog_service
+
+    _, _, pipelines = _two_output_setup(tmp_path, display_name="Regional WML volumes")
+    spec = catalog_service.get_pipeline_results_spec(pipelines, "two_out")
+    assert spec.batch_features.display_name == "Regional WML volumes"
+
+    # And the catalog endpoint exposes the field for every pipeline, null until
+    # one declares a heading.
+    for summary in local_client.get("/catalog/pipelines").json():
+        detail = local_client.get(f"/catalog/pipelines/{summary['id']}").json()
+        assert "batch_features_display_name" in detail
+        name = detail["batch_features_display_name"]
+        assert name is None or (isinstance(name, str) and name.strip())
+
+
+def test_a_blank_heading_is_rejected_at_parse_time(tmp_path):
+    """An empty string would render as a missing heading rather than as the
+    absent declaration it actually is."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.services import catalog_service
+
+    (tmp_path / "bad.yaml").write_text(
+        "pipeline_name: Bad\n"
+        "steps: []\n"
+        "results:\n"
+        "  batch_features:\n"
+        "    file: out/vols.csv\n"
+        '    display_name: "   "\n'
+    )
+    with pytest.raises(HTTPException) as exc:
+        catalog_service.get_pipeline_results_spec(tmp_path, "bad")
+    assert "display_name" in str(exc.value.detail)

@@ -68,6 +68,7 @@ steps:
 results:
   batch_features:
     file: "spare_all_cvm/SPARE_ALL_CVM.csv"
+    display_name: "SPARE-CVM Scores"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

@@ -314,3 +314,191 @@ def test_without_per_groups_is_empty(tmp_path):
     _cohort(tmp_path, n_cn=30, n_other=0)
     c = _check(tmp_path, _requires(constraints=CN_CONTROLS)).subject_count.constraints[0]
     assert c.per is None and c.groups == []
+
+
+# ── participants.csv measured against the subjects being processed ───────────
+#
+# The CSV check used to judge the file on its own rows, so a project whose CSV
+# described a different cohort read as ready: every row it had was complete, and
+# an imaging subject with no row at all was never counted as missing anything.
+
+def _write_modality(project, modality, mrids):
+    d = project / modality
+    d.mkdir(parents=True, exist_ok=True)
+    for mrid in mrids:
+        (d / f"{mrid}.nii.gz").write_bytes(b"x")
+
+
+def _csv_requires(*columns, needs=("needs_T1",)):
+    return [*needs, {"csv_has_columns": list(columns)}]
+
+
+def test_imaging_subjects_with_no_row_are_not_ready(tmp_path):
+    """The reported case: two imaging subjects, 588 rows for a different cohort."""
+    _write_imaging(tmp_path, ["subject001", "subject002"])
+    _write_participants(
+        tmp_path,
+        [{"MRID": f"IXI{i:03d}-Guys-0828-T1", "DX": "CN", "Age": "70", "Sex": "M"}
+         for i in range(588)],
+    )
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age", "Sex"))
+
+    assert report.csv.subjects_without_row == ["subject001", "subject002"]
+    assert not report.csv.satisfied
+    assert not report.satisfied
+    # Every required column is missing for both, by the same cause.
+    by_col = {c.column: c for c in report.csv.required_columns}
+    assert by_col["Age"].present and by_col["Age"].subjects_missing == [
+        "subject001", "subject002",
+    ]
+    # The file itself is still described as it was.
+    assert report.csv.total_subjects == 588
+    assert report.csv.rows_without_images == 588
+
+
+def test_partially_covered_imaging_is_not_ready(tmp_path):
+    _write_imaging(tmp_path, ["sub001", "sub002"])
+    _write_participants(tmp_path, [{"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"}])
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age", "Sex"))
+
+    assert report.csv.subjects_without_row == ["sub002"]
+    assert not report.csv.satisfied
+    assert not report.satisfied
+
+
+def test_extra_rows_do_not_make_a_covered_project_unready(tmp_path):
+    """A shared demographics sheet is normal: rows for subjects with no images
+    are counted and reported, never held against the pipeline."""
+    _write_imaging(tmp_path, ["sub001", "sub002"])
+    rows = [
+        {"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"},
+        {"MRID": "sub002", "DX": "CN", "Age": "71", "Sex": "F"},
+    ]
+    rows += [{"MRID": f"other{i:03d}", "DX": "CN", "Age": "", "Sex": ""} for i in range(500)]
+    _write_participants(tmp_path, rows)
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age", "Sex"))
+
+    assert report.csv.satisfied
+    assert report.csv.subjects_without_row == []
+    assert report.csv.rows_without_images == 500
+    assert report.csv.total_subjects == 502
+    assert all(not c.subjects_missing for c in report.csv.required_columns)
+
+
+def test_only_complete_sets_are_judged_for_a_multi_modality_pipeline(tmp_path):
+    """A subject with T1 but no FLAIR will not be processed, so its absent row
+    is not a reason to block the run."""
+    _write_modality(tmp_path, "t1", ["both01", "t1only"])
+    _write_modality(tmp_path, "fl", ["both01"])
+    _write_participants(tmp_path, [{"MRID": "both01", "DX": "CN", "Age": "70", "Sex": "M"}])
+
+    report = _check(
+        tmp_path, _csv_requires("MRID", "Age", "Sex", needs=("needs_T1", "needs_FLAIR")),
+    )
+
+    assert report.csv.subjects_without_row == []
+    assert report.csv.satisfied
+    assert report.complete_sets.complete_mrids == ["both01"]
+    assert report.satisfied
+
+
+def test_no_imaging_yet_does_not_add_a_second_failure(tmp_path):
+    """The imaging check already fails; the CSV must not pile on a row-less
+    verdict for subjects that do not exist."""
+    _write_participants(tmp_path, [{"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"}])
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age", "Sex"))
+
+    assert report.csv.subjects_without_row == []
+    assert report.csv.satisfied
+    assert not report.imaging[0].satisfied
+    assert not report.satisfied
+
+
+def test_a_pipeline_without_imaging_is_still_judged_on_its_own_rows(tmp_path):
+    """With no imaging requirement there is no population to compare against, so
+    a blank required value in the CSV itself must still fail."""
+    _write_participants(tmp_path, [
+        {"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"},
+        {"MRID": "sub002", "DX": "CN", "Age": "", "Sex": "F"},
+    ])
+
+    report = readiness_service.check_readiness(
+        tmp_path, "csv_only", [{"csv_has_columns": ["MRID", "Age"]}]
+    )
+
+    assert report.csv.subjects_without_row == []
+    assert report.csv.rows_without_images == 0
+    assert [c.subjects_missing for c in report.csv.required_columns if c.column == "Age"] == [
+        ["sub002"]
+    ]
+    assert not report.csv.satisfied
+
+
+def test_an_absent_csv_reports_no_rowless_subjects(tmp_path):
+    """The remedy is to upload a file, not to correct MRIDs, so the row-less list
+    stays empty and the missing MRID column carries the failure."""
+    _write_imaging(tmp_path, ["sub001"])
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age"))
+
+    assert report.csv.subjects_without_row == []
+    assert not report.csv.satisfied
+    assert {c.column: c.present for c in report.csv.required_columns} == {
+        "MRID": False, "Age": False,
+    }
+
+
+def test_invalid_values_are_restricted_to_processed_subjects(tmp_path):
+    """A nonsense Age on a subject with no scan cannot block the run."""
+    _write_imaging(tmp_path, ["sub001"])
+    _write_participants(tmp_path, [
+        {"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"},
+        {"MRID": "noimage", "DX": "CN", "Age": "not-a-number", "Sex": "F"},
+    ])
+
+    requires = [
+        "needs_T1",
+        {"csv_has_columns": ["MRID", {"name": "Age", "type": "int", "min": 0, "max": 120}]},
+    ]
+    report = readiness_service.check_readiness(tmp_path, "age_schema", requires)
+
+    age = [c for c in report.csv.required_columns if c.column == "Age"][0]
+    assert age.subjects_invalid == []
+    assert report.csv.satisfied
+
+
+def test_subject_count_counts_only_the_subjects_that_would_run(tmp_path):
+    """35 T1s with 20 matching FLAIRs does not meet a 30-subject minimum, though
+    it did while this counted across every modality directory."""
+    mrids = [f"sub{i:03d}" for i in range(35)]
+    _write_modality(tmp_path, "t1", mrids)
+    _write_modality(tmp_path, "fl", mrids[:20])
+    _write_participants(
+        tmp_path, [{"MRID": m, "DX": "CN", "Age": "70", "Sex": "M"} for m in mrids]
+    )
+
+    report = readiness_service.check_readiness(
+        tmp_path,
+        "run_nichart_dlwmls_v2_harmonized",
+        ["needs_T1", "needs_FLAIR", {"min_subjects": {"required": 30, "recommended": 30}}],
+    )
+
+    assert report.subject_count.actual == 20
+    assert not report.subject_count.satisfied
+    assert not report.satisfied
+
+
+def test_subject_count_ignores_modalities_the_pipeline_does_not_require(tmp_path):
+    _write_modality(tmp_path, "t1", [f"sub{i:03d}" for i in range(5)])
+    _write_modality(tmp_path, "pet", [f"pet{i:03d}" for i in range(40)])
+
+    report = readiness_service.check_readiness(
+        tmp_path, "run_dlmuse_harmonized", _requires(required=30, recommended=30)
+    )
+
+    assert report.subject_count.actual == 5
+    assert not report.satisfied

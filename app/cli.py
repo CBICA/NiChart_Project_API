@@ -585,6 +585,22 @@ def _render_readiness(project: str, pipeline_id: str, report: dict) -> bool:
     if csv:
         csv_icon = "[green]✓[/green]" if csv["satisfied"] else "[red]✗[/red]"
         console.print(f"  {csv_icon}  participants.csv — {csv['total_subjects']} subject(s)")
+        # Without this the report says NOT READY while every required column
+        # shows as present: the subjects it would run on simply have no rows.
+        without_row = csv.get("subjects_without_row") or []
+        if without_row:
+            shown = ", ".join(without_row[:5])
+            more = f", and {len(without_row) - 5} more" if len(without_row) > 5 else ""
+            console.print(
+                f"      [red]✗[/red]  {len(without_row)} imaged subject(s) have no row "
+                f"({shown}{more}) [yellow]— MRIDs may not match your image filenames[/yellow]"
+            )
+        rows_without_images = csv.get("rows_without_images") or 0
+        if rows_without_images:
+            console.print(
+                f"      [dim]{rows_without_images} row(s) describe subjects with no images "
+                f"here (ignored)[/dim]"
+            )
         for col in csv.get("required_columns") or []:
             missing = col.get("subjects_missing") or []
             invalid = col.get("subjects_invalid") or []

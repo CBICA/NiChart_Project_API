@@ -48,6 +48,7 @@ steps:
 results:
   batch_features:
     file: "nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented_Volumes.csv"
+    display_name: "Regional White Matter Lesion Volumes"
     mrid_column: "MRID"
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_WMLS_Volume_{id}"

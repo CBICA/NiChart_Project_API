@@ -110,7 +110,7 @@ def _build_batch_features(
 ) -> BatchFeaturesResult:
     features_path = project_path / spec.file
     if not features_path.is_file():
-        return BatchFeaturesResult(available=False)
+        return BatchFeaturesResult(available=False, display_name=spec.display_name)
 
     try:
         with features_path.open() as f:
@@ -128,13 +128,14 @@ def _build_batch_features(
                 label_output_id=spec.label_output_id,
             )
             # Stamp units onto label_map entries if declared in the pipeline YAML.
+            # Carry every other field across: rebuilding the entry here is how
+            # output_id was once silently dropped for any pipeline that declares
+            # units, which is most of them.
             if label_map and (spec.column_units or spec.default_unit):
                 label_map = {
-                    col: LabelInfo(
-                        display_name=info.display_name,
-                        label_ids=info.label_ids,
-                        unit=(spec.column_units or {}).get(col, spec.default_unit),
-                    )
+                    col: info.model_copy(update={
+                        "unit": (spec.column_units or {}).get(col, spec.default_unit),
+                    })
                     for col, info in label_map.items()
                 }
 
@@ -158,6 +159,7 @@ def _build_batch_features(
 
         return BatchFeaturesResult(
             available=True,
+            display_name=spec.display_name,
             download_path=spec.file,
             columns=feature_cols,
             row_count=len(rows),
@@ -166,7 +168,7 @@ def _build_batch_features(
             feature_definitions=feature_definitions,
         )
     except Exception:
-        return BatchFeaturesResult(available=False)
+        return BatchFeaturesResult(available=False, display_name=spec.display_name)
 
 
 def _build_per_subject(

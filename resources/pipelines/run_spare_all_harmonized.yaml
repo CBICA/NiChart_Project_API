@@ -61,6 +61,7 @@ steps:
 results:
   batch_features:
     file: "spare_all_harmonized/SPARE_ALL.csv"
+    display_name: "Harmonized SPARE Scores"
     mrid_column: "MRID"
     # Feature interpretation for the LLM / UI. Document each output column here —
     # see resources/pipelines/SCHEMA.md (results → features). Completeness is

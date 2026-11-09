@@ -333,6 +333,11 @@ def get_pipeline(
     label_map = None
     feature_groups = None
     bf_raw = results_raw.get("batch_features")
+    # Independent of resources_path: the heading needs no label-map CSV, so a
+    # pipeline without one still gets a titled table.
+    batch_display_name = (
+        _parse_batch_display_name(bf_raw, pipeline_id) if bf_raw else None
+    )
     if bf_raw and resources_path:
         batch_spec = BatchFeaturesSpec(
             file=bf_raw["file"],
@@ -388,6 +393,7 @@ def get_pipeline(
         ],
         label_map=label_map,
         feature_groups=feature_groups,
+        batch_features_display_name=batch_display_name,
         column_schemas=_parse_column_schemas(raw_requires),
         min_subjects=parse_min_subjects(raw_requires),
         docs_id=data.get("docs_id"),
@@ -502,6 +508,11 @@ def get_pipeline_raw_requires(pipelines_path: Path, pipeline_id: str) -> list:
 class BatchFeaturesSpec:
     file: str
     mrid_column: str = "MRID"
+    # Heading for the batch table as a whole, e.g. "Regional WML volumes". The
+    # pipeline name titles the result; this titles the one CSV inside it, which
+    # matters for a pipeline whose table is not the obvious thing it produces.
+    # None when the pipeline has not said, and a client falls back to its own.
+    display_name: str | None = None
     label_map: str | None = None
     column_template: str = "{id}"
     feature_groups: list[dict] | None = None  # [{name, label_id_range: [lo, hi]}]
@@ -565,6 +576,24 @@ def _check_label_output_id(
             f"'{batch_features.label_output_id}', which is not one of its per_subject "
             f"outputs ({', '.join(known) or 'none declared'}).",
         )
+
+
+def _parse_batch_display_name(bf_raw: dict, pipeline_id: str) -> str | None:
+    """Validate ``batch_features.display_name``, which a client renders verbatim.
+
+    Blank or non-string values fail here rather than reaching a UI as an empty
+    heading, which reads as a rendering bug rather than as a missing declaration.
+    """
+    name = bf_raw.get("display_name")
+    if name is None:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(
+            500,
+            f"Pipeline '{pipeline_id}' declares batch_features.display_name "
+            f"{name!r}, which is not a non-empty string. Omit the field instead.",
+        )
+    return name.strip()
 
 
 def _parse_per_subject(raw_list: list | None, pipeline_id: str) -> list["PerSubjectSpec"]:
@@ -642,6 +671,7 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
             default_unit=bf_raw.get("default_unit"),
             features=features,
             label_output_id=bf_raw.get("label_output_id"),
+            display_name=_parse_batch_display_name(bf_raw, pipeline_id),
         )
 
     per_subject = _parse_per_subject(raw.get("per_subject"), pipeline_id)
