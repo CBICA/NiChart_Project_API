@@ -885,19 +885,150 @@ def store_csv_upload(project_path: Path, contents: bytes, filename: str) -> None
 
 # BIDS suffix → NiChart modality: see app.modalities.infer_modality_bids.
 
-_BIDS_SUB_RE = re.compile(r"^sub-(\w+)")
+# BIDS file names start with entities: sub-<label>[_ses-<label>]_... (labels are alphanumeric).
+_BIDS_ENTITIES_RE = re.compile(r"^sub-([A-Za-z0-9]+)(?:_ses-([A-Za-z0-9]+))?_")
+
+
+def _bids_scan_id(filename: str) -> tuple[str, str | None, str] | None:
+    """(subject, session, MRID) for a BIDS file name, or None if it isn't one.
+
+    The MRID identifies a scan, not a person: the subject label alone, or with the
+    session appended when there is one (``sub-01_ses-1_T1w.nii.gz`` → ``01_ses-1``), so
+    different sessions of one subject never overwrite each other.
+    """
+    m = _BIDS_ENTITIES_RE.match(filename)
+    if not m:
+        return None
+    sub, ses = m.group(1), m.group(2)
+    return sub, ses, f"{sub}_ses-{ses}" if ses else sub
+
+
+def _read_tsv(path: Path) -> tuple[list[str], list[dict]]:
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        return list(reader.fieldnames or []), list(reader)
+
+
+def _import_bids_tree(root: Path, project_path: Path) -> int:
+    """Copy a BIDS dataset's NIfTIs into the project layout and merge its participants.
+
+    Images go to ``<modality>/<MRID>.nii[.gz]`` (MRID from :func:`_bids_scan_id`). When two
+    files map to the same modality and scan (e.g. ``run-1``/``run-2``), the first in sorted
+    order is kept. Returns the number of images placed.
+    """
+    scans: dict[str, tuple[str, str | None]] = {}  # MRID -> (subject, session)
+    placed: set[tuple[str, str]] = set()           # (modality, MRID)
+    for nifti in sorted(p for p in root.rglob("*") if p.name.endswith((".nii.gz", ".nii"))):
+        parsed = _bids_scan_id(nifti.name)
+        modality = modalities.infer_modality_bids(nifti.name)
+        if not parsed or not modality:
+            continue
+        sub, ses, mrid = parsed
+        if (modality, mrid) in placed:
+            continue
+        ext = ".nii.gz" if nifti.name.endswith(".nii.gz") else ".nii"
+        target_dir = project_path / modality
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(nifti, target_dir / f"{mrid}{ext}")
+        placed.add((modality, mrid))
+        scans[mrid] = (sub, ses)
+
+    _merge_bids_participants(root, project_path, scans)
+    return len(placed)
+
+
+def _merge_bids_participants(root: Path, project_path: Path, scans: dict[str, tuple[str, str | None]]) -> None:
+    """Merge BIDS participants.tsv (+ per-subject sessions.tsv) into participants.csv.
+
+    participants.tsv is per subject; every imported scan gets its subject's values, and
+    ``sub-XX/sub-XX_sessions.tsv`` (if present) adds per-session values on top (e.g. age at
+    that session). TSV subjects with no imported scan keep a subject-level row (MRID =
+    label), as before. An existing participants.csv is never overwritten: its rows stay
+    as they are and only new MRIDs are appended, with DEFAULT_BATCH / DEFAULT_DX filled in
+    where the TSVs don't give Batch / DX — the same defaults image uploads get.
+    """
+    subj_cols: list[str] = []
+    subj_rows: dict[str, dict] = {}
+    tsvs = sorted(root.rglob("participants.tsv"), key=lambda p: len(p.parts))
+    if tsvs:
+        fieldnames, rows = _read_tsv(tsvs[0])  # the top-level one
+        col = {k.lower(): k for k in fieldnames}
+        pid_key = col.get("participant_id") or col.get("subject_id")
+        if pid_key:
+            subj_cols = [k for k in fieldnames if k != pid_key]
+            for row in rows:
+                pid = (row.get(pid_key) or "").strip().removeprefix("sub-")
+                if pid:
+                    subj_rows[pid] = {c: (row.get(c) or "").strip() for c in subj_cols}
+
+    sess_cols: list[str] = []
+    sess_rows: dict[tuple[str, str], dict] = {}
+    for tsv in sorted(root.rglob("sub-*_sessions.tsv")):
+        sub = tsv.name[len("sub-"):-len("_sessions.tsv")]
+        fieldnames, rows = _read_tsv(tsv)
+        col = {k.lower(): k for k in fieldnames}
+        sid_key = col.get("session_id")
+        if not sid_key:
+            continue
+        cols = [k for k in fieldnames if k != sid_key]
+        sess_cols += [c for c in cols if c not in sess_cols]
+        for row in rows:
+            ses = (row.get(sid_key) or "").strip().removeprefix("ses-")
+            if ses:
+                sess_rows[(sub, ses)] = {c: (row.get(c) or "").strip() for c in cols}
+
+    incoming: dict[str, dict] = {}
+    for mrid, (sub, ses) in sorted(scans.items()):
+        row = dict(subj_rows.get(sub, {}))
+        if ses:
+            row.update({k: v for k, v in sess_rows.get((sub, ses), {}).items() if v != ""})
+        incoming[mrid] = row
+    imaged_subjects = {sub for sub, _ in scans.values()}
+    for sub, row in subj_rows.items():
+        if sub not in imaged_subjects:
+            incoming.setdefault(sub, dict(row))
+    if not incoming:
+        return
+
+    csv_path = project_path / _PARTICIPANTS_PATH
+    existing_cols: list[str] = []
+    existing_rows: list[dict] = []
+    if csv_path.exists():
+        with csv_path.open(newline="") as f:
+            fieldnames = list(csv.DictReader(f).fieldnames or [])
+        if fieldnames and not any(c.lower() == "mrid" for c in fieldnames):
+            return  # can't merge into a file without MRIDs; leave the user's file alone
+        if fieldnames:
+            existing_rows = [r.model_dump() for r in read_participants(project_path).rows]
+            existing_cols = ["MRID"] + [c for c in fieldnames if c.lower() != "mrid"]
+    if not existing_cols:
+        existing_cols = ["MRID", "Batch", "DX"]  # new file: same base columns as image uploads
+
+    present = {str(r.get("MRID", "")).strip() for r in existing_rows}
+    new_rows = [(m, r) for m, r in incoming.items() if m not in present]
+    if not new_rows:
+        return
+    columns = existing_cols + [c for c in subj_cols + sess_cols if c not in existing_cols]
+    defaults = {"Batch": DEFAULT_BATCH, "DX": DEFAULT_DX}
+    out = [{c: r.get(c, "") for c in columns} for r in existing_rows]
+    for mrid, r in new_rows:
+        row = {c: ("" if r.get(c) is None else r.get(c, "")) for c in columns}
+        row["MRID"] = mrid
+        for c, v in defaults.items():
+            if c in row and not row[c]:
+                row[c] = v
+        out.append(row)
+    write_participants(project_path, out)
 
 
 def store_bids_upload(project_path: Path, contents: bytes, filename: str) -> int:
     """
-    Extract a BIDS zip and reorganise NIfTIs into the NiChart project layout.
-
-    Returns the number of NIfTI files successfully placed.
+    Extract a BIDS zip and import it into the NiChart project layout
+    (see :func:`_import_bids_tree`). Returns the number of images placed.
     """
     if not filename.lower().endswith(".zip"):
         raise HTTPException(400, "BIDS upload must be a .zip file")
 
-    committed = 0
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir = Path(tmpdir)
         archive = tmp_dir / "upload.zip"
@@ -905,60 +1036,7 @@ def store_bids_upload(project_path: Path, contents: bytes, filename: str) -> int
         extract_dir = tmp_dir / "extracted"
         extract_dir.mkdir()
         safe_unzip(archive, extract_dir)
-
-        for nifti in extract_dir.rglob("*.nii.gz"):
-            m = _BIDS_SUB_RE.match(nifti.name)
-            if not m:
-                continue
-            mrid = m.group(1)
-            modality = modalities.infer_modality_bids(nifti.name)
-            if not modality:
-                continue
-            target_dir = project_path / modality
-            target_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(nifti, target_dir / f"{mrid}.nii.gz")
-            committed += 1
-
-        # Convert participants.tsv if present
-        for tsv in extract_dir.rglob("participants.tsv"):
-            _convert_bids_participants_tsv(tsv, project_path)
-            break  # use only the top-level one
-
-    return committed
-
-
-def _convert_bids_participants_tsv(tsv_path: Path, project_path: Path) -> None:
-    """Convert a BIDS participants.tsv to participants/participants.csv.
-
-    Maps ``participant_id`` → ``MRID`` (stripping the ``sub-`` prefix).
-    All other BIDS columns are preserved with their original names.
-    """
-    csv_dir = project_path / "participants"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-    with tsv_path.open(newline="") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        rows = list(reader)
-        fieldnames = list(reader.fieldnames or [])
-    if not rows:
-        return
-    col = {k.lower(): k for k in fieldnames}
-    pid_key = col.get("participant_id") or col.get("subject_id") or ""
-    if not pid_key:
-        return
-    extra_cols = [k for k in fieldnames if k != pid_key]
-    out_fieldnames = ["MRID"] + extra_cols
-    out_path = csv_dir / "participants.csv"
-    with out_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=out_fieldnames)
-        writer.writeheader()
-        for row in rows:
-            pid = (row.get(pid_key, "") or "").strip().removeprefix("sub-")
-            if not pid:
-                continue
-            out_row: dict = {"MRID": pid}
-            for c in extra_cols:
-                out_row[c] = (row.get(c, "") or "").strip()
-            writer.writerow(out_row)
+        return _import_bids_tree(extract_dir, project_path)
 
 
 # ── IDAT upload ───────────────────────────────────────────────────────────────
@@ -984,9 +1062,8 @@ def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
 
     Filenames may contain relative sub-paths (e.g. ``sub-01/anat/sub-01_T1w.nii.gz``).
     Each is validated for containment within the temporary extraction directory.
-    Returns the number of NIfTI files committed.
+    Returns the number of images placed (see :func:`_import_bids_tree`).
     """
-    committed = 0
     with tempfile.TemporaryDirectory() as tmpdir:
         extract_dir = Path(tmpdir)
 
@@ -997,24 +1074,7 @@ def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
 
-        for nifti in extract_dir.rglob("*.nii.gz"):
-            m = _BIDS_SUB_RE.match(nifti.name)
-            if not m:
-                continue
-            mrid = m.group(1)
-            modality = modalities.infer_modality_bids(nifti.name)
-            if not modality:
-                continue
-            target_dir = project_path / modality
-            target_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(nifti, target_dir / f"{mrid}.nii.gz")
-            committed += 1
-
-        for tsv in extract_dir.rglob("participants.tsv"):
-            _convert_bids_participants_tsv(tsv, project_path)
-            break
-
-    return committed
+        return _import_bids_tree(extract_dir, project_path)
 
 
 def store_idat_files(project_path: Path, files: list[tuple[str, bytes]]) -> None:
