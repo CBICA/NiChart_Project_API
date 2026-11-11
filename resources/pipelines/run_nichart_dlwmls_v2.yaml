@@ -13,6 +13,8 @@ categories:
   - segmentation
   - feature-extraction
   - lesions
+  - abnormality
+  - pathology
 
 requires:
   - needs_T1

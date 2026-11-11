@@ -14,6 +14,8 @@ categories:
   - feature-extraction
   - lesions
   - harmonized
+  - abnormality
+  - pathology
 
 requires:
   - needs_T1

@@ -8,9 +8,7 @@ description: |
 docs_id: dkgp
 
 categories:
-  - image-to-biomarker
-  - regression
-  - inference
+  - biomarker
 
 requires:
   - needs_T1

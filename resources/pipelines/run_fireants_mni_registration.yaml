@@ -1,6 +1,7 @@
 # NiChart pipeline: register each T1 to MNI152 with FireANTs (deformable).
 
 pipeline_name: FireANTs MNI Registration
+modalities: [T1]
 description: |
   Registers each subject's T1-weighted image to an MNI152 template using
   FireANTs GPU registration. By default runs a Rigid -> Affine -> SyN cascade and

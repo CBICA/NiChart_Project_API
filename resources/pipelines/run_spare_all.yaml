@@ -10,8 +10,7 @@ harmonized_variant: run_spare_all_harmonized
 
 categories:
   - spare
-  - inference
-  - classification
+  - biomarker
   - highlighted
   - brain-age
 

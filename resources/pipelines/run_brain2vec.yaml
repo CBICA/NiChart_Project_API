@@ -16,8 +16,9 @@ input_notes:
   - "This pipeline skull-strips and aligns your scans for you; upload the raw images as they came off the scanner."
 
 categories:
-  - image-processing
   - feature-extraction
+  - highlighted
+  - new
 
 requires:
   - needs_T1

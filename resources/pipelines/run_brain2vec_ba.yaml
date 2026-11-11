@@ -1,4 +1,5 @@
 pipeline_name: Brain Age (Brain2Vec ViT)
+modalities: [T1]
 description: |
   Predicts brain age from T1-weighted MRI using a Vision Transformer fine-tuned on
   Brain2Vec representations. Produces one predicted brain age (in years) per subject.
@@ -10,7 +11,6 @@ input_notes:
   - "This pipeline skull-strips and aligns your scans for you; upload the raw images as they came off the scanner."
 
 categories:
-  - image-processing
   - feature-extraction
   - brain-age
 

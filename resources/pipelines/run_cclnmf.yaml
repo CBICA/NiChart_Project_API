@@ -9,8 +9,9 @@ description: |
 docs_id: cclnmf
 
 categories:
-  - regression
-  - inference
+  - semi-supervised
+  - heterogeneity
+  - biomarker
 
 requires:
   - needs_T1
