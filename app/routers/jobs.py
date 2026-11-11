@@ -192,7 +192,6 @@ async def submit_pipeline(
         pipeline_id=body.pipeline_id,
         pipeline_steps=pipeline.steps,
         start_from_step=body.start_from_step,
-        study_dir=pdir,
     )
     usage_service.record_pipeline_run(
         body.pipeline_id,

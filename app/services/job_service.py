@@ -100,6 +100,9 @@ class _StepRecord:
     cached_from_run_id: str | None = None
     skip_reason: str | None = None   # "cached" | "forced"; set only when skipped
     chunks: list[_ChunkRecord] = field(default_factory=list)
+    # Upload keys of manual data this step read (manual_upload_store). Set when
+    # the step is submitted; its outputs are marked as derived on success.
+    manual_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -118,9 +121,10 @@ class _RunRecord:
     cancelled: bool = False
     backend_type: str = ""  # e.g. "docker", "singularity", "slurm", "batch"
     start_from_step: str | None = None   # caller-requested start step, if any
-    # Manual intermediate uploads present when the run was submitted. Captured
-    # at submit rather than read live, so the record still describes what this
-    # run actually used after later uploads change the project.
+    # Manual intermediate uploads this run's executed steps actually read, one
+    # entry per upload (see _note_manual_inputs). Captured as each step is
+    # submitted rather than read live, so the record still describes what this
+    # run used after later uploads or runs change the project.
     manual_uploads: list[dict] = field(default_factory=list)
 
 
@@ -668,6 +672,54 @@ def _write_provenance(
             _log.warning("Could not write provenance to %s: %s", d, exc)
 
 
+# ── Manual-data provenance ────────────────────────────────────────────────────
+
+def _note_manual_inputs(
+    run: _RunRecord, step: _StepRecord, study_dir: Path, resolved_inputs: dict[str, str]
+) -> None:
+    """Record any hand-supplied data the step is about to read.
+
+    Called only for a step that is really being submitted, at that moment, so a
+    run is marked for exactly the uploads its executed steps read — not for
+    every upload in the project, not for steps skipped as cached or forced, and
+    not for an upload whose files an earlier step has since overwritten.
+    """
+    hits = manual_upload_store.find_manual_data(
+        study_dir, [Path(p) for p in resolved_inputs.values()]
+    )
+    step.manual_sources = sorted(hits)
+    for key, hit in sorted(hits.items()):
+        entry = next((r for r in run.manual_uploads if r.get("upload_key") == key), None)
+        if entry is None:
+            entry = manual_upload_store.response_record(study_dir, key)
+            if entry is None:
+                continue
+            entry.update(used_files=[], used_by_steps=[], indirect=True)
+            run.manual_uploads.append(entry)
+        entry["used_files"] = sorted(set(entry.get("used_files") or []) | hit.files)
+        if step.step_id not in entry["used_by_steps"]:
+            entry["used_by_steps"].append(step.step_id)
+        entry["indirect"] = bool(entry.get("indirect", True)) and hit.indirect
+
+
+def _mark_derived_outputs(
+    run: _RunRecord, step: _StepRecord, study_dir: Path, resolved_outputs: dict[str, str]
+) -> None:
+    """After a step that read manual data succeeds, mark its outputs as derived from it.
+
+    Never raises: provenance bookkeeping must not fail a step that succeeded.
+    """
+    if not step.manual_sources:
+        return
+    try:
+        manual_upload_store.record_derived(
+            study_dir, run.run_id, step.step_id, step.manual_sources,
+            [Path(p) for p in resolved_outputs.values()],
+        )
+    except Exception as exc:
+        _log.warning("Could not record manual-data provenance for step '%s': %s", step.step_id, exc)
+
+
 # ── Run store persistence ─────────────────────────────────────────────────────
 
 def _run_to_dict(run: _RunRecord) -> dict:
@@ -700,6 +752,7 @@ def _run_to_dict(run: _RunRecord) -> dict:
                 "logs": s.logs,
                 "cached_from_run_id": s.cached_from_run_id,
                 "skip_reason": s.skip_reason,
+                "manual_sources": s.manual_sources,
                 "chunks": [
                     {
                         "chunk_idx": c.chunk_idx,
@@ -753,6 +806,7 @@ def _run_from_dict(d: dict) -> _RunRecord:
             logs=s.get("logs", ""),
             cached_from_run_id=s.get("cached_from_run_id"),
             skip_reason=s.get("skip_reason"),
+            manual_sources=s.get("manual_sources") or [],
             chunks=[
                 _ChunkRecord(
                     chunk_idx=c["chunk_idx"],
@@ -1275,6 +1329,7 @@ async def _run_pipeline_steps(
             # Estimate subject count for cloud queue-drain metric and SLURM time limits.
             num_subjects = _step_subject_count(resolved_inputs)
 
+            _note_manual_inputs(run, step, study_dir, resolved_inputs)
             step.status = "running"
             step.submitted_at = datetime.now(timezone.utc)
             step.container_image = tool_spec.image
@@ -1419,6 +1474,8 @@ async def _run_pipeline_steps(
                             )
                         except Exception as exc:
                             _log.warning("S3 post-chunk sync failed: %s", exc)
+                    # Partial outputs of the chunks that succeeded came from the same inputs.
+                    _mark_derived_outputs(run, step, study_dir, resolved_outputs)
 
                     if succeeded_chunks:
                         step.status = "partially_failed"
@@ -1548,6 +1605,7 @@ async def _run_pipeline_steps(
                         user_id=run.user_id,
                         backend=run.backend_type,
                     )
+                _mark_derived_outputs(run, step, study_dir, resolved_outputs)
                 _mark_cached(
                     metadata, key, run.run_id,
                     tool_id=step_def.tool,
@@ -1584,6 +1642,8 @@ async def _run_pipeline_steps(
         success = await _poll_to_completion(handle, step, run)
 
         if not success:
+            # Whatever the failed step left in its outputs came from the same inputs.
+            _mark_derived_outputs(run, step, study_dir, resolved_outputs)
             if not run.error:
                 run.error = f"Step '{step_def.id}' failed"
             run.status = "failed"
@@ -1655,6 +1715,7 @@ async def _run_pipeline_steps(
                 user_id=run.user_id,
                 backend=run.backend_type,
             )
+        _mark_derived_outputs(run, step, study_dir, resolved_outputs)
         _mark_cached(
             metadata, key, run.run_id,
             tool_id=step_def.tool,
@@ -1856,13 +1917,11 @@ def create_pipeline_run(
     pipeline_id: str,
     pipeline_steps: list,
     start_from_step: str | None = None,
-    study_dir: Path | None = None,
 ) -> _RunRecord:
     """Create and register a pipeline run record (does not start the task).
 
-    Any manual intermediate uploads present in the project are copied onto the
-    record now, so the run keeps saying which of its inputs were supplied by
-    hand even after later uploads change the project.
+    ``manual_uploads`` starts empty: it is filled in as each step is submitted,
+    from what that step actually reads (``_note_manual_inputs``).
     """
     run_id = str(uuid.uuid4())
     run = _RunRecord(
@@ -1873,10 +1932,6 @@ def create_pipeline_run(
         total_steps=len(pipeline_steps),
         steps=[_StepRecord(step_id=s.id, tool_id=s.tool) for s in pipeline_steps],
         start_from_step=start_from_step,
-        manual_uploads=(
-            manual_upload_store.records_for_response(study_dir)
-            if study_dir is not None else []
-        ),
     )
     _save_run(run)
     return run
@@ -2323,10 +2378,13 @@ def plan_pipeline_run(
             subjects_per_chunk=subjects_per_chunk,
             in_flight_elsewhere=in_flight and action == "run",
             missing_inputs=missing_inputs,
-            uses_manual_uploads=any(
-                _paths_overlap(Path(inp), up)
-                for inp in resolved_inputs.values()
-                for up, _ts in manual_overrides
+            # Only a step that will execute reads anything. Earlier steps of this
+            # run have not rewritten their outputs yet, and may not overwrite
+            # every hand-supplied file when they do, so this is "may read".
+            uses_manual_uploads=action == "run" and bool(
+                manual_upload_store.find_manual_data(
+                    study_dir, [Path(p) for p in resolved_inputs.values()]
+                )
             ),
         ))
 

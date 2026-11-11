@@ -941,6 +941,12 @@ async def upload_to_slot(
             )
 
         total_bytes = sum(f.stat().st_size for f in staging.rglob("*") if f.is_file())
+        # Where each staged file lands, so the record can fingerprint exactly the
+        # files this upload wrote (not the rest of a merged-into folder).
+        uploaded_files = (
+            [dest] if slot.type == "file"
+            else [dest / f.relative_to(staging) for f in staging.rglob("*") if f.is_file()]
+        )
 
         # Cloud mode: the slot's files go to S3 *before* the local move, so a
         # failed push leaves no local copy that disagrees with S3. Pushing
@@ -967,7 +973,7 @@ async def upload_to_slot(
         "total_bytes": total_bytes,
         "user_id": user.sub,
         "via": "zip" if archive is not None else "files",
-    })
+    }, uploaded_files=uploaded_files)
     _write_slot_provenance(dest, slot, pipeline_id, user.sub, written, total_bytes)
 
     # The bookkeeping written just above — the cleared cache entries and the

@@ -839,3 +839,173 @@ def test_run_detail_has_no_manual_uploads_for_an_ordinary_run(job_client):
     assert resp.status_code in (200, 202), resp.text
     detail = job_client.get(f"/jobs/pipelines/{resp.json()['run_id']}").json()
     assert detail["manual_uploads"] == []
+
+
+# ── Per-file provenance: what a run actually read ─────────────────────────────
+#
+# A run is marked for an upload only when one of its executed steps reads a file
+# that is still the uploaded one (or computed from it). Writing elsewhere in the
+# same folder does not clear a file; overwriting that file does.
+
+
+def _run(client, project, pipeline=PIPELINE, start=START):
+    resp = client.post(
+        f"/projects/{project}/jobs/pipelines",
+        json={"pipeline_id": pipeline, "start_from_step": start},
+    )
+    assert resp.status_code in (200, 202), resp.text
+    return client.get(f"/jobs/pipelines/{resp.json()['run_id']}").json()
+
+
+def test_upload_is_fingerprinted_per_file(data_client, tmp_path):
+    _make_project(data_client)
+    _upload(data_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))])
+
+    study = tmp_path / "LOCAL_USER" / PROJECT
+    record = json.loads((study / "_working" / "manual_uploads.json").read_text())["uploads"][0]
+    assert record["upload_id"]
+    assert [f["path"] for f in record["uploaded_files"]] == ["dlmuse_vol_harmonized/DLMUSE_Volumes.csv"]
+    assert len(record["uploaded_files"][0]["sha256"]) == 64
+
+
+def test_run_detail_names_the_step_and_files_that_read_the_upload(job_client):
+    project = "readproj"
+    _make_project(job_client, project)
+    _upload(job_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))], project=project)
+
+    detail = _run(job_client, project)
+    [record] = detail["manual_uploads"]
+    assert record["used_by_steps"] == [START]
+    assert record["used_files"] == ["dlmuse_vol_harmonized/DLMUSE_Volumes.csv"]
+    assert record["indirect"] is False
+
+
+def test_upload_into_a_steps_own_output_does_not_mark_that_step(job_client, tmp_path):
+    """The reported bug: dlmuse_vol uploaded by hand, then a plain DLMUSE run.
+    DLMUSE writes dlmuse_vol but never reads it, so the run used no manual data."""
+    project = "dlmuseproj"
+    _make_project(job_client, project)
+    resp = job_client.post(
+        f"/projects/{project}/files/upload/intermediate",
+        data={
+            "pipeline_id": PIPELINE,
+            "start_from_step": "harmonize_dlmuse",
+            "slot_id": "run_nichart_dlmuse.dlmuse_vol",
+            "replace": "false",
+        },
+        files=[("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))],
+    )
+    assert resp.status_code == 200, resp.text
+
+    detail = _run(job_client, project, pipeline="run_dlmuse", start=None)
+    assert detail["manual_uploads"] == []
+
+
+def test_an_overwritten_upload_no_longer_marks_runs(job_client, tmp_path):
+    project = "overproj"
+    _make_project(job_client, project)
+    _upload(job_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))], project=project)
+
+    # What a pipeline re-run producing this file would do.
+    csv = tmp_path / "LOCAL_USER" / project / "dlmuse_vol_harmonized" / "DLMUSE_Volumes.csv"
+    csv.write_bytes(b"MRID,DL_MUSE_Volume_702\nS1,1399999\n")
+
+    assert _run(job_client, project)["manual_uploads"] == []
+
+
+def test_files_left_behind_in_a_rewritten_folder_still_count(data_client, tmp_path):
+    from app.services import manual_upload_store
+
+    _make_project(data_client)
+    _upload(data_client, [
+        ("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv")),
+        ("files", ("extra.csv", b"MRID\nS9\n", "text/csv")),
+    ])
+    study = tmp_path / "LOCAL_USER" / PROJECT
+    slot = study / "dlmuse_vol_harmonized"
+    (slot / "DLMUSE_Volumes.csv").write_bytes(b"MRID,DL_MUSE_Volume_702\nS1,1\n")
+
+    [hit] = manual_upload_store.find_manual_data(study, [slot]).values()
+    assert hit.files == {"dlmuse_vol_harmonized/extra.csv"}
+
+
+def test_a_touched_but_unchanged_file_still_counts(data_client, tmp_path):
+    """A sync can bump an mtime without changing the bytes; the hash decides."""
+    import os
+
+    from app.services import manual_upload_store
+
+    _make_project(data_client)
+    _upload(data_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))])
+    study = tmp_path / "LOCAL_USER" / PROJECT
+    csv = study / "dlmuse_vol_harmonized" / "DLMUSE_Volumes.csv"
+    later = time.time() + 60
+    os.utime(csv, (later, later))
+
+    assert manual_upload_store.find_manual_data(study, [csv])
+
+
+def test_outputs_computed_from_an_upload_carry_it_forward(job_client, tmp_path):
+    project = "derivproj"
+    _make_project(job_client, project)
+    _upload(job_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))], project=project)
+    study = tmp_path / "LOCAL_USER" / project
+    merged = study / "merged_dlmuse_dlwmls" / "csv_out.csv"
+    merged.parent.mkdir(parents=True)
+    merged.write_text("MRID,x\nS1,1\n")   # stands in for what the merge step writes
+
+    _run(job_client, project)   # the merge step reads the upload
+
+    # A later run starting after the merge reads only its output, not the upload.
+    detail = _run(job_client, project, start="run_spare_all_cvm_harmonized")
+    [record] = detail["manual_uploads"]
+    assert record["path"] == "dlmuse_vol_harmonized"
+    assert record["used_files"] == ["merged_dlmuse_dlwmls/csv_out.csv"]
+    assert record["indirect"] is True
+
+    # Regenerating that output clears it.
+    merged.write_text("MRID,x\nS1,2\n")
+    assert _run(job_client, project, start="run_spare_all_cvm_harmonized")["manual_uploads"] == []
+
+
+def test_legacy_record_counts_files_not_modified_since_the_upload(tmp_path):
+    """Records from before per-file fingerprints only name the slot."""
+    import os
+
+    from app.services import manual_upload_store
+
+    study = tmp_path / "study"
+    slot = study / "dlmuse_vol"
+    slot.mkdir(parents=True)
+    old = slot / "uploaded.csv"
+    old.write_text("MRID\nS1\n")
+    rewritten = slot / "DLMUSE_Volumes.csv"
+    rewritten.write_text("MRID\nS2\n")
+
+    uploaded_at = time.time()
+    os.utime(old, (uploaded_at - 10, uploaded_at - 10))
+    os.utime(rewritten, (uploaded_at + 10, uploaded_at + 10))
+    (study / "_working").mkdir()
+    (study / "_working" / "manual_uploads.json").write_text(json.dumps({"uploads": [{
+        "slot_id": "run_nichart_dlmuse.dlmuse_vol", "path": "dlmuse_vol",
+        "files": 1, "uploaded_at": "2026-10-28T22:31:20+00:00", "uploaded_at_ts": uploaded_at,
+    }]}))
+
+    hits = manual_upload_store.find_manual_data(study, [slot])
+    assert [h.files for h in hits.values()] == [{"dlmuse_vol/uploaded.csv"}]
+    assert manual_upload_store.find_manual_data(study, [rewritten]) == {}
+
+
+def test_plan_does_not_mark_steps_that_will_not_execute(data_client):
+    _make_project(data_client)
+    _upload(data_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))])
+
+    resp = data_client.post(
+        f"/projects/{PROJECT}/jobs/pipelines/plan",
+        json={"pipeline_id": PIPELINE, "start_from_step": "run_spare_all_cvm_harmonized"},
+    )
+    assert resp.status_code == 200, resp.text
+    steps = {s["step_id"]: s for s in resp.json()["steps"]}
+    # merge_feature_csvs reads the upload but is skipped (before the start step).
+    assert steps["merge_feature_csvs"]["action"] == "skip_forced"
+    assert steps["merge_feature_csvs"]["uses_manual_uploads"] is False

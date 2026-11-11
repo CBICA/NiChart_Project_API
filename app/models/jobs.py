@@ -138,8 +138,11 @@ class PipelineRunSummary(BaseModel):
 
 
 class ManualUploadRecord(BaseModel):
-    """One slot that was supplied by hand rather than produced by a run."""
+    """One upload of hand-supplied data that a run read."""
 
+    upload_key: str | None = Field(
+        default=None, description="Identifies the upload within the project's upload log."
+    )
     slot_id: str | None = Field(default=None, description="Slot the data was uploaded into.")
     path: str | None = Field(default=None, description="Project-relative path of the slot.")
     pipeline_id: str | None = Field(
@@ -154,6 +157,23 @@ class ManualUploadRecord(BaseModel):
         default=None, description="Whether the slot was cleared before writing."
     )
     uploaded_at: str | None = Field(default=None, description="ISO-8601 upload time.")
+    used_files: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Project-relative files from this upload (or computed from it) that the run's "
+            "steps read. Empty on runs recorded before per-file tracking."
+        ),
+    )
+    used_by_steps: list[str] = Field(
+        default_factory=list, description="Ids of the steps that read them."
+    )
+    indirect: bool = Field(
+        default=False,
+        description=(
+            "True when the run never read the uploaded files themselves, only outputs an "
+            "earlier run computed from them."
+        ),
+    )
 
 
 class PipelineRunDetail(PipelineRunSummary):
@@ -171,10 +191,11 @@ class PipelineRunDetail(PipelineRunSummary):
     manual_uploads: list[ManualUploadRecord] = Field(
         default_factory=list,
         description=(
-            "Intermediate data that had been supplied by hand in this project when "
-            "the run was submitted. Non-empty means some of the run's inputs were "
-            "not produced by a pipeline on this project, so its results are not "
-            "reproducible from the project's raw data. Empty for a normal run."
+            "Hand-supplied intermediate data that this run's executed steps read, "
+            "directly or through outputs computed from it, one entry per upload. "
+            "Tracked per file: an uploaded file stops counting once a pipeline "
+            "overwrites it. Non-empty means the results are not reproducible from "
+            "the project's raw data. Empty for a normal run."
         ),
     )
     jobs_ahead: int | None = Field(
@@ -323,10 +344,12 @@ class RunPlanStep(BaseModel):
     uses_manual_uploads: bool = Field(
         default=False,
         description=(
-            "True when at least one of this step's inputs was supplied by a manual "
-            "intermediate upload rather than produced by a pipeline run. Results "
-            "downstream of such a step are not reproducible from the project's raw "
-            "data; a client should mark them accordingly."
+            "True when this step will execute and its inputs currently contain hand-"
+            "supplied data (an uploaded file still unchanged on disk, or output computed "
+            "from one). An earlier step of the same run may overwrite it first, so this "
+            "is a 'may read'; the run detail's manual_uploads records what was read. "
+            "Results downstream of such a step are not reproducible from the project's "
+            "raw data; a client should mark them accordingly."
         ),
     )
 
