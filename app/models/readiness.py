@@ -38,6 +38,14 @@ class ColumnCheck(BaseModel):
             "(wrong type, out of range, or not in allowed categorical values)."
         ),
     )
+    missing_without_images: int = Field(
+        default=0,
+        description=(
+            "Rows for subjects with no images (not processed) where this column is blank. "
+            "Informational, never a reason for the check to fail: it explains blanks a "
+            "client sees in participants.csv that this pipeline does not need filled."
+        ),
+    )
 
 
 class CsvRequirement(BaseModel):
@@ -69,6 +77,14 @@ class CsvRequirement(BaseModel):
             "in. Empty when the project has no images yet — the imaging check reports "
             "that — and when participants.csv is absent or has no MRID column, since "
             "the remedy there is to upload a file, not to correct IDs."
+        ),
+    )
+    evaluated_subjects: int = Field(
+        default=0,
+        description=(
+            "Number of subjects the column checks were judged over: the subjects the "
+            "pipeline would process, or the CSV's own subjects when it has no imaging "
+            "requirement. The denominator for each column's coverage."
         ),
     )
     rows_without_images: int = Field(

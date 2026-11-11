@@ -386,6 +386,30 @@ def test_extra_rows_do_not_make_a_covered_project_unready(tmp_path):
     assert report.csv.rows_without_images == 500
     assert report.csv.total_subjects == 502
     assert all(not c.subjects_missing for c in report.csv.required_columns)
+    # The blanks in those rows are reported for the client to explain, not held against it.
+    assert report.csv.evaluated_subjects == 2
+    by_col = {c.column: c for c in report.csv.required_columns}
+    assert by_col["Age"].missing_without_images == 500
+    assert by_col["Sex"].missing_without_images == 500
+
+
+def test_coverage_counts_are_over_the_processed_subjects(tmp_path):
+    _write_imaging(tmp_path, ["sub001", "sub002", "sub003"])
+    _write_participants(tmp_path, [
+        {"MRID": "sub001", "DX": "CN", "Age": "70", "Sex": "M"},
+        {"MRID": "sub002", "DX": "CN", "Age": "", "Sex": "F"},
+        {"MRID": "sub003", "DX": "CN", "Age": "72", "Sex": ""},
+        {"MRID": "noimg", "DX": "CN", "Age": "", "Sex": "M"},
+    ])
+
+    report = _check(tmp_path, _csv_requires("MRID", "Age", "Sex"))
+
+    assert report.csv.evaluated_subjects == 3
+    by_col = {c.column: c for c in report.csv.required_columns}
+    assert by_col["Age"].subjects_missing == ["sub002"]
+    assert by_col["Age"].missing_without_images == 1
+    assert by_col["Sex"].subjects_missing == ["sub003"]
+    assert by_col["Sex"].missing_without_images == 0
 
 
 def test_only_complete_sets_are_judged_for_a_multi_modality_pipeline(tmp_path):
@@ -502,3 +526,51 @@ def test_subject_count_ignores_modalities_the_pipeline_does_not_require(tmp_path
 
     assert report.subject_count.actual == 5
     assert not report.satisfied
+
+
+# ── family invariant: harmonization needs controls in every batch ────────────
+
+def test_every_harmonized_pipeline_requires_30_cn_controls_per_batch():
+    """ComBat estimates its parameters from CN subjects, separately per batch, so
+    a harmonized pipeline that does not demand them will run and return numbers
+    that are quietly unreliable. Guards the whole family rather than the four
+    that exist today."""
+    import yaml
+
+    from app.config import Settings
+    from app.services.catalog_service import parse_min_subjects
+
+    checked = []
+    for path in sorted(Settings().pipelines_path.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text()) or {}
+        if not (data.get("harmonized") or "harmonized" in (data.get("categories") or [])):
+            continue
+        pid = path.stem
+        checked.append(pid)
+
+        spec = parse_min_subjects(data.get("requires") or [])
+        assert spec is not None, f"{pid} declares no min_subjects"
+        assert spec.required == 30, f"{pid} requires {spec.required} subjects, not 30"
+
+        cn = [
+            c for c in spec.constraints
+            if any(p.column.lower() == "dx" and (p.equals or "").upper() == "CN"
+                   for p in c.where)
+        ]
+        assert cn, f"{pid} declares no cognitively-normal constraint"
+        assert len(cn) == 1, f"{pid} declares {len(cn)} CN constraints"
+        assert cn[0].per == "Batch", f"{pid} CN constraint is not per Batch"
+        assert cn[0].required == 30, f"{pid} needs {cn[0].required} controls per batch"
+        assert cn[0].recommended == 30
+
+        # The constraint reads DX, so the pipeline has to require that column:
+        # otherwise readiness reports the cohort as unevaluable without ever
+        # telling the user which column to add.
+        required_cols = {
+            (c if isinstance(c, str) else c.get("name", "")).lower()
+            for item in (data.get("requires") or []) if isinstance(item, dict)
+            for c in (item.get("csv_has_columns") or [])
+        }
+        assert "dx" in required_cols, f"{pid} uses DX in a constraint but does not require it"
+
+    assert len(checked) >= 4, f"expected the harmonized family, found {checked}"

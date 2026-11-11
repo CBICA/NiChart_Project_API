@@ -132,6 +132,9 @@ class _CsvCoverage:
     # The population every per-column verdict was computed over, so the value
     # check below can use exactly the same one.
     evaluated: set[str] = dc_field(default_factory=set)
+    # Per column: blank cells in rows for subjects outside ``evaluated``. Reported so
+    # a client can explain blanks it sees in the file that this pipeline ignores.
+    col_blank_unevaluated: dict[str, int] = dc_field(default_factory=dict)
 
 
 def _read_csv_coverage(project_path: Path, processed: set[str] | None) -> _CsvCoverage:
@@ -199,6 +202,10 @@ def _read_csv_coverage(project_path: Path, processed: set[str] | None) -> _CsvCo
             else sum(1 for m in row_mrids if m not in processed)
         ),
         evaluated=evaluated,
+        col_blank_unevaluated={
+            col: sum(1 for m, v in values.items() if m not in evaluated and not v.get(col))
+            for col in data_cols
+        },
     )
 
 
@@ -498,6 +505,9 @@ def check_readiness(
                     present=True,
                     subjects_missing=missing_mrids,
                     subjects_invalid=invalid_mrids,
+                    missing_without_images=(
+                        coverage.col_blank_unevaluated.get(actual, 0) if actual else 0
+                    ),
                 ))
                 if missing_mrids or invalid_mrids:
                     csv_satisfied = False
@@ -511,6 +521,7 @@ def check_readiness(
             required_columns=column_checks,
             total_subjects=total,
             subjects_without_row=coverage.subjects_without_row,
+            evaluated_subjects=len(coverage.evaluated),
             rows_without_images=coverage.rows_without_images,
             satisfied=csv_satisfied,
         )
