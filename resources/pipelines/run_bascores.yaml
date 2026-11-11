@@ -8,10 +8,8 @@ description: |
 docs_id: bascores
 
 categories:
-  - image-to-biomarker
+  - biomarker
   - brain-age
-  - regression
-  - inference
 
 requires:
   - needs_T1

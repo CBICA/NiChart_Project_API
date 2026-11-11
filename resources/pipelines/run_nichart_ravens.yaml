@@ -9,7 +9,7 @@ docs_id: ravens
 
 categories:
   - image-processing
-  - abnormality-mapping
+  - abnormality
 
 requires:
   - needs_T1

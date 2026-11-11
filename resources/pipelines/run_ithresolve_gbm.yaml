@@ -10,6 +10,7 @@ docs_id: ithresolve_gbm
 categories:
   - glioblastoma
   - epigenomics
+  - pathology
 
 requires:
   - needs_idat

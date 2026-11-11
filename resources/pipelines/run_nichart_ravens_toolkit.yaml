@@ -3,6 +3,7 @@
 # colleague's rewritten RavensToolkit package.
 
 pipeline_name: RAVENS Density & MuSIC (RavensToolkit)
+modalities: [T1]
 description: |
   Runs DLMUSE, then RavensToolkit: deformably registers each T1 to the iSTAGING
   template, computes RAVENS GM tissue-density maps (Jacobian-modulated), and
@@ -11,7 +12,7 @@ description: |
 
 categories:
   - image-processing
-  - abnormality-mapping
+  - abnormality
 
 requires:
   - needs_T1

@@ -12,6 +12,7 @@ categories:
   - image-processing
   - segmentation
   - feature-extraction
+  - highlighted
 
 requires:
   - needs_T1

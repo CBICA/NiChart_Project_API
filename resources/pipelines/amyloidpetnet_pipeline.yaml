@@ -13,7 +13,6 @@ docs_id: amyloidpetnet
 
 categories:
   - amyloid
-  - pet
 
 requires:
   - needs_PET

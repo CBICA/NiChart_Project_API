@@ -2,6 +2,7 @@
 # GPU variant of run_nichart_ravens_toolkit.
 
 pipeline_name: RAVENS Density & MuSIC (RavensToolkit, FireANTs/GPU)
+modalities: [T1]
 description: |
   Runs DLMUSE, then RavensToolkit with the GPU FireANTs registration backend:
   deformably registers each T1 to the iSTAGING template, computes RAVENS GM
@@ -10,7 +11,7 @@ description: |
 
 categories:
   - image-processing
-  - abnormality-mapping
+  - abnormality
 
 requires:
   - needs_T1

@@ -10,9 +10,8 @@ modalities: [T1]
 
 categories:
   - spare
-  - inference
-  - classification
   - harmonized
+  - biomarker
   - highlighted
   - brain-age
 

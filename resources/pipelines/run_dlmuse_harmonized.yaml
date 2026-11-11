@@ -13,6 +13,7 @@ categories:
   - segmentation
   - feature-extraction
   - harmonized
+  - highlighted
 
 requires:
   - needs_T1

@@ -10,10 +10,9 @@ harmonized_variant: run_spare_all_cvm_harmonized
 
 categories:
   - spare
-  - inference
-  - classification
+  - biomarker
   - highlighted
-  - cvm
+  - cardiovascular
 
 requires:
   - needs_T1

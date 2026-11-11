@@ -9,6 +9,8 @@ docs_id: recurrence_map_gen
 
 categories:
   - image-processing
+  - abnormality
+  - pathology
 
 requires:
   - needs_T1

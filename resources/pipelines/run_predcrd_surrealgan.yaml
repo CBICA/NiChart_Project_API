@@ -8,10 +8,10 @@ description: |
 docs_id: surrealgan
 
 categories:
-  - inference
-  - regression
-  - surrealgan
-  - predcrd
+  - biomarker
+  - highlighted
+  - semi-supervised
+  - heterogeneity
 
 requires:
   - needs_T1

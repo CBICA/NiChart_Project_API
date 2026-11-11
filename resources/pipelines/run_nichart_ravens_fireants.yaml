@@ -4,6 +4,7 @@
 # CPU ANTs.
 
 pipeline_name: RAVENS Abnormality Mapping (FireANTs / GPU)
+modalities: [T1]
 description: |
   Generates patient-specific regional brain volume abnormality maps using DLMUSE
   and RAVENS, with the internal subject-to-template deformable registration
@@ -12,7 +13,7 @@ description: |
 
 categories:
   - image-processing
-  - abnormality-mapping
+  - abnormality
 
 requires:
   - needs_T1
