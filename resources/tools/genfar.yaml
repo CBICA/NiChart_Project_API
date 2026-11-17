@@ -24,7 +24,11 @@ resources:
   memory: 14000
   gpus: 1
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/genfar:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), two cohort sizes: 6.5 s at N=1
+# and 10.8 s at N=8 => ~6 s fixed plus ~0.6 s/subject. Container start, CUDA init
+# and loading the foundation model dominate; feature extraction per scan is fast.
+fixed_seconds: 6
+time_per_subject_seconds: 0.6
 
 container:
   image: cbica/genfar:0.0.1

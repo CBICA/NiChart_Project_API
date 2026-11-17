@@ -29,7 +29,15 @@ resources:
   memory: 14000
   gpus: 0
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/nifti-align-to-mni:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), three cohort
+# sizes: 26.5 s at N=1, 90.0 s at N=4 and 208.3 s at N=8 => ~24.5 s/subject with
+# ~5 s of container start (the same 5 s as dlicv_to_mni, which shares the image).
+# Scaling is very slightly superlinear, so the slope is fitted with the intercept
+# held at that measured startup cost. CPU-bound (SimpleITK), and ~2.7x the cost of
+# dlicv_to_mni's 9 s/subject because the ICBM152 target is a full affine to a
+# different template.
+fixed_seconds: 5
+time_per_subject_seconds: 24.5
 
 container:
   image: cbica/nifti-align-to-mni:0.0.1

@@ -177,6 +177,12 @@ both commands above then report it as not found. A project whose expiry has
 passed but is still inside that window is shown with a past expiry and can still
 be refreshed.
 
+A project whose retention marker is missing is measured by its directory's last
+modification time instead, so nothing lives on the server indefinitely
+(`NICHART_PROJECT_EXPIRY_MTIME_FALLBACK`, on by default). `retention show` then
+reports an expiry derived from last activity rather than from the marker; the
+next upload, run or refresh writes a real one.
+
 ### All-in-one
 
 | Command | Description |

@@ -136,9 +136,14 @@ _RETENTION_ERRORS = {
         "The countdown resets each time ``POST /projects/{project_id}/retention/refresh`` "
         "is called. "
         "\n\n"
-        "Returns 404 when the heartbeat object is absent — this is expected for projects "
-        "created before this feature shipped; the Lambda sweep will backfill the heartbeat "
-        "on its next daily run, after which this endpoint will return a value."
+        "When the heartbeat object is absent the project directory's mtime is used as "
+        "the clock instead (PROJECT_EXPIRY_MTIME_FALLBACK, on by default), so the value "
+        "returned may be derived from last activity rather than from a marker. Any upload, "
+        "pipeline submission or refresh writes a real heartbeat and replaces it. "
+        "\n\n"
+        "Returns 404 only when there is no clock at all: the fallback is disabled, or S3 "
+        "could not be read — an error leaves the expiry unknown rather than assuming the "
+        "marker is missing."
         "\n\n"
         "An expiry already more than PROJECT_EXPIRY_GRACE_HOURS in the past means the "
         "project is deleted as part of serving this request, and the response is 404. A "
@@ -163,13 +168,18 @@ async def get_retention(
         project_id=project_id,
         project_dir=pdir,
         retention_days=settings.project_retention_days,
+        mtime_fallback=settings.project_expiry_mtime_fallback,
     )
     if await file_service.reap_if_past_grace(settings, user, project_id, pdir, expiry):
         raise HTTPException(404, f"Project '{project_id}' not found")
     if expiry is None:
         if not settings.s3_data_bucket:
             raise HTTPException(404, "Retention tracking is not available in local mode.")
-        raise HTTPException(404, "Retention heartbeat not found — the project may not have one yet.")
+        raise HTTPException(
+            404,
+            "Retention expiry is unknown for this project — its heartbeat could not be "
+            "read, or the directory-mtime fallback is disabled.",
+        )
     return RetentionInfo(expires_at=expiry)
 
 

@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from app.services.path_security import PathEscapeError, assert_safe_path, safe_unzip
+from app.services.path_security import (
+    ArchiveTooLargeError,
+    PathEscapeError,
+    assert_safe_path,
+    safe_unzip,
+)
 
 
 # ── assert_safe_path ──────────────────────────────────────────────────────────
@@ -53,6 +58,11 @@ def test_safe_path_rejects_symlink_escape(tmp_path):
         assert_safe_path(tmp_path, link / "secret.txt")
 
 
+# A bound generous enough that no containment test trips it; the bound
+# itself is exercised by its own tests below.
+_CAP = 64 * 1024 * 1024
+
+
 # ── safe_unzip ────────────────────────────────────────────────────────────────
 
 def _make_zip(archive: Path, members: dict[str, bytes | None], symlinks: list[str] | None = None) -> None:
@@ -80,7 +90,7 @@ def test_safe_unzip_normal(tmp_path):
     _make_zip(archive, {"file.txt": b"hello", "subdir/nested.txt": b"world"})
     dest = tmp_path / "out"
     dest.mkdir()
-    safe_unzip(archive, dest)
+    safe_unzip(archive, dest, max_total_bytes=_CAP)
     assert (dest / "file.txt").read_bytes() == b"hello"
     assert (dest / "subdir" / "nested.txt").read_bytes() == b"world"
 
@@ -92,7 +102,7 @@ def test_safe_unzip_rejects_absolute_path(tmp_path):
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError, match="absolute path"):
-        safe_unzip(archive, dest)
+        safe_unzip(archive, dest, max_total_bytes=_CAP)
 
 
 def test_safe_unzip_rejects_traversal(tmp_path):
@@ -102,7 +112,7 @@ def test_safe_unzip_rejects_traversal(tmp_path):
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError):
-        safe_unzip(archive, dest)
+        safe_unzip(archive, dest, max_total_bytes=_CAP)
 
 
 def test_safe_unzip_rejects_symlink(tmp_path):
@@ -115,7 +125,7 @@ def test_safe_unzip_rejects_symlink(tmp_path):
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError, match="symlink"):
-        safe_unzip(archive, dest)
+        safe_unzip(archive, dest, max_total_bytes=_CAP)
 
 
 def test_safe_unzip_no_partial_extraction(tmp_path):
@@ -128,7 +138,7 @@ def test_safe_unzip_no_partial_extraction(tmp_path):
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError):
-        safe_unzip(archive, dest)
+        safe_unzip(archive, dest, max_total_bytes=_CAP)
     # Nothing should have been extracted
     assert not list(dest.iterdir())
 
@@ -207,7 +217,7 @@ def test_safe_unzip_filtered_skips_dotfiles_and_extracts_the_rest(tmp_path):
     })
     dest = tmp_path / "out"
     dest.mkdir()
-    extracted, skipped = safe_unzip_filtered(archive, dest)
+    extracted, skipped = safe_unzip_filtered(archive, dest, max_total_bytes=_CAP)
 
     assert extracted == ["data.csv"]
     assert sorted(skipped) == sorted([".DS_Store", "__MACOSX/._data.csv"])
@@ -223,7 +233,7 @@ def test_safe_unzip_filtered_rejects_traversal_before_writing_anything(tmp_path)
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError):
-        safe_unzip_filtered(archive, dest)
+        safe_unzip_filtered(archive, dest, max_total_bytes=_CAP)
     assert list(dest.iterdir()) == []
 
 
@@ -242,5 +252,140 @@ def test_safe_unzip_filtered_rejects_symlink_members(tmp_path):
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(PathEscapeError):
-        safe_unzip_filtered(archive, dest)
+        safe_unzip_filtered(archive, dest, max_total_bytes=_CAP)
     assert list(dest.iterdir()) == []
+
+
+# ── Expansion bound (decompression bombs) ─────────────────────────────────────
+
+def _bomb(archive: Path, uncompressed: int) -> None:
+    """A zip whose single member expands to *uncompressed* bytes of zeros."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bomb.bin", b"\0" * uncompressed)
+
+
+def test_safe_unzip_rejects_a_declared_oversize_archive(tmp_path):
+    """The cheap path: the central directory says it is too big, nothing is written."""
+    archive = tmp_path / "bomb.zip"
+    _bomb(archive, 4 * 1024 * 1024)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(ArchiveTooLargeError, match="uncompressed"):
+        safe_unzip(archive, dest, max_total_bytes=1024 * 1024)
+    assert not list(dest.iterdir())
+
+
+def test_safe_unzip_compression_ratio_is_what_makes_this_necessary(tmp_path):
+    """Document the ratio the bound exists to stop: the archive is tiny."""
+    archive = tmp_path / "bomb.zip"
+    _bomb(archive, 8 * 1024 * 1024)
+    assert archive.stat().st_size < 64 * 1024  # >100:1 on this payload
+
+
+def _understated(archive: Path, uncompressed: int) -> Path:
+    """A copy of *archive* whose declared file_size is rewritten to 1 byte.
+
+    Patches both the local header and the central directory, leaving the
+    compressed data untouched.
+    """
+    raw = archive.read_bytes()
+    original = uncompressed.to_bytes(4, "little")
+    assert raw.count(original) >= 2, "expected file_size in both headers"
+    patched = archive.with_name("patched.zip")
+    patched.write_bytes(raw.replace(original, (1).to_bytes(4, "little")))
+    with zipfile.ZipFile(patched) as zf:
+        # The patched member is whichever one declared *uncompressed*.
+        assert any(m.file_size == 1 for m in zf.infolist())
+        assert not any(m.file_size == uncompressed for m in zf.infolist())
+    return patched
+
+
+def test_understating_file_size_cannot_evade_the_bound(tmp_path):
+    """Why the declared-size check is the whole bound, not just a fast path.
+
+    ``file_size`` is attacker-controlled, so an archive can claim to be small.
+    ``ZipFile.open`` stops after that many uncompressed bytes, so the lie
+    truncates the attacker's own payload instead of evading the limit — here it
+    fails the CRC, and in no case does it yield more than was declared.
+    """
+    archive = tmp_path / "bomb.zip"
+    _bomb(archive, 4 * 1024 * 1024)
+    patched = _understated(archive, 4 * 1024 * 1024)
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(zipfile.BadZipFile):
+        safe_unzip(patched, dest, max_total_bytes=1024 * 1024)
+
+    with zipfile.ZipFile(patched) as zf, zf.open(zf.infolist()[-1]) as member:
+        with pytest.raises(zipfile.BadZipFile):
+            member.read()  # never returns more than the declared 1 byte
+
+
+def test_safe_unzip_cleans_up_what_it_wrote_before_aborting(tmp_path):
+    """A failure mid-extraction must not leave files in a live directory."""
+    archive = tmp_path / "liar.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("small.txt", b"ok")
+        zf.writestr("nested/also_small.txt", b"ok")
+        zf.writestr("big.bin", b"\0" * (4 * 1024 * 1024))
+    patched = _understated(archive.with_name("liar.zip"), 4 * 1024 * 1024)
+
+    # A pre-existing file must survive; only what this call created is removed.
+    dest = tmp_path / "live"
+    dest.mkdir()
+    (dest / "pre_existing.txt").write_text("keep me")
+
+    with pytest.raises(zipfile.BadZipFile):
+        safe_unzip(patched, dest, max_total_bytes=_CAP)
+
+    assert [p.name for p in dest.iterdir()] == ["pre_existing.txt"]
+
+
+def test_safe_unzip_accepts_an_archive_inside_the_bound(tmp_path):
+    archive = tmp_path / "fine.zip"
+    _bomb(archive, 512 * 1024)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    safe_unzip(archive, dest, max_total_bytes=1024 * 1024)
+    assert (dest / "bomb.bin").stat().st_size == 512 * 1024
+
+
+def test_safe_unzip_still_creates_directory_members(tmp_path):
+    """Streaming extraction must not drop empty directories the archive declares."""
+    archive = tmp_path / "dirs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("empty_dir/", b"")
+        zf.writestr("has/a/file.txt", b"x")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    safe_unzip(archive, dest, max_total_bytes=_CAP)
+    assert (dest / "empty_dir").is_dir()
+    assert (dest / "has" / "a" / "file.txt").read_bytes() == b"x"
+
+
+def test_safe_unzip_filtered_rejects_an_oversize_archive(tmp_path):
+    from app.services.path_security import safe_unzip_filtered
+
+    archive = tmp_path / "bomb.zip"
+    _bomb(archive, 4 * 1024 * 1024)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(ArchiveTooLargeError):
+        safe_unzip_filtered(archive, dest, max_total_bytes=1024 * 1024)
+    assert not list(dest.iterdir())
+
+
+def test_safe_unzip_filtered_does_not_count_skipped_members(tmp_path):
+    """A dotfile is never written, so it must not push the archive over the bound."""
+    from app.services.path_security import safe_unzip_filtered
+
+    archive = tmp_path / "mac.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("__MACOSX/._big", b"\0" * (4 * 1024 * 1024))
+        zf.writestr("real.txt", b"ok")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    extracted, skipped = safe_unzip_filtered(archive, dest, max_total_bytes=1024 * 1024)
+    assert extracted == ["real.txt"]
+    assert skipped == ["__MACOSX/._big"]

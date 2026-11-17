@@ -29,8 +29,24 @@ resources:
   memory: 8000
   gpus: 0
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/nichart_spare_score_runall:0.0.5, this dev box
+# (Xeon E5-2623 v3), three cohort sizes, two replicates each: 18.9 s at N=1,
+# 19.8 s at N=60 and 20.0 s at N=561 => ~19 s fixed plus ~0.002 s/subject.
+# Essentially all of it is fixed: container start and loading five SVM models
+# and the residualization map. The per-subject term is below this box's noise
+# floor -- run-to-run spread was ~1 s, some fifty times the whole per-subject
+# contribution at N=561 -- so treat it as "not zero" rather than as measured.
+#
+# 0.0.4 and earlier could not run this tool at all: five stacked defects in
+# NiChart_SPARE, three of them individually fatal, left the CVM path unable to
+# produce a single score. All five are fixed in 0.0.5; see
+# ~/vs-code/containers/NiChart_SPARE-cvm-fix/README.md for the diagnosis. Note
+# that 0.0.5 also centres residualization on the training mean age instead of
+# the batch mean, so CVM scores from any earlier image are cohort-dependent and
+# not comparable with these.
+fixed_seconds: 19
+time_per_subject_seconds: 0.002
 
 container:
-  image: cbica/nichart_spare_score_runall:0.0.4
+  image: cbica/nichart_spare_score_runall:0.0.5
   command: "-i {merged_dlwmls_dlmuse_csv} -demog {demog_csv} --category cvm --harmonize -o {spare_all_cvm_csv}"

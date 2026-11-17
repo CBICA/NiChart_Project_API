@@ -29,7 +29,13 @@ resources:
   memory: 8000
   gpus: 1
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/amyloidpetnet:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), three cohort sizes:
+# 14.6 s at N=1, 13.6 s at N=4 and 28.6 s at N=16 => ~12 s fixed plus ~1 s/subject.
+# Overwhelmingly container start, CUDA init and loading the model; inference itself
+# is about a second per scan. Measured by duplicating one real PET scan, so the
+# per-subject figure reflects a single image size.
+fixed_seconds: 12
+time_per_subject_seconds: 1.0
 
 container:
   image: cbica/amyloidpetnet:0.0.1

@@ -54,8 +54,10 @@ from app.services import (
     job_service,
     manual_upload_store,
     s3_sync_service,
+    upload_spool,
 )
 from app.services.path_security import (
+    ArchiveTooLargeError,
     PathEscapeError,
     assert_no_symlinks,
     assert_safe_path,
@@ -462,7 +464,7 @@ def _evaluate_rule(
             source=source,
             status="missing" if not matched_mrids else "met",
             problem=(
-                f"{len(missing)} of {len(subjects)} subject(s) have no matching file, "
+                f"{len(missing)} of {len(subjects)} scan(s) have no matching file, "
                 f"e.g. {', '.join(missing[:5])}"
             ),
         ), matched_mrids
@@ -558,7 +560,7 @@ def evaluate_slot(
                 expected_subjects=None, matched=len(found), missing_mrids=[]
             )
             problems.append(
-                "This project has no imaging and no participants.csv, so per-subject "
+                "This project has no imaging and no participants.csv, so per-scan "
                 "coverage cannot be checked. Verify the file count yourself."
             )
         else:
@@ -886,11 +888,18 @@ async def upload_to_slot(
         try:
             if archive is not None:
                 archive_path = staging.parent / f"{staging.name}.zip"
-                with archive_path.open("wb") as out:
-                    while chunk := await archive.read(_CHUNK_BYTES):
-                        out.write(chunk)
+                # The archive itself goes through the shared budget: the
+                # per-file caps below apply to the members, which left the
+                # archive's own size unbounded on disk.
+                await upload_spool.UploadBudget(settings).spool(archive, archive_path)
                 try:
-                    _extracted, skipped = safe_unzip_filtered(archive_path, staging)
+                    _extracted, skipped = safe_unzip_filtered(
+                        archive_path,
+                        staging,
+                        max_total_bytes=upload_spool.extracted_cap(settings),
+                    )
+                except ArchiveTooLargeError as exc:
+                    raise HTTPException(413, str(exc))
                 finally:
                     archive_path.unlink(missing_ok=True)
                 written, rejected, _ = _stage_zip_members(staging, slot, settings)

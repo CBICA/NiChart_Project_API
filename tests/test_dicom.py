@@ -205,6 +205,52 @@ def test_convert_with_explicit_mrid(job_client):
     assert detail["status"] == "succeeded"
 
 
+@pytest.mark.parametrize("mrid", ["../../escaped", "site1/sub01", " sub001", "-f", "sub\\001"])
+def test_convert_rejects_unsafe_mrid(job_client, mrid):
+    """The MRID reaches the dcm2niix command line, so an unsafe one is a 400."""
+    pid = _create_project(job_client, "dcmbadmrid")
+    series_uid = "1.2.3.4.89"
+    zip_bytes = make_dicom_zip(series_uid=series_uid)
+    staging_id = job_client.post(
+        f"/projects/{pid}/files/dicom/upload",
+        files={"file": ("d.zip", io.BytesIO(zip_bytes), "application/zip")},
+    ).json()["staging_id"]
+
+    resp = job_client.post(
+        f"/projects/{pid}/files/dicom/{staging_id}/convert",
+        json={"series_mappings": [
+            {"series_uid": series_uid, "nichart_modality": "t1", "mrid": mrid}
+        ]},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.parametrize("series_uid", [
+    "../../escaped",        # traversal out of the staging area
+    "../escaped",
+    "/tmp/escaped",         # absolute: pathlib would discard the staging prefix
+    "",                     # resolves to the staging dir itself
+    ".",
+])
+def test_convert_rejects_unsafe_series_uid(job_client, tmp_path, series_uid):
+    """The series UID becomes a directory name, so an unsafe one is a 400."""
+    pid = _create_project(job_client, "dcmbaduid")
+    zip_bytes = make_dicom_zip(series_uid="1.2.3.4.90")
+    staging_id = job_client.post(
+        f"/projects/{pid}/files/dicom/upload",
+        files={"file": ("d.zip", io.BytesIO(zip_bytes), "application/zip")},
+    ).json()["staging_id"]
+
+    resp = job_client.post(
+        f"/projects/{pid}/files/dicom/{staging_id}/convert",
+        json={"series_mappings": [
+            {"series_uid": series_uid, "nichart_modality": "t1", "mrid": "sub001"}
+        ]},
+    )
+    assert resp.status_code == 400, resp.text
+    assert not (tmp_path / "escaped").exists()
+
+
 def test_convert_empty_mappings(job_client):
     pid = _create_project(job_client, "dcmempty")
     zip_bytes = make_plain_zip()
@@ -218,3 +264,61 @@ def test_convert_empty_mappings(job_client):
         json={"series_mappings": []},
     )
     assert resp.status_code == 400
+
+
+# ── Series organisation: disk cost ────────────────────────────────────────────
+
+def test_series_organisation_hardlinks_rather_than_copies(tmp_path):
+    """Sorting into series must not leave a second full copy of every slice.
+
+    The series subdirectory is inside the same staging directory as the source,
+    so the link is always same-filesystem. Checked by inode identity and link
+    count rather than by content, since a copy would pass a content check.
+    """
+    from app.services.dicom_service import organize_series_files_bulk
+
+    series_uid = "1.2.3.4.555"
+    staging_id = "stage1"
+    staging = tmp_path / "_upload" / "dicoms" / staging_id
+    staging.mkdir(parents=True)
+
+    zip_bytes = make_dicom_zip(series_uid=series_uid, patient_id="SUBJ77")
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        zf.extractall(staging)
+    source = staging / "series.dcm"
+    assert source.stat().st_nlink == 1
+
+    result = organize_series_files_bulk(tmp_path, staging_id, {series_uid})
+    series_dir, patient_id = result[series_uid]
+    assert patient_id == "SUBJ77"
+
+    linked = series_dir / "series.dcm"
+    assert linked.exists()
+    assert linked.stat().st_ino == source.stat().st_ino
+    assert linked.stat().st_nlink == 2
+    # Both names, one allocation: the staging area has not doubled in size.
+    assert linked.stat().st_blocks == source.stat().st_blocks
+
+
+def test_series_organisation_falls_back_to_a_copy(tmp_path, monkeypatch):
+    """Filesystems that refuse hardlinks must still get a usable series dir."""
+    import os as _os
+
+    from app.services import dicom_service
+
+    series_uid = "1.2.3.4.556"
+    staging_id = "stage2"
+    staging = tmp_path / "_upload" / "dicoms" / staging_id
+    staging.mkdir(parents=True)
+    with zipfile.ZipFile(io.BytesIO(make_dicom_zip(series_uid=series_uid))) as zf:
+        zf.extractall(staging)
+
+    def _refuse(*args, **kwargs):
+        raise OSError("hardlinks not supported here")
+
+    monkeypatch.setattr(_os, "link", _refuse)
+
+    result = dicom_service.organize_series_files_bulk(tmp_path, staging_id, {series_uid})
+    linked = result[series_uid][0] / "series.dcm"
+    assert linked.exists()
+    assert linked.stat().st_ino != (staging / "series.dcm").stat().st_ino

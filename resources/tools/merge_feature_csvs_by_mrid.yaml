@@ -32,7 +32,11 @@ resources:
   memory: 14000
   gpus: 0
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/merge_feature_csvs:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), two cohort
+# sizes: 1.7 s at N=1 and 2.5 s at N=100 (410-column CSVs) => ~1.7 s fixed plus
+# ~0.008 s/subject. Essentially free: a pandas merge behind a container start.
+fixed_seconds: 2
+time_per_subject_seconds: 0.008
 
 container:
   image: cbica/merge_feature_csvs:0.0.1

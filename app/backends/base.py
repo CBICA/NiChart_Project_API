@@ -140,6 +140,13 @@ class JobHandle(ABC):
         """Persistent log file path, if available (e.g. SLURM output file). None otherwise."""
         return None
 
+    @property
+    def image_digest(self) -> str | None:
+        """Registry digest of the image the job ran (``repo@sha256:...``), if the
+        backend can tell. Recorded for provenance: a tag can be re-pushed, a digest
+        can't. None when unknown."""
+        return None
+
 
 # ── Backend ───────────────────────────────────────────────────────────────────
 

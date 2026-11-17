@@ -244,19 +244,70 @@ def test_delete_project_without_a_bucket_touches_no_s3(data_client, monkeypatch)
 
 def test_resolve_expiry_is_none_without_a_bucket(tmp_path):
     expiry = asyncio.run(
-        retention_service.resolve_expiry(None, "fsx", "u", "p", tmp_path, 7)
+        retention_service.resolve_expiry(None, "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=True)
     )
     assert expiry is None
 
 
-def test_resolve_expiry_is_none_when_the_heartbeat_is_absent(tmp_path, monkeypatch):
-    """A project that was never given a clock must not be treated as expired."""
+def test_resolve_expiry_is_none_when_the_heartbeat_is_absent_and_fallback_is_off(
+    tmp_path, monkeypatch
+):
+    """With the fallback disabled, a project with no marker has no clock at all."""
     async def _absent(**_kw):
         return None
 
     monkeypatch.setattr(retention_service, "read_heartbeat", _absent)
     expiry = asyncio.run(
-        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7)
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=False)
+    )
+    assert expiry is None
+
+
+def test_resolve_expiry_falls_back_to_the_directory_mtime(tmp_path, monkeypatch):
+    """Without this a project with no marker can never expire, so deleting the
+    marker — which a user with identity-pool credentials can do in S3 — keeps the
+    data on the server forever."""
+    async def _absent(**_kw):
+        return None
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _absent)
+    import os
+    mtime = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    os.utime(tmp_path, (mtime.timestamp(), mtime.timestamp()))
+
+    expiry = asyncio.run(
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=True)
+    )
+    assert expiry == mtime + timedelta(days=7)
+
+
+def test_the_mtime_fallback_does_not_apply_to_an_s3_error(tmp_path, monkeypatch):
+    """An absent marker is a fact; an unreadable one is not. A project whose
+    heartbeat is current must not be condemned by an outage — nor by the 403 that
+    head_object returns instead of 404 when bucket permissions are wrong."""
+    async def _boom(**_kw):
+        raise RuntimeError("S3 unavailable")
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _boom)
+    expiry = asyncio.run(
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=True)
+    )
+    assert expiry is None
+
+
+def test_the_mtime_fallback_is_unknown_when_the_directory_is_gone(tmp_path, monkeypatch):
+    """Failing to measure a project must not condemn it."""
+    async def _absent(**_kw):
+        return None
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _absent)
+    expiry = asyncio.run(
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path / "gone", 7,
+                                         mtime_fallback=True)
     )
     assert expiry is None
 
@@ -268,7 +319,8 @@ def test_resolve_expiry_fails_open_on_an_s3_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(retention_service, "read_heartbeat", _boom)
     expiry = asyncio.run(
-        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7)
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=False)
     )
     assert expiry is None
 
@@ -281,8 +333,10 @@ def test_resolve_expiry_adds_the_window_to_the_heartbeat(tmp_path, monkeypatch):
 
     monkeypatch.setattr(retention_service, "read_heartbeat", _hb)
     expiry = asyncio.run(
-        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7)
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=True)
     )
+    # A real marker always wins over the fallback, even with it enabled.
     assert expiry == written + timedelta(days=7)
 
 
@@ -294,7 +348,8 @@ def test_resolve_expiry_prefers_a_local_override(tmp_path, monkeypatch):
     override = datetime(2030, 6, 1, tzinfo=timezone.utc)
     retention_service.write_retention_override(tmp_path, override)
     expiry = asyncio.run(
-        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7)
+        retention_service.resolve_expiry("buck", "fsx", "u", "p", tmp_path, 7,
+                                         mtime_fallback=True)
     )
     assert expiry == override
 
@@ -490,3 +545,126 @@ def test_nifti_staging_refreshes_retention(cloud_upload_client, monkeypatch):
 
     assert resp.status_code == 202, resp.text
     assert calls == [(pid, "upload")]
+
+
+# ── the mtime fallback end to end ────────────────────────────────────────────
+#
+# A heartbeat is an object in the user's own S3 prefix, so a user holding
+# identity-pool credentials can delete it. Without a fallback clock that makes
+# the project unexpirable, which is the cheapest possible way to keep data on
+# the server forever.
+
+def _backdate(project_dir, *, days=0, hours=0):
+    import os
+    when = (datetime.now(timezone.utc) - timedelta(days=days, hours=hours)).timestamp()
+    os.utime(project_dir, (when, when))
+
+
+def test_a_clockless_project_is_reaped_on_its_directory_mtime(
+    cloud_upload_client, monkeypatch, tmp_path
+):
+    """No heartbeat and untouched for longer than the window plus the grace
+    period: the project is deleted rather than living forever."""
+    deleted = []
+
+    async def _delete(bucket, prefix):
+        deleted.append(prefix)
+
+    monkeypatch.setattr(s3_sync_service, "delete_s3_prefix", _delete)
+    pid = _create_project(cloud_upload_client, "noheartbeatold")
+    pdir = tmp_path / _USER / pid
+    _backdate(pdir, days=9)  # 7-day window, expired 2 days ago, past the 24h grace
+
+    listed = cloud_upload_client.get("/projects").json()
+
+    assert [p["id"] for p in listed] == []
+    assert not pdir.exists()
+    assert deleted == [f"fsx/{_USER}/{pid}"]
+
+
+def test_a_clockless_project_inside_the_grace_window_survives(
+    cloud_upload_client, monkeypatch, tmp_path
+):
+    async def _delete(*_a, **_kw):
+        raise AssertionError("must not delete inside the grace window")
+
+    monkeypatch.setattr(s3_sync_service, "delete_s3_prefix", _delete)
+    pid = _create_project(cloud_upload_client, "noheartbeatgrace")
+    pdir = tmp_path / _USER / pid
+    _backdate(pdir, days=7, hours=12)  # expired 12h ago, inside the 24h grace
+
+    listed = cloud_upload_client.get("/projects").json()
+
+    assert [p["id"] for p in listed] == [pid]
+    assert pdir.is_dir()
+    # And the endpoint reports the fallback expiry rather than 404ing.
+    body = cloud_upload_client.get(f"/projects/{pid}/retention").json()
+    assert datetime.fromisoformat(body["expires_at"]) < datetime.now(timezone.utc)
+
+
+def test_a_recently_used_clockless_project_is_untouched(
+    cloud_upload_client, monkeypatch, tmp_path
+):
+    async def _delete(*_a, **_kw):
+        raise AssertionError("a fresh project must not be reaped")
+
+    monkeypatch.setattr(s3_sync_service, "delete_s3_prefix", _delete)
+    pid = _create_project(cloud_upload_client, "noheartbeatfresh")
+
+    assert [p["id"] for p in cloud_upload_client.get("/projects").json()] == [pid]
+    body = cloud_upload_client.get(f"/projects/{pid}/retention").json()
+    assert datetime.fromisoformat(body["expires_at"]) > datetime.now(timezone.utc)
+
+
+def test_disabling_the_fallback_restores_the_old_fail_open_behaviour(
+    cloud_upload_client, monkeypatch, tmp_path
+):
+    """The escape hatch: with it off, a clockless project is immortal again and
+    the retention endpoint 404s, as it did before the fallback existed."""
+    from app.config import Settings, get_settings
+
+    async def _delete(*_a, **_kw):
+        raise AssertionError("the fallback is disabled; nothing may be reaped")
+
+    monkeypatch.setattr(s3_sync_service, "delete_s3_prefix", _delete)
+    pid = _create_project(cloud_upload_client, "fallbackoff")
+    pdir = tmp_path / _USER / pid
+    _backdate(pdir, days=400)
+
+    cloud_upload_client.app.dependency_overrides[get_settings] = lambda: Settings(
+        execution_mode="cloud",
+        data_root=tmp_path,
+        s3_data_bucket="test-bucket",
+        s3_data_prefix="fsx",
+        project_expiry_mtime_fallback=False,
+    )
+
+    assert [p["id"] for p in cloud_upload_client.get("/projects").json()] == [pid]
+    assert pdir.is_dir()
+    assert cloud_upload_client.get(f"/projects/{pid}/retention").status_code == 404
+
+
+def test_an_upload_replaces_the_fallback_with_a_real_heartbeat(
+    cloud_upload_client, monkeypatch, tmp_path
+):
+    """Every path that should extend retention writes a marker, so the fallback
+    only governs projects nothing has touched."""
+    import io
+
+    writes = []
+
+    async def _write(**kw):
+        writes.append(kw["project_id"])
+        return datetime.now(timezone.utc)
+
+    monkeypatch.setattr(retention_service, "write_heartbeat", _write)
+    pid = _create_project(cloud_upload_client, "fallbackreplaced")
+    writes.clear()  # creation's own heartbeat
+
+    resp = cloud_upload_client.post(
+        f"/projects/{pid}/files/upload/csv",
+        files={"file": ("participants.csv", io.BytesIO(b"MRID,Age\nsub001,70\n"), "text/csv")},
+    )
+
+    assert resp.status_code == 204
+    assert writes == [pid]

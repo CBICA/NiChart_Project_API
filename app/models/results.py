@@ -53,6 +53,30 @@ class PerSubjectOutput(BaseModel):
     subjects: dict[str, PerSubjectFileStatus] = Field(
         description="Map of MRID → file availability and download path."
     )
+    from_earlier_step: bool = Field(
+        default=False,
+        description=(
+            "True when an earlier step writes this output, not the step that makes the "
+            "result this pipeline's own (e.g. the DLMUSE segmentation listed under "
+            "harmonized DLMUSE: harmonization doesn't change it). It is the same file "
+            "whichever pipeline produced it — show it as such, not as this pipeline's."
+        ),
+    )
+    produced_by_step: str | None = Field(
+        default=None, description="Id of the step in this pipeline that writes it."
+    )
+    same_as_pipeline_id: str | None = Field(
+        default=None,
+        description=(
+            "For an earlier-step output: another pipeline whose own result is this same "
+            "file (the non-harmonized variant when there is one)."
+        ),
+    )
+    same_as_pipeline_name: str | None = None
+    origin_note: str | None = Field(
+        default=None,
+        description="Short label for an earlier-step output, e.g. 'From DLMUSE — not harmonized'.",
+    )
 
 
 class FeatureReference(BaseModel):
@@ -193,9 +217,11 @@ class PipelineResultSummary(BaseModel):
     has_outputs: bool = Field(
         default=False,
         description=(
-            "True if any output of this pipeline exists in the project: the batch feature "
-            "CSV, or at least one per-subject file. Every catalog pipeline is listed, so "
-            "use this to show only pipelines that have actually produced something."
+            "True if this pipeline's own result exists in the project: a result written by "
+            "its final result-producing step (the batch feature CSV, or a per-subject file). "
+            "Outputs of earlier steps don't count — another pipeline writes the same files "
+            "(the DLMUSE segmentation doesn't mean harmonized DLMUSE has run). Every catalog "
+            "pipeline is listed, so use this to show only pipelines that have produced something."
         ),
     )
     has_atlas: bool = Field(

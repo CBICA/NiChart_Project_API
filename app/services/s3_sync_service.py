@@ -446,6 +446,31 @@ def _delete_prefix_sync(bucket: str, prefix: str) -> int:
     return deleted
 
 
+def _delete_keys_sync(bucket: str, keys: list[str]) -> int:
+    """Delete exactly these keys (missing ones are not an error). Returns count requested."""
+    s3 = _client()
+    for i in range(0, len(keys), 1000):  # delete_objects caps at 1000 keys per call
+        batch = [{"Key": k} for k in keys[i:i + 1000]]
+        _retry(
+            f"delete {len(batch)} keys",
+            lambda batch=batch: s3.delete_objects(Bucket=bucket, Delete={"Objects": batch}),
+        )
+    return len(keys)
+
+
+async def delete_s3_files(bucket: str, prefix: str, rel_paths: list[str]) -> None:
+    """Delete the S3 copies of these project files (paths relative to the project).
+
+    Syncing up never deletes, and a run starts by syncing the project down, so a file
+    deleted only locally would come back at the next run.
+    """
+    if not rel_paths:
+        return
+    keys = [f"{prefix}/{rel}" for rel in rel_paths]
+    n = await _sync_with_retry("delete", _delete_keys_sync, bucket, keys)
+    _log.info("s3 delete complete: %d file(s) under s3://%s/%s/", n, bucket, prefix)
+
+
 async def delete_s3_prefix(bucket: str, prefix: str) -> None:
     """Delete all objects under s3://bucket/prefix. Non-blocking.
 

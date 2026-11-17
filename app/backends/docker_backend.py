@@ -37,8 +37,13 @@ from app.config import Settings
 class DockerJobHandle(JobHandle):
     """Wraps a Docker container object."""
 
-    def __init__(self, container) -> None:
+    def __init__(self, container, image_digest: str | None = None) -> None:
         self._container = container
+        self._image_digest = image_digest
+
+    @property
+    def image_digest(self) -> str | None:
+        return self._image_digest
 
     @property
     def job_id(self) -> str:
@@ -155,4 +160,14 @@ class DockerBackend(JobBackend):
             user=run_user,
             device_requests=device_requests or None,
         )
-        return DockerJobHandle(container)
+        return DockerJobHandle(container, await asyncio.to_thread(self._repo_digest, tool_spec.image))
+
+    def _repo_digest(self, image: str) -> str | None:
+        """``repo@sha256:...`` of the local image, or None for a locally built image
+        (no registry digest) or any lookup failure."""
+        try:
+            digests = self._client.images.get(image).attrs.get("RepoDigests") or []
+        except Exception:
+            return None
+        repo = image.rsplit(":", 1)[0] if ":" in image.rsplit("/", 1)[-1] else image
+        return next((d for d in digests if d.split("@", 1)[0] == repo), digests[0] if digests else None)

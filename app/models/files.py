@@ -185,6 +185,37 @@ class ParticipantsUpdate(BaseModel):
     )
 
 
+class DeleteSubjectsRequest(BaseModel):
+    """Request body to remove subjects from a project."""
+
+    mrids: list[str] = Field(
+        min_length=1,
+        description="Subjects to remove, matched exactly against image file names and participants.csv MRIDs.",
+    )
+    remove_rows: bool = Field(
+        default=True, description="Also remove their rows from participants.csv."
+    )
+    dry_run: bool = Field(
+        default=False, description="Only report what would be deleted; change nothing."
+    )
+
+
+class DeleteSubjectsResult(BaseModel):
+    """What a subject removal deleted (or, with ``dry_run``, would delete)."""
+
+    files: list[str] = Field(
+        description=(
+            "Image files deleted, relative to the project root: ``{modality}/{MRID}.nii[.gz]``. "
+            "Pipeline outputs are not touched."
+        )
+    )
+    removed_rows: int = Field(description="Rows removed from participants.csv.")
+    mrids_without_images: list[str] = Field(
+        description="Requested MRIDs with no image in any modality directory."
+    )
+    dry_run: bool
+
+
 # ── Manual intermediate uploads ───────────────────────────────────────────────
 #
 # Supports starting a pipeline from a later step when the user already holds the
@@ -338,6 +369,22 @@ class IntermediateInputsResponse(BaseModel):
             "Slots that no step at or after the start step reads are omitted. Empty "
             "when the start step is the first step and nothing is skipped."
         )
+    )
+
+
+class UploadLimits(BaseModel):
+    """Upload size limits in force on this deployment.
+
+    Clients should check a file's size against these before transferring it: the
+    server can only answer with 413 once the whole request body has arrived, so a
+    client-side check is what saves the user a long upload that cannot succeed.
+    """
+
+    max_upload_file_mb: int = Field(
+        description="Largest single file accepted by any upload endpoint, in MiB."
+    )
+    max_upload_request_mb: int = Field(
+        description="Largest total payload accepted in one upload request, in MiB."
     )
 
 

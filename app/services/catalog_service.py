@@ -4,6 +4,7 @@ Catalog service — loads tool and pipeline YAML definitions from the resources 
 
 import csv
 import logging
+import re
 from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Any
@@ -682,6 +683,89 @@ def get_pipeline_results_spec(pipelines_path: Path, pipeline_id: str) -> "Pipeli
         per_subject=per_subject,
         atlas=raw.get("atlas"),
         atlas_segmentation=raw.get("atlas_segmentation"),
+    )
+
+
+# ── Which step produces each result ───────────────────────────────────────────
+
+_STEP_OUTPUT_REF_RE = re.compile(r"\$\{(\w+)\.outputs\.(\w+)\}")
+
+BATCH_FEATURES_KEY = "batch_features"
+
+
+def result_location(pattern: str) -> str:
+    """Project-relative path a result lives at: the file itself, or for a
+    per-subject pattern the directory above its first ``{MRID}``."""
+    if "{MRID}" not in pattern:
+        return pattern
+    prefix = pattern.split("{MRID}", 1)[0]
+    return prefix.rsplit("/", 1)[0] if "/" in prefix else prefix.rstrip("/")
+
+
+@dataclass(frozen=True)
+class ResultOrigins:
+    """Where a pipeline's declared results come from, by step.
+
+    ``final_step`` is the last step (in run order) that writes any declared
+    result: the step that makes the result this pipeline's own. Results
+    written by an earlier step (e.g. the DLMUSE segmentation in the harmonized
+    DLMUSE pipeline, which harmonization doesn't touch) are part of the result
+    but not evidence that this pipeline ran — another pipeline writes the same
+    files. Keys are ``"batch_features"`` or a per-subject output id.
+    """
+    final_step: str | None
+    producers: dict[str, str | None]
+    locations: dict[str, str]
+    step_tools: dict[str, str]
+    harmonized: bool
+
+
+def get_result_origins(pipelines_path: Path, pipeline_id: str) -> ResultOrigins | None:
+    """None when the pipeline declares no results."""
+    yaml_path = pipelines_path / f"{pipeline_id}.yaml"
+    if not yaml_path.exists():
+        return None
+    data = _load_yaml(yaml_path)
+    raw = data.get("results") or {}
+    if not raw:
+        return None
+
+    # Output paths per step, project-relative (no study dir needed for this).
+    order: list[str] = []
+    outputs: dict[str, dict[str, str]] = {}
+    for step in data.get("steps") or []:
+        resolved: dict[str, str] = {}
+        for label, template in (step.get("outputs") or {}).items():
+            value = str(template)
+            for m in _STEP_OUTPUT_REF_RE.finditer(value):
+                value = value.replace(m.group(0), outputs.get(m.group(1), {}).get(m.group(2), ""))
+            resolved[label] = value.replace("${STUDY}/", "").replace("${STUDY}", "")
+        outputs[step["id"]] = resolved
+        order.append(step["id"])
+
+    locations: dict[str, str] = {}
+    if raw.get("batch_features"):
+        locations[BATCH_FEATURES_KEY] = raw["batch_features"]["file"]
+    for ps in raw.get("per_subject") or []:
+        locations[ps["id"]] = result_location(ps["pattern"])
+
+    def producer(location: str) -> str | None:
+        # The last step writing it wins, as on disk.
+        for step_id in reversed(order):
+            for out in outputs[step_id].values():
+                if location == out or location.startswith(out + "/") or out.startswith(location + "/"):
+                    return step_id
+        return None
+
+    producers = {key: producer(loc) for key, loc in locations.items()}
+    writing = {p for p in producers.values() if p}
+    final_step = next((sid for sid in reversed(order) if sid in writing), None)
+    return ResultOrigins(
+        final_step=final_step,
+        producers=producers,
+        locations=locations,
+        step_tools={s["id"]: s.get("tool", "") for s in data.get("steps") or []},
+        harmonized=bool(data.get("harmonized")),
     )
 
 

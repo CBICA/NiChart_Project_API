@@ -51,6 +51,15 @@ def _docker_tag_to_sif_name(image: str) -> str:
     return image.replace("/", "_").replace(":", "_") + ".sif"
 
 
+def effective_run_mode(configured: str | None, rendered_command: str) -> str:
+    """'run' or 'exec' for a tool: its configured mode, else 'run' when the command
+    is only arguments to the entrypoint (starts with '-'). Shared with the
+    provenance report, which prints the same invocation."""
+    if configured in ("run", "exec"):
+        return configured
+    return "run" if rendered_command.lstrip().startswith("-") else "exec"
+
+
 class SingularityJobHandle(JobHandle):
     """Wraps a running ``apptainer`` subprocess."""
 
@@ -118,10 +127,7 @@ class SingularityBackend(JobBackend):
 
     def _effective_run_mode(self, tool_spec: ToolSpec, rendered_command: str) -> str:
         """Determine whether to use 'run' or 'exec' for this tool invocation."""
-        if tool_spec.singularity_run_mode in ("run", "exec"):
-            return tool_spec.singularity_run_mode
-        # Auto-detect: if the command starts with '-', it's args to an entrypoint.
-        return "run" if rendered_command.lstrip().startswith("-") else "exec"
+        return effective_run_mode(tool_spec.singularity_run_mode, rendered_command)
 
     def _build_apptainer_argv(
         self,

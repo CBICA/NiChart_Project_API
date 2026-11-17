@@ -26,4 +26,8 @@ parameters:
   mrid:
     type: str
     default: subject
+# Deliberately untimed: conversion cost depends far more on the DICOM archive
+# (slice count, compression, echoes per series) than on the number of subjects,
+# so a per-subject figure would mislead rather than inform. The planner reports
+# a dcm2niix step as having no timing, which is the honest answer.
 time_per_subject_seconds: null

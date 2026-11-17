@@ -84,7 +84,15 @@ steps:
 
 results:
   batch_features:
-    file: "nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented_Volumes.csv"
+    # The merge step's output, not nichart_dlwmls_out/: that CSV is the same file the
+    # plain DLWMLS pipeline produces (nichart_dlwmls_v2 never reads the harmonized
+    # volumes), so pointing at it made this variant look run — and its results look
+    # harmonized — after a plain DLWMLS run. The merged CSV joins the harmonized DLMUSE
+    # volumes (H_DL_MUSE_Volume_*) with the lesion volumes (DL_WMLS_Volume_*, which
+    # this pipeline does not harmonize) by MRID. The label map below names the lesion
+    # columns, as for plain DLWMLS.
+    file: "merged_dlmuse_dlwmls_harmonized/csv_out.csv"
+    display_name: "Regional White Matter Lesion Volumes + Harmonized DLMUSE Volumes"
     mrid_column: "MRID"
     label_map: "atlases/muse/muse_mapping_derived.csv"
     column_template: "DL_WMLS_Volume_{id}"

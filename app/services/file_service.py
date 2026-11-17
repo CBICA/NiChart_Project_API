@@ -25,6 +25,7 @@ from app.auth.dependencies import CurrentUser
 from app.config import Settings
 from app.models.files import (
     CommittedFile,
+    DeleteSubjectsResult,
     DirectoryTree,
     FileEntry,
     NiftiCommitResult,
@@ -36,7 +37,9 @@ from app.models.files import (
 from app.models.projects import Project
 from app.services import retention_service, s3_sync_service
 from app.services.path_security import (
+    ArchiveTooLargeError,
     PathEscapeError,
+    assert_safe_mrid,
     assert_safe_path,
     assert_safe_upload_filename,
     safe_unzip,
@@ -189,6 +192,7 @@ async def reap_project_if_expired(
         project_id=project_id,
         project_dir=pdir,
         retention_days=settings.project_retention_days,
+        mtime_fallback=settings.project_expiry_mtime_fallback,
     )
     return await reap_if_past_grace(settings, user, project_id, pdir, expiry)
 
@@ -551,6 +555,118 @@ def sync_participants_with_images(project_path: Path) -> int:
     return len(new_rows)
 
 
+def _image_mrid(filename: str) -> str | None:
+    """The MRID an image file in a modality directory belongs to (as collect_project_mrids)."""
+    if filename.endswith(".nii.gz"):
+        return filename[:-7]
+    if filename.endswith(".nii"):
+        return filename[:-4]
+    return None
+
+
+def delete_subjects(
+    project_path: Path, mrids: list[str], remove_rows: bool = True, dry_run: bool = False
+) -> DeleteSubjectsResult:
+    """Remove subjects: their images in every modality directory and, with ``remove_rows``,
+    their participants.csv rows.
+
+    For trimming a project to the subjects whose participant data is complete, rather
+    than deleting images one by one. MRIDs are matched exactly, as the readiness check
+    matches them, and only ever compared with existing file names — never joined into a
+    path. Pipeline outputs already produced for these subjects are left in place.
+    participants.csv keeps its header, and every other row's values, unchanged.
+    """
+    wanted = {m.strip() for m in mrids if m.strip()}
+    files: list[Path] = []
+    imaged: set[str] = set()
+    for code in modalities.MODALITY_CODES:
+        mod_path = project_path / code
+        if not mod_path.is_dir():
+            continue
+        for f in sorted(mod_path.iterdir()):
+            mrid = _image_mrid(f.name)
+            if mrid in wanted and f.is_file():
+                files.append(f)
+                imaged.add(mrid)
+
+    csv_path = project_path / _PARTICIPANTS_PATH
+    header: list[str] | None = None
+    kept: list[list[str]] = []
+    removed_rows = 0
+    if remove_rows and csv_path.exists():
+        with csv_path.open(newline="") as fh:
+            reader = csv.reader(fh)
+            header = next(reader, None)
+            idx = next((i for i, c in enumerate(header or []) if c.strip().lower() == "mrid"), None)
+            for row in reader:
+                if idx is not None and idx < len(row) and row[idx].strip() in wanted:
+                    removed_rows += 1
+                else:
+                    kept.append(row)
+
+    if not dry_run:
+        for f in files:
+            f.unlink()
+        if removed_rows and header is not None:
+            with csv_path.open("w", newline="") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(header)
+                writer.writerows(kept)
+
+    return DeleteSubjectsResult(
+        files=[f.relative_to(project_path).as_posix() for f in files],
+        removed_rows=removed_rows,
+        mrids_without_images=sorted(wanted - imaged),
+        dry_run=dry_run,
+    )
+
+
+async def unpublish_files(
+    settings: Settings, user: CurrentUser, project_id: str, rel_paths: list[str]
+) -> None:
+    """Delete the cloud copies of project files just deleted locally.
+
+    The counterpart of ``publish_uploads``: syncing up never deletes, and a run begins
+    by syncing the project down, so without this a deleted input would quietly come
+    back at the next run. Raised as 502 for the same reason as there.
+
+    No-op outside cloud mode, or when no data bucket is configured.
+    """
+    if settings.execution_mode != "cloud" or not settings.s3_data_bucket or not rel_paths:
+        return
+    prefix = s3_sync_service.project_prefix(settings.s3_data_prefix, user.sub, project_id)
+    try:
+        await s3_sync_service.delete_s3_files(settings.s3_data_bucket, prefix, rel_paths)
+    except Exception as exc:
+        raise _unpublish_failed(exc)
+
+
+async def unpublish_path(
+    settings: Settings, user: CurrentUser, project_id: str, rel: str, *, is_dir: bool
+) -> None:
+    """``unpublish_files`` for one path just deleted locally: a file, or a whole directory
+    (every object under it)."""
+    if settings.execution_mode != "cloud" or not settings.s3_data_bucket:
+        return
+    if not is_dir:
+        await unpublish_files(settings, user, project_id, [rel])
+        return
+    prefix = s3_sync_service.project_prefix(settings.s3_data_prefix, user.sub, project_id)
+    try:
+        # Trailing "/" so a sibling sharing the name's start (t1 vs t1ce) is not matched.
+        await s3_sync_service.delete_s3_prefix(settings.s3_data_bucket, f"{prefix}/{rel}/")
+    except Exception as exc:
+        raise _unpublish_failed(exc)
+
+
+def _unpublish_failed(exc: Exception) -> HTTPException:
+    return HTTPException(
+        502,
+        "Deleted here, but the cloud copy could not be removed, so a later run would "
+        f"bring it back: {exc}",
+    )
+
+
 def participants_template_csv(project_path: Path) -> str:
     """Build a participants CSV template string.
 
@@ -728,14 +844,17 @@ def build_nifti_proposals(
 
 # ── NIfTI staging ─────────────────────────────────────────────────────────────
 
-def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[bytes]) -> NiftiStagingResult:
+def stage_nifti_files(
+    project_path: Path, filenames: list[str], sources: list[Path]
+) -> NiftiStagingResult:
+    """Stage NIfTIs already spooled to disk. *sources* are moved, not copied."""
     staging_id = str(uuid.uuid4())
     staging_dir = project_path / "_upload" / "nifti" / staging_id
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     entries: list[tuple[str, str]] = []
     skipped_duplicates = []
-    for filename, data in zip(filenames, file_data):
+    for filename, source in zip(filenames, sources):
         safe_name = Path(filename).name
         if not (safe_name.endswith(".nii") or safe_name.endswith(".nii.gz")):
             shutil.rmtree(staging_dir)
@@ -747,7 +866,7 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
             skipped_duplicates.append(filename)
             continue
         assert_safe_path(staging_dir, dest)
-        dest.write_bytes(data)
+        shutil.move(str(source), dest)
         # Keep the original upload path so that directory components
         # (e.g. "fl/subject001.nii.gz") contribute to modality detection.
         entries.append((filename, safe_name))
@@ -763,8 +882,14 @@ def stage_nifti_files(project_path: Path, filenames: list[str], file_data: list[
     )
 
 
-def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> NiftiStagingResult:
-    """Extract a zip of NIfTI files into a new staging area and return proposals."""
+def stage_nifti_zip(
+    project_path: Path, archive: Path, filename: str, *, max_extracted_bytes: int
+) -> NiftiStagingResult:
+    """Extract a zip of NIfTI files into a new staging area and return proposals.
+
+    *max_extracted_bytes* bounds the uncompressed contents; an archive over it
+    raises ``HTTPException(413)``.
+    """
     if not filename.lower().endswith(".zip"):
         raise HTTPException(400, "NIfTI zip upload must be a .zip file")
 
@@ -774,11 +899,12 @@ def stage_nifti_zip(project_path: Path, contents: bytes, filename: str) -> Nifti
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive = Path(tmpdir) / "upload.zip"
-            archive.write_bytes(contents)
             extract_dir = Path(tmpdir) / "extracted"
             extract_dir.mkdir()
-            safe_unzip(archive, extract_dir)
+            try:
+                safe_unzip(archive, extract_dir, max_total_bytes=max_extracted_bytes)
+            except ArchiveTooLargeError as exc:
+                raise HTTPException(413, str(exc))
 
             entries: list[tuple[str, str]] = []
             skipped_duplicates = []
@@ -826,15 +952,28 @@ def commit_nifti_staging(
     if not staging_dir.is_dir():
         raise HTTPException(404, f"Staging area '{staging_id}' not found")
 
-    committed = []
-    skipped = []
+    # Validate the whole batch before moving anything. The MRID becomes the target
+    # filename, so it has to be a plain identifier and the target has to be inside
+    # the project. Checking up front also keeps a bad mapping late in the list from
+    # leaving the batch half-moved.
+    targets = []
     for mapping in mappings:
         src = staging_dir / mapping.filename
-        assert_safe_path(staging_dir, src)
+        target = project_path / mapping.modality / f"{mapping.mrid}.nii.gz"
+        try:
+            assert_safe_mrid(mapping.mrid)
+            assert_safe_path(staging_dir, src)
+            assert_safe_path(project_path, target)
+        except PathEscapeError as exc:
+            raise HTTPException(400, str(exc))
+        targets.append((mapping, src, target))
+
+    committed = []
+    skipped = []
+    for mapping, src, target in targets:
         if not src.exists():
             raise HTTPException(404, f"Staged file '{mapping.filename}' not found")
-        target_dir = project_path / mapping.modality
-        target = target_dir / f"{mapping.mrid}.nii.gz"
+        target_dir = target.parent
         # Re-uploading a subject that already has a scan for this modality is a
         # no-op: keep the existing file and drop the duplicate staged upload.
         if target.exists():
@@ -873,12 +1012,12 @@ def discard_nifti_staging(project_path: Path, staging_id: str) -> None:
 
 # ── CSV upload ────────────────────────────────────────────────────────────────
 
-def store_csv_upload(project_path: Path, contents: bytes, filename: str) -> None:
+def store_csv_upload(project_path: Path, source: Path, filename: str) -> None:
     if not filename.lower().endswith(".csv"):
         raise HTTPException(400, "Uploaded file must be a .csv")
     csv_dir = project_path / "participants"
     csv_dir.mkdir(parents=True, exist_ok=True)
-    (csv_dir / "participants.csv").write_bytes(contents)
+    shutil.move(str(source), csv_dir / "participants.csv")
 
 
 # ── BIDS upload ───────────────────────────────────────────────────────────────
@@ -1021,43 +1160,54 @@ def _merge_bids_participants(root: Path, project_path: Path, scans: dict[str, tu
     write_participants(project_path, out)
 
 
-def store_bids_upload(project_path: Path, contents: bytes, filename: str) -> int:
+def store_bids_upload(
+    project_path: Path, archive: Path, filename: str, *, max_extracted_bytes: int
+) -> int:
     """
     Extract a BIDS zip and import it into the NiChart project layout
     (see :func:`_import_bids_tree`). Returns the number of images placed.
+
+    *max_extracted_bytes* bounds the uncompressed contents; an archive over it
+    raises ``HTTPException(413)``.
     """
     if not filename.lower().endswith(".zip"):
         raise HTTPException(400, "BIDS upload must be a .zip file")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_dir = Path(tmpdir)
-        archive = tmp_dir / "upload.zip"
-        archive.write_bytes(contents)
-        extract_dir = tmp_dir / "extracted"
+        extract_dir = Path(tmpdir) / "extracted"
         extract_dir.mkdir()
-        safe_unzip(archive, extract_dir)
+        try:
+            safe_unzip(archive, extract_dir, max_total_bytes=max_extracted_bytes)
+        except ArchiveTooLargeError as exc:
+            raise HTTPException(413, str(exc))
         return _import_bids_tree(extract_dir, project_path)
 
 
 # ── IDAT upload ───────────────────────────────────────────────────────────────
 
-def store_idat_upload(project_path: Path, contents: bytes, filename: str) -> None:
+def store_idat_upload(
+    project_path: Path, archive: Path, filename: str, *, max_extracted_bytes: int
+) -> None:
+    """Extract an IDAT zip into ``idat/``.
+
+    *max_extracted_bytes* bounds the uncompressed contents; an archive over it
+    raises ``HTTPException(413)``. ``safe_unzip`` removes whatever it wrote
+    before raising, so an oversized archive leaves nothing in ``idat/`` even
+    though extraction goes straight there.
+    """
     if not filename.lower().endswith(".zip"):
         raise HTTPException(400, "IDAT upload must be a .zip file")
     idat_dir = project_path / "idat"
     idat_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(contents)
-        tmp_path = Path(tmp.name)
     try:
-        safe_unzip(tmp_path, idat_dir)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        safe_unzip(archive, idat_dir, max_total_bytes=max_extracted_bytes)
+    except ArchiveTooLargeError as exc:
+        raise HTTPException(413, str(exc))
 
 
-def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
+def store_bids_files(project_path: Path, files: list[tuple[str, Path]]) -> int:
     """
-    Stage a batch of BIDS files supplied as (relative_path, content) pairs,
+    Stage a batch of BIDS files supplied as (relative_path, spooled_path) pairs,
     then reorganise NIfTIs into the NiChart project layout.
 
     Filenames may contain relative sub-paths (e.g. ``sub-01/anat/sub-01_T1w.nii.gz``).
@@ -1067,19 +1217,19 @@ def store_bids_files(project_path: Path, files: list[tuple[str, bytes]]) -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         extract_dir = Path(tmpdir)
 
-        for rel_path, content in files:
+        for rel_path, source in files:
             assert_safe_upload_filename(rel_path, allow_subdirs=True)
             dest = extract_dir / rel_path
             assert_safe_path(extract_dir, dest)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
+            shutil.move(str(source), dest)
 
         return _import_bids_tree(extract_dir, project_path)
 
 
-def store_idat_files(project_path: Path, files: list[tuple[str, bytes]]) -> None:
+def store_idat_files(project_path: Path, files: list[tuple[str, Path]]) -> None:
     """
-    Store a batch of IDAT files supplied as (filename, content) pairs.
+    Store a batch of IDAT files supplied as (filename, spooled_path) pairs.
 
     Filenames must be flat (no directory separators) and end with ``.idat``.
     Each filename is validated before any file is written.
@@ -1092,7 +1242,7 @@ def store_idat_files(project_path: Path, files: list[tuple[str, bytes]]) -> None
     idat_dir = project_path / "idat"
     idat_dir.mkdir(parents=True, exist_ok=True)
 
-    for filename, content in files:
+    for filename, source in files:
         dest = idat_dir / Path(filename).name
         assert_safe_path(idat_dir, dest)
-        dest.write_bytes(content)
+        shutil.move(str(source), dest)

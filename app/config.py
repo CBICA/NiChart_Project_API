@@ -174,7 +174,12 @@ class Settings(BaseSettings):
 
     staging_ttl_hours: int = Field(
         default=24,
-        description="Hours after which uncommitted staging uploads are eligible for cleanup.",
+        description=(
+            "Hours after which an uncommitted staging upload is removed by the "
+            "background sweep (see app/services/staging_sweeper.py). Age is the "
+            "staging entry's mtime, so a staging area a client is still working "
+            "with is not swept. Set to 0 to disable sweeping entirely."
+        ),
     )
 
     enable_test_endpoints: bool = Field(
@@ -243,6 +248,20 @@ class Settings(BaseSettings):
             "it itself. The server reaps lazily, when a project's retention is queried, "
             "so this window is also the minimum age of a project the API will delete: a "
             "clock that is only just past zero is reported as expired but left alone."
+        ),
+    )
+
+    project_expiry_mtime_fallback: bool = Field(
+        default=True,
+        description=(
+            "When a project has no heartbeat object, fall back to its directory mtime as "
+            "the retention clock instead of treating its expiry as unknown. Without this "
+            "a project with no heartbeat can never expire, so deleting the marker — which "
+            "a user holding identity-pool credentials can do directly in S3 — keeps the "
+            "data on the server indefinitely. Applies only to a definite 404 on the "
+            "marker: an S3 error still leaves the expiry unknown, so an outage cannot "
+            "condemn a project whose heartbeat is fine. Cloud mode only. Disabling it "
+            "restores the previous fail-open behaviour."
         ),
     )
 

@@ -63,8 +63,10 @@ from app.models.jobs import (
 )
 from app.services import (
     catalog_service,
+    file_hashes,
     manual_upload_store,
     s3_sync_service,
+    step_ledger,
     usage_service,
 )
 
@@ -95,6 +97,7 @@ class _StepRecord:
     job_id: str | None = None
     log_path: str | None = None  # persistent log file path (SLURM only); used for reconnect
     container_image: str | None = None
+    image_digest: str | None = None  # repo@sha256:..., when the backend reports it
     error: str | None = None
     logs: str = ""
     cached_from_run_id: str | None = None
@@ -375,6 +378,7 @@ def _mark_cached(
     tool_id: str | None = None,
     inputs: dict | None = None,
     outputs: dict | None = None,
+    container_image: str | None = None,
 ) -> None:
     """Record a successful step under its cache key.
 
@@ -383,7 +387,8 @@ def _mark_cached(
     produced dlmuse_vol/", which is what clearing an overridden step's entry
     needs. Entries written before this existed simply lack the fields and are
     skipped by that lookup — they are still invalidated, via the manual-upload
-    check in ``_is_cached``.
+    check in ``_is_cached``. ``container_image`` lets a later run that reuses
+    the entry report which image actually produced the output.
     """
     metadata[key] = {
         "status": "success",
@@ -392,7 +397,27 @@ def _mark_cached(
         "tool_id": tool_id,
         "inputs": dict(inputs) if inputs else {},
         "outputs": dict(outputs) if outputs else {},
+        "container_image": container_image,
     }
+
+
+def _cached_step_image(entry: dict | None, run_id: str | None, tool_id: str) -> str | None:
+    """The container image that produced a reused step's output.
+
+    Read from the cache entry, or, for entries written before it carried the
+    image, from the source run's record of the step that ran ``tool_id``.
+    Never the tool's current image: that may have changed since, and would
+    misreport what produced the files.
+    """
+    if entry and entry.get("container_image"):
+        return entry["container_image"]
+    source = _load_run(run_id) if run_id else None
+    if source is None:
+        return None
+    for s in source.steps:
+        if s.tool_id == tool_id and s.container_image and s.status != "skipped":
+            return s.container_image
+    return None
 
 
 # ── Parallel chunk helpers ────────────────────────────────────────────────────
@@ -639,6 +664,8 @@ def _write_provenance(
     execution_mode: str = "",
     user_id: str = "",
     backend: str = "",
+    run_id: str = "",
+    tool_id: str = "",
 ) -> None:
     """Write _provenance.json into each output directory after a successful step.
 
@@ -649,6 +676,8 @@ def _write_provenance(
         "api_version": _API_VERSION,
         "pipeline_id": pipeline_id,
         "step_id": step_id,
+        "run_id": run_id,
+        "tool_id": tool_id,
         "container_image": container_image,
         "submitted_at": submitted_at.isoformat() if submitted_at else None,
         "execution_mode": execution_mode,
@@ -670,6 +699,89 @@ def _write_provenance(
             )
         except Exception as exc:
             _log.warning("Could not write provenance to %s: %s", d, exc)
+
+
+def _project_rel(study_dir: Path, path_str: str) -> str:
+    """Project-relative POSIX path, or the path unchanged if it lies outside the project."""
+    try:
+        return Path(path_str).relative_to(study_dir).as_posix()
+    except ValueError:
+        return path_str
+
+
+def _record_execution(
+    run: _RunRecord,
+    step: _StepRecord,
+    step_def: Any,
+    tool_spec: Any,
+    study_dir: Path,
+    resolved_inputs: dict[str, str],
+    resolved_outputs: dict[str, str],
+    merged_params: dict,
+    execution_mode: str,
+) -> None:
+    """Add a succeeded step to the step ledger: everything needed to rerun it by hand.
+
+    Runs off the event loop (it hashes what the step read and wrote). Never
+    raises — a ledger failure must not fail the step.
+    """
+    try:
+        try:
+            params = tool_spec.resolve_params(merged_params)
+        except ValueError:
+            params = dict(merged_params)
+        inputs = {k: _project_rel(study_dir, v) for k, v in resolved_inputs.items()}
+        outputs = {k: _project_rel(study_dir, v) for k, v in resolved_outputs.items()}
+        hashes = file_hashes.HashCache(study_dir)
+
+        def digests(paths: dict[str, str]) -> dict[str, dict]:
+            out = {}
+            for label, rel in paths.items():
+                files = hashes.hash_tree(rel) if not Path(rel).is_absolute() else []
+                out[label] = {
+                    "files": len(files),
+                    "bytes": sum(f.size for f in files),
+                    "digest": file_hashes.tree_digest(files, rel),
+                }
+            return out
+
+        record = {
+            "execution_id": step_ledger.execution_id(run.run_id, step.step_id),
+            "run_id": run.run_id,
+            "pipeline_id": run.pipeline_id,
+            "step_id": step.step_id,
+            "tool_id": step.tool_id,
+            "tool_name": tool_spec.name,
+            "image": tool_spec.image,
+            "image_digest": step.image_digest,
+            "backend": run.backend_type,
+            "execution_mode": execution_mode,
+            "submitted_at": step.submitted_at.isoformat() if step.submitted_at else None,
+            "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+            "params": params,
+            "command": tool_spec.render_command(params),
+            "gpus": bool((tool_spec.resources or {}).get("gpus")),
+            "singularity_run_mode": tool_spec.singularity_run_mode,
+            "inputs": inputs,
+            "outputs": outputs,
+            "mounts": {
+                label: {
+                    "container_path": m.path_in_container,
+                    "mode": m.mode,
+                    "mount_type": m.mount_type,
+                }
+                for label, m in tool_spec.mounts.items()
+                if label in inputs or label in outputs
+            },
+            "input_digests": digests(inputs),
+            "output_digests": digests(outputs),
+            "chunks": len(step.chunks),
+            "manual_sources": list(step.manual_sources),
+        }
+        hashes.save()
+        step_ledger.record_execution(study_dir, record)
+    except Exception:
+        _log.exception("Could not record step %s of run %s in the ledger", step.step_id, run.run_id)
 
 
 # ── Manual-data provenance ────────────────────────────────────────────────────
@@ -748,6 +860,7 @@ def _run_to_dict(run: _RunRecord) -> dict:
                 "job_id": s.job_id,
                 "log_path": s.log_path,
                 "container_image": s.container_image,
+                "image_digest": s.image_digest,
                 "error": s.error,
                 "logs": s.logs,
                 "cached_from_run_id": s.cached_from_run_id,
@@ -802,6 +915,7 @@ def _run_from_dict(d: dict) -> _RunRecord:
             job_id=s.get("job_id"),
             log_path=s.get("log_path"),
             container_image=s.get("container_image"),
+            image_digest=s.get("image_digest"),
             error=s.get("error"),
             logs=s.get("logs", ""),
             cached_from_run_id=s.get("cached_from_run_id"),
@@ -1246,6 +1360,9 @@ async def _run_pipeline_steps(
                 step.skip_reason = "cached"
                 step.finished_at = datetime.now(timezone.utc)
                 step.cached_from_run_id = cached_run_id
+                step.container_image = _cached_step_image(
+                    metadata.get(key), cached_run_id, step_def.tool
+                )
                 step_outputs[step_def.id] = resolved_outputs
                 _save_run(run)
                 continue
@@ -1260,6 +1377,9 @@ async def _run_pipeline_steps(
                 metadata = _load_metadata(study_dir)
                 entry = metadata.get(key)
                 step.cached_from_run_id = entry.get("run_id") if entry else None
+                step.container_image = _cached_step_image(
+                    entry, step.cached_from_run_id, step_def.tool
+                )
                 step.status = "skipped"
                 step.skip_reason = "cached"
                 step.finished_at = datetime.now(timezone.utc)
@@ -1414,6 +1534,7 @@ async def _run_pipeline_steps(
                             study_id=study_dir.name,
                         )
                         chunk.job_id = h.job_id
+                        step.image_digest = step.image_digest or h.image_digest
                         chunk.submitted_at = datetime.now(timezone.utc)
                         chunk.status = "running"
                         handles.append(h)
@@ -1604,6 +1725,12 @@ async def _run_pipeline_steps(
                         execution_mode=execution_mode,
                         user_id=run.user_id,
                         backend=run.backend_type,
+                        run_id=run.run_id,
+                        tool_id=step_def.tool,
+                    )
+                    await asyncio.to_thread(
+                        _record_execution, run, step, step_def, tool_spec, study_dir,
+                        resolved_inputs, resolved_outputs, merged_params, execution_mode,
                     )
                 _mark_derived_outputs(run, step, study_dir, resolved_outputs)
                 _mark_cached(
@@ -1611,6 +1738,7 @@ async def _run_pipeline_steps(
                     tool_id=step_def.tool,
                     inputs=resolved_inputs,
                     outputs=resolved_outputs,
+                    container_image=step.container_image,
                 )
                 _save_metadata(study_dir, metadata)
                 if flight:
@@ -1628,6 +1756,7 @@ async def _run_pipeline_steps(
                     user_token=user_token,
                     study_id=study_dir.name,
                 )
+                step.image_digest = handle.image_digest
             except Exception as e:
                 step.status = "failed"
                 step.error = str(e)
@@ -1714,6 +1843,12 @@ async def _run_pipeline_steps(
                 execution_mode=execution_mode,
                 user_id=run.user_id,
                 backend=run.backend_type,
+                run_id=run.run_id,
+                tool_id=step_def.tool,
+            )
+            await asyncio.to_thread(
+                _record_execution, run, step, step_def, tool_spec, study_dir,
+                resolved_inputs, resolved_outputs, merged_params, execution_mode,
             )
         _mark_derived_outputs(run, step, study_dir, resolved_outputs)
         _mark_cached(
@@ -1721,6 +1856,7 @@ async def _run_pipeline_steps(
             tool_id=step_def.tool,
             inputs=resolved_inputs,
             outputs=resolved_outputs,
+            container_image=step.container_image,
         )
         _save_metadata(study_dir, metadata)
         if flight:
@@ -1801,6 +1937,7 @@ async def _run_direct_steps(
 
         try:
             tool_spec = catalog_service.load_tool_spec(tools_path, step_def.tool_id)
+            step.container_image = tool_spec.image
             handle = await backend.submit(
                 tool_spec=tool_spec,
                 mount_paths=step_def.mount_paths,
@@ -1808,6 +1945,7 @@ async def _run_direct_steps(
                 user_token=user_token,
                 study_id=study_dir.name if study_dir else None,
             )
+            step.image_digest = handle.image_digest
         except Exception as e:
             step.status = "failed"
             step.error = str(e)
@@ -2021,6 +2159,19 @@ def _has_running_pipeline(user_id: str, exclude_run_id: str) -> bool:
     return False
 
 
+def load_project_runs(user_id: str, project_id: str) -> list[_RunRecord]:
+    """Every stored run record of one user's project (internal records, unordered)."""
+    d = _runs_dir()
+    if d is None or not d.exists():
+        return []
+    runs = []
+    for p in d.glob("*.json"):
+        run = _load_run(p.stem)
+        if run and run.user_id == user_id and run.project_id == project_id:
+            runs.append(run)
+    return runs
+
+
 def list_runs(
     user_id: str,
     project_id: str | None,
@@ -2087,7 +2238,13 @@ def get_run_detail(run_id: str, user_id: str) -> PipelineRunDetail:
         raise HTTPException(404, f"Run '{run_id}' not found")
     if run.user_id != user_id:
         raise HTTPException(403, "Access denied")
-    return _to_detail(run)
+    detail = _to_detail(run)
+    # Runs recorded before reused steps carried their image: look it up from the
+    # run that produced the output, so the run page can still show it.
+    for st in detail.steps:
+        if st.skip_reason == "cached" and not st.container_image and st.cached_from_run_id:
+            st.container_image = _cached_step_image(None, st.cached_from_run_id, st.tool_id)
+    return detail
 
 
 async def _live_logs_for_job(backend, job_id: str) -> str | None:

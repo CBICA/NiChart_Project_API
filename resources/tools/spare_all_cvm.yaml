@@ -29,8 +29,15 @@ resources:
   memory: 8000
   gpus: 0
 
+# Not measured: as of 2026-11-12 this tool cannot be run to completion, on
+# cbica/nichart_spare_score_runall:0.0.5 or on 0.0.4 before it. Every CVM model
+# shipped in the image is harmonized-only, so an unharmonized run matches no
+# model, logs "No relevant models were found" and exits 0 having written
+# nothing. Re-confirmed against 0.0.5, which fixed the harmonized CVM path but
+# added no unharmonized model. Time it once the image ships one (same image as
+# spare_all, measured at ~10 s fixed, so expect that order).
 time_per_subject_seconds: null
 
 container:
-  image: cbica/nichart_spare_score_runall:0.0.4
+  image: cbica/nichart_spare_score_runall:0.0.5
   command: "-i {merged_dlwmls_dlmuse_csv} -demog {demog_csv} --category cvm -o {spare_all_cvm_csv}"

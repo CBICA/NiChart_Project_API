@@ -31,7 +31,14 @@ resources:
   memory: 14000
   gpus: 1
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/nichart_bascores:0.0.1, this dev box (GTX 1080 Ti,
+# Xeon E5-2623 v3), two cohort sizes: 8.9 s at N=1 and 9.6 s at N=8 => ~9 s fixed
+# plus ~0.1 s/subject. Almost entirely container start, CUDA init and loading the
+# weights; scoring and writing the attention maps is fast. Measured on raw T1s
+# rather than the MNI-aligned t1_mni the pipeline feeds it, which are the same
+# size, so the per-subject figure carries over.
+fixed_seconds: 9
+time_per_subject_seconds: 0.1
 
 container:
   image: cbica/nichart_bascores:0.0.1

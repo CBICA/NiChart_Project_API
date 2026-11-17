@@ -359,6 +359,101 @@ def test_nifti_commit_not_found(data_client):
     assert resp.status_code == 404
 
 
+# ── NIfTI commit: MRID validation ─────────────────────────────────────────────
+
+def _stage_one(client, pid, filename="sub001_T1.nii.gz"):
+    """Stage a single NIfTI and return its staging_id."""
+    resp = client.post(
+        f"/projects/{pid}/files/upload/nifti",
+        files=[("files", (filename, io.BytesIO(b"\x00" * 348), "application/gzip"))],
+    )
+    assert resp.status_code == 202
+    return resp.json()["staging_id"]
+
+
+@pytest.mark.parametrize("mrid", [
+    "../../../LOCAL_USER/other/t1/x",   # traversal into another project
+    "../evil",
+    "site1/sub01",                       # innocent-looking, still a separator
+    "sub\\001",                          # backslash
+    " sub001",                           # leading space
+    "sub001 ",                           # trailing space
+    "",                                  # empty
+    ".",
+    "..",
+    "-f",                                # reads as a flag when passed to a tool
+    "sub\x00001",                        # NUL
+])
+def test_nifti_commit_rejects_unsafe_mrid(data_client, tmp_path, mrid):
+    """An unsafe MRID is a 400 and nothing is moved anywhere."""
+    pid = _create_project(data_client)
+    staging_id = _stage_one(data_client, pid)
+    staged = tmp_path / "LOCAL_USER" / pid / "_upload" / "nifti" / staging_id / "sub001_T1.nii.gz"
+    assert staged.exists()
+
+    resp = data_client.post(
+        f"/projects/{pid}/files/stage/{staging_id}/commit",
+        json={"mappings": [{"filename": "sub001_T1.nii.gz", "mrid": mrid, "modality": "t1"}]},
+    )
+    assert resp.status_code == 400, resp.text
+
+    # The staged file is untouched and no image landed anywhere in the data root.
+    assert staged.exists()
+    images = [
+        p for p in tmp_path.rglob("*.nii.gz")
+        if "_upload" not in p.parts
+    ]
+    assert images == [], images
+
+
+def test_nifti_commit_unsafe_mrid_leaves_batch_intact(data_client, tmp_path):
+    """A bad mapping late in the batch rejects the whole commit, not half of it."""
+    pid = _create_project(data_client)
+    resp = data_client.post(
+        f"/projects/{pid}/files/upload/nifti",
+        files=[
+            ("files", ("good_T1.nii.gz", io.BytesIO(b"\x00" * 348), "application/gzip")),
+            ("files", ("bad_T1.nii.gz", io.BytesIO(b"\x01" * 348), "application/gzip")),
+        ],
+    )
+    assert resp.status_code == 202
+    staging_id = resp.json()["staging_id"]
+
+    resp = data_client.post(
+        f"/projects/{pid}/files/stage/{staging_id}/commit",
+        json={"mappings": [
+            {"filename": "good_T1.nii.gz", "mrid": "good", "modality": "t1"},
+            {"filename": "bad_T1.nii.gz", "mrid": "../../escaped", "modality": "t1"},
+        ]},
+    )
+    assert resp.status_code == 400
+
+    # Neither file moved: the good one is still staged, not committed.
+    staging_dir = tmp_path / "LOCAL_USER" / pid / "_upload" / "nifti" / staging_id
+    assert (staging_dir / "good_T1.nii.gz").exists()
+    assert (staging_dir / "bad_T1.nii.gz").exists()
+    assert not (tmp_path / "LOCAL_USER" / pid / "t1").exists()
+
+
+@pytest.mark.parametrize("mrid", [
+    "sub001",
+    "IXI002-Guys-0828",
+    "01_ses-1",
+    "sub.01",
+    "A1",
+])
+def test_nifti_commit_accepts_ordinary_mrids(data_client, tmp_path, mrid):
+    """Real-world MRIDs — dashes, underscores, dots, BIDS session suffixes — still commit."""
+    pid = _create_project(data_client)
+    staging_id = _stage_one(data_client, pid)
+    resp = data_client.post(
+        f"/projects/{pid}/files/stage/{staging_id}/commit",
+        json={"mappings": [{"filename": "sub001_T1.nii.gz", "mrid": mrid, "modality": "t1"}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert (tmp_path / "LOCAL_USER" / pid / "t1" / f"{mrid}.nii.gz").exists()
+
+
 def test_nifti_wrong_extension(data_client):
     pid = _create_project(data_client)
     resp = data_client.post(

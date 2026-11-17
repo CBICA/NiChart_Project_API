@@ -16,7 +16,10 @@ from app.models.results import (
     SubjectCompleteness,
 )
 from app.services.catalog_service import (
+    BATCH_FEATURES_KEY,
     BatchFeaturesSpec,
+    ResultOrigins,
+    get_result_origins,
     PerSubjectSpec,
     PipelineResultsSpec,
     get_pipeline_results_spec,
@@ -194,6 +197,75 @@ def _build_per_subject(
     )
 
 
+def _own_results(origins: ResultOrigins | None) -> set[str] | None:
+    """Result keys written by the pipeline's final result-producing step, or None
+    when that can't be told (no steps declared)."""
+    if origins is None or origins.final_step is None:
+        return None
+    return {k for k, step in origins.producers.items() if step == origins.final_step}
+
+
+def _result_owners(pipelines_path: Path) -> dict[str, list[tuple[str, str, bool]]]:
+    """Result location → (pipeline_id, name, harmonized) of every pipeline for which
+    it is an own result (see ``_own_results``)."""
+    owners: dict[str, list[tuple[str, str, bool]]] = {}
+    for summary in list_pipelines(pipelines_path):
+        origins = get_result_origins(pipelines_path, summary.id)
+        for key in _own_results(origins) or ():
+            owners.setdefault(origins.locations[key], []).append(
+                (summary.id, summary.name, origins.harmonized)
+            )
+    return owners
+
+
+def _earlier_origin(
+    key: str,
+    pipeline_id: str,
+    origins: ResultOrigins,
+    owners: dict[str, list[tuple[str, str, bool]]],
+) -> tuple[str | None, str | None, str]:
+    """For a result written by an earlier step: (same-as pipeline id, its name, note)."""
+    candidates = [o for o in owners.get(origins.locations[key], []) if o[0] != pipeline_id]
+    # Prefer the plain (non-harmonized) pipeline: that's what the file really is.
+    candidates.sort(key=lambda o: o[2])
+    if candidates:
+        other_id, other_name, other_harmonized = candidates[0]
+        caveat = " — not harmonized" if origins.harmonized and not other_harmonized else ""
+        return other_id, other_name, f"From {other_name}{caveat}"
+    return None, None, f"From an earlier step ({origins.producers.get(key)})"
+
+
+def earlier_step_notes(pipelines_path: Path, pipeline_id: str) -> dict[str, str]:
+    """Result location → note, for each result an earlier step writes (see ResultOrigins)."""
+    origins = get_result_origins(pipelines_path, pipeline_id)
+    own = _own_results(origins)
+    if origins is None or own is None:
+        return {}
+    owners = _result_owners(pipelines_path)
+    return {
+        origins.locations[key]: _earlier_origin(key, pipeline_id, origins, owners)[2]
+        for key in origins.producers if key not in own
+    }
+
+
+def _annotate_origin(
+    output: PerSubjectOutput,
+    pipeline_id: str,
+    origins: ResultOrigins | None,
+    owners: dict[str, list[tuple[str, str, bool]]],
+) -> PerSubjectOutput:
+    own = _own_results(origins)
+    if origins is None or own is None:
+        return output
+    output.produced_by_step = origins.producers.get(output.id)
+    if output.id in own:
+        return output
+    output.from_earlier_step = True
+    (output.same_as_pipeline_id, output.same_as_pipeline_name,
+     output.origin_note) = _earlier_origin(output.id, pipeline_id, origins, owners)
+    return output
+
+
 def _resource_path_if_exists(resources_path: Path, rel_path: str | None) -> str | None:
     if not rel_path:
         return None
@@ -222,8 +294,10 @@ def get_pipeline_result_detail(
         else None
     )
 
+    origins = get_result_origins(pipelines_path, pipeline_id)
+    owners = _result_owners(pipelines_path) if _own_results(origins) is not None else {}
     per_subject = [
-        _build_per_subject(project_path, ps_spec, mrids)
+        _annotate_origin(_build_per_subject(project_path, ps_spec, mrids), pipeline_id, origins, owners)
         for ps_spec in spec.per_subject
     ]
 
@@ -273,11 +347,22 @@ def list_pipeline_results(
             project_path / spec.batch_features.file
         ).is_file()
 
-        has_per_subject = any(
-            (project_path / ps.pattern.replace("{MRID}", mrid)).exists()
-            for ps in spec.per_subject
-            for mrid in subject_mrids
-        )
+        def per_subject_present(ps) -> bool:
+            return any(
+                (project_path / ps.pattern.replace("{MRID}", mrid)).exists()
+                for mrid in subject_mrids
+            )
+
+        # Only the pipeline's own results count: those of its final result-producing
+        # step. A shared earlier output (the DLMUSE segmentation, under harmonized
+        # DLMUSE) is no sign this pipeline ran. Without declared steps, any output counts.
+        own = _own_results(get_result_origins(pipelines_path, pipeline_summary.id))
+        if own is None:
+            has_outputs = has_batch or any(per_subject_present(ps) for ps in spec.per_subject)
+        else:
+            has_outputs = (BATCH_FEATURES_KEY in own and has_batch) or any(
+                per_subject_present(ps) for ps in spec.per_subject if ps.id in own
+            )
 
         summaries.append(PipelineResultSummary(
             pipeline_id=pipeline_summary.id,
@@ -286,7 +371,7 @@ def list_pipeline_results(
             expected_batch_features_file=spec.batch_features.file if spec.batch_features else None,
             per_subject_ids=[ps.id for ps in spec.per_subject],
             has_atlas=_resource_path_if_exists(resources_path, spec.atlas) is not None,
-            has_outputs=has_batch or has_per_subject,
+            has_outputs=has_outputs,
         ))
 
     return summaries

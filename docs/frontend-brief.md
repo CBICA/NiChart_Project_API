@@ -34,6 +34,11 @@ A project is a named workspace (`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`). All data li
 | BIDS zip | `POST /projects/{id}/files/upload/bids` | Extracted and reorganised automatically |
 | IDAT zip | `POST /projects/{id}/files/upload/idat` | Extracted to `idat/` directly |
 
+Every upload endpoint enforces a size limit and answers `413` when it is exceeded;
+`GET /limits` reports the limits so the browser can check a file before sending it.
+See [frontend-brief-upload-limits.md](frontend-brief-upload-limits.md), which also
+covers the MRID validation rules the review tables need to apply.
+
 ### NIfTI staging flow (two steps, requires UI)
 
 1. `POST /projects/{id}/files/upload/nifti` — returns `{ staging_id, proposals: [{ filename, inferred_mrid, inferred_modality, basename_mrid, mrid_source }], stripped_suffixes }`. Files sit in a staging area.
@@ -92,6 +97,7 @@ Render a parameter form from this schema before showing the submit button.
 
 ```
 GET /health
+GET /limits
 GET /catalog/pipelines
 GET /catalog/pipelines/{pipeline_id}
 GET /catalog/tools/{tool_id}

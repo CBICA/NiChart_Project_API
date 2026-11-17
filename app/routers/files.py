@@ -4,13 +4,17 @@ File management within a project — authenticated.
 All paths from the client are validated against the project root before any I/O.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 from app.auth.dependencies import CurrentUser, require_auth
 from app.config import Settings, get_settings
 from app.models.errors import ErrorDetail
 from app.models.files import (
+    DeleteSubjectsRequest,
+    DeleteSubjectsResult,
     DirectoryTree,
     DownloadZipRequest,
     NiftiCommitRequest,
@@ -19,14 +23,17 @@ from app.models.files import (
     ParticipantsList,
     ParticipantsUpdate,
 )
-from app.models.provenance import ProvenanceReport
+from app.models.provenance import ProvenanceDossier, ProvenanceReport
 from app.models.readiness import ReadinessReport
 from app.services import (
     catalog_service,
     file_service,
+    ingest_log,
+    provenance_report,
     provenance_service,
     readiness_service,
     retention_service,
+    upload_spool,
     usage_service,
 )
 
@@ -37,6 +44,17 @@ _AUTH_ERRORS = {
     403: {"model": ErrorDetail, "description": "Access denied to this project."},
     404: {"model": ErrorDetail, "description": "Project or file not found."},
     400: {"model": ErrorDetail, "description": "Invalid or unsafe path."},
+}
+
+_UPLOAD_ERRORS = {
+    **_AUTH_ERRORS,
+    413: {
+        "model": ErrorDetail,
+        "description": (
+            "A file exceeds the per-file size limit, or the request exceeds the "
+            "per-request limit. Nothing was saved. See GET /limits."
+        ),
+    },
 }
 
 
@@ -146,10 +164,51 @@ async def delete_file(
     import shutil
     pdir = file_service.resolve_project(settings, user, project_id)
     target = file_service.resolve_file_path(pdir, path)
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
+    if target == pdir.resolve():
+        # "" or "." would rmtree the project behind the project API's back.
+        raise HTTPException(400, "Can't delete the project folder itself; delete the project instead.")
+    rel = target.relative_to(pdir.resolve()).as_posix()
+    is_dir = target.is_dir()
+    # Only deletions of input data matter to the ingest log; it ignores the rest.
+    with ingest_log.tracked(pdir, "file_delete", {"path": path}):
+        if is_dir:
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    # In cloud mode the S3 copy must go too, or the next run's sync down restores it.
+    await file_service.unpublish_path(settings, user, project_id, rel, is_dir=is_dir)
+
+
+@router.post(
+    "/files/subjects/delete",
+    summary="Remove subjects",
+    description=(
+        "Permanently deletes the listed subjects' images in every modality directory "
+        "(``{modality}/{MRID}.nii[.gz]``) and, with ``remove_rows``, their rows in "
+        "participants.csv — e.g. to keep only the subjects whose participant data is "
+        "complete. Pipeline outputs already produced for them are left in place. With "
+        "``dry_run``, only reports what would be deleted."
+    ),
+    response_model=DeleteSubjectsResult,
+    responses=_AUTH_ERRORS,
+)
+async def delete_subjects(
+    project_id: str,
+    body: DeleteSubjectsRequest,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> DeleteSubjectsResult:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    if body.dry_run:
+        return file_service.delete_subjects(pdir, body.mrids, body.remove_rows, dry_run=True)
+    with ingest_log.tracked(pdir, "subjects_delete", {"subjects": len(body.mrids)}):
+        result = await asyncio.to_thread(
+            file_service.delete_subjects, pdir, body.mrids, body.remove_rows
+        )
+    await file_service.unpublish_files(settings, user, project_id, result.files)
+    if result.removed_rows:
+        await file_service.publish_uploads(settings, user, project_id, pdir)
+    return result
 
 
 # ── NIfTI upload — stage ──────────────────────────────────────────────────────
@@ -167,7 +226,7 @@ async def delete_file(
     ),
     response_model=NiftiStagingResult,
     status_code=202,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_nifti(
     project_id: str,
@@ -177,12 +236,18 @@ async def upload_nifti(
 ) -> NiftiStagingResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     filenames = [f.filename or "" for f in files]
-    file_data = [await f.read() for f in files]
-    usage_service.record_upload(
-        "nifti", settings.execution_mode,
-        files=len(file_data), total_bytes=sum(len(d) for d in file_data),
-    )
-    result = file_service.stage_nifti_files(pdir, filenames, file_data)
+    with upload_spool.spool_dir(pdir) as spool:
+        budget = upload_spool.UploadBudget(settings)
+        sources = []
+        for i, f in enumerate(files):
+            dest = spool / f"{i}"
+            await budget.spool(f, dest)
+            sources.append(dest)
+        usage_service.record_upload(
+            "nifti", settings.execution_mode,
+            files=len(sources), total_bytes=budget.total,
+        )
+        result = file_service.stage_nifti_files(pdir, filenames, sources)
     # Staged files are excluded from the S3 sync, so this is the one upload path
     # that does not go through publish_uploads and has to refresh the retention
     # countdown itself. Uploading is use, whether or not it has been committed yet.
@@ -211,7 +276,7 @@ async def upload_nifti(
     ),
     response_model=NiftiStagingResult,
     status_code=202,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_nifti_zip(
     project_id: str,
@@ -220,9 +285,14 @@ async def upload_nifti_zip(
     settings: Settings = Depends(get_settings),
 ) -> NiftiStagingResult:
     pdir = file_service.resolve_project(settings, user, project_id)
-    contents = await file.read()
-    usage_service.record_upload("nifti", settings.execution_mode, files=1, total_bytes=len(contents))
-    result = file_service.stage_nifti_zip(pdir, contents, file.filename or "")
+    with upload_spool.spool_dir(pdir) as spool:
+        archive = spool / "upload.zip"
+        size = await upload_spool.UploadBudget(settings).spool(file, archive)
+        usage_service.record_upload("nifti", settings.execution_mode, files=1, total_bytes=size)
+        result = file_service.stage_nifti_zip(
+            pdir, archive, file.filename or "",
+            max_extracted_bytes=upload_spool.extracted_cap(settings),
+        )
     await retention_service.touch_project(  # see upload_nifti
         settings.s3_data_bucket, settings.s3_data_prefix,
         user.sub, project_id, activity="upload",
@@ -253,9 +323,10 @@ async def commit_nifti(
     settings: Settings = Depends(get_settings),
 ) -> NiftiCommitResult:
     pdir = file_service.resolve_project(settings, user, project_id)
-    result = file_service.commit_nifti_staging(pdir, staging_id, body.mappings)
-    had_participants = file_service.participants_csv_exists(pdir)
-    result.participants_added = file_service.sync_participants_with_images(pdir)
+    with ingest_log.tracked(pdir, "nifti_upload", {"staging_id": staging_id}):
+        result = file_service.commit_nifti_staging(pdir, staging_id, body.mappings)
+        had_participants = file_service.participants_csv_exists(pdir)
+        result.participants_added = file_service.sync_participants_with_images(pdir)
     result.participants_created = not had_participants and result.participants_added > 0
     await file_service.publish_uploads(settings, user, project_id, pdir)
     return result
@@ -290,7 +361,7 @@ async def discard_staging(
         "The file is stored as-is; must have at least an ``MRID`` column."
     ),
     status_code=204,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_csv(
     project_id: str,
@@ -299,9 +370,12 @@ async def upload_csv(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    contents = await file.read()
-    usage_service.record_upload("csv", settings.execution_mode, files=1, total_bytes=len(contents))
-    file_service.store_csv_upload(pdir, contents, file.filename or "")
+    with upload_spool.spool_dir(pdir) as spool:
+        source = spool / "participants.csv"
+        size = await upload_spool.UploadBudget(settings).spool(file, source)
+        usage_service.record_upload("csv", settings.execution_mode, files=1, total_bytes=size)
+        with ingest_log.tracked(pdir, "participants_upload", {"filename": file.filename}):
+            file_service.store_csv_upload(pdir, source, file.filename or "")
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -317,7 +391,7 @@ async def upload_csv(
         "A ``participants.tsv`` at the archive root is converted to ``participants/participants.csv``."
     ),
     status_code=202,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_bids(
     project_id: str,
@@ -326,10 +400,16 @@ async def upload_bids(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    contents = await file.read()
-    usage_service.record_upload("bids", settings.execution_mode, files=1, total_bytes=len(contents))
-    file_service.store_bids_upload(pdir, contents, file.filename or "")
-    file_service.sync_participants_with_images(pdir)
+    with upload_spool.spool_dir(pdir) as spool:
+        archive = spool / "upload.zip"
+        size = await upload_spool.UploadBudget(settings).spool(file, archive)
+        usage_service.record_upload("bids", settings.execution_mode, files=1, total_bytes=size)
+        with ingest_log.tracked(pdir, "bids_upload", {"filename": file.filename}):
+            file_service.store_bids_upload(
+                pdir, archive, file.filename or "",
+                max_extracted_bytes=upload_spool.extracted_cap(settings),
+            )
+            file_service.sync_participants_with_images(pdir)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -343,7 +423,7 @@ async def upload_bids(
         "Reorganisation into the NiChart project layout is identical to the ZIP upload."
     ),
     status_code=202,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_bids_files(
     project_id: str,
@@ -352,13 +432,20 @@ async def upload_bids_files(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    pairs = [(f.filename or "", await f.read()) for f in files]
-    usage_service.record_upload(
-        "bids", settings.execution_mode,
-        files=len(pairs), total_bytes=sum(len(d) for _n, d in pairs),
-    )
-    file_service.store_bids_files(pdir, pairs)
-    file_service.sync_participants_with_images(pdir)
+    with upload_spool.spool_dir(pdir) as spool:
+        budget = upload_spool.UploadBudget(settings)
+        pairs = []
+        for i, f in enumerate(files):
+            dest = spool / f"{i}"
+            await budget.spool(f, dest)
+            pairs.append((f.filename or "", dest))
+        usage_service.record_upload(
+            "bids", settings.execution_mode,
+            files=len(pairs), total_bytes=budget.total,
+        )
+        with ingest_log.tracked(pdir, "bids_upload", {"files": len(pairs)}):
+            file_service.store_bids_files(pdir, pairs)
+            file_service.sync_participants_with_images(pdir)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -369,7 +456,7 @@ async def upload_bids_files(
     summary="Upload IDAT files",
     description="Accepts a ``.zip`` of ``.idat`` files. Extracted to ``idat/`` in the project.",
     status_code=204,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_idat(
     project_id: str,
@@ -378,9 +465,15 @@ async def upload_idat(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    contents = await file.read()
-    usage_service.record_upload("idat", settings.execution_mode, files=1, total_bytes=len(contents))
-    file_service.store_idat_upload(pdir, contents, file.filename or "")
+    with upload_spool.spool_dir(pdir) as spool:
+        archive = spool / "upload.zip"
+        size = await upload_spool.UploadBudget(settings).spool(file, archive)
+        usage_service.record_upload("idat", settings.execution_mode, files=1, total_bytes=size)
+        with ingest_log.tracked(pdir, "idat_upload", {"filename": file.filename}):
+            file_service.store_idat_upload(
+                pdir, archive, file.filename or "",
+                max_extracted_bytes=upload_spool.extracted_cap(settings),
+            )
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -393,7 +486,7 @@ async def upload_idat(
         "Each filename is validated before any file is written to ``idat/``."
     ),
     status_code=204,
-    responses=_AUTH_ERRORS,
+    responses=_UPLOAD_ERRORS,
 )
 async def upload_idat_files(
     project_id: str,
@@ -402,12 +495,19 @@ async def upload_idat_files(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    pairs = [(f.filename or "", await f.read()) for f in files]
-    usage_service.record_upload(
-        "idat", settings.execution_mode,
-        files=len(pairs), total_bytes=sum(len(d) for _n, d in pairs),
-    )
-    file_service.store_idat_files(pdir, pairs)
+    with upload_spool.spool_dir(pdir) as spool:
+        budget = upload_spool.UploadBudget(settings)
+        pairs = []
+        for i, f in enumerate(files):
+            dest = spool / f"{i}"
+            await budget.spool(f, dest)
+            pairs.append((f.filename or "", dest))
+        usage_service.record_upload(
+            "idat", settings.execution_mode,
+            files=len(pairs), total_bytes=budget.total,
+        )
+        with ingest_log.tracked(pdir, "idat_upload", {"files": len(pairs)}):
+            file_service.store_idat_files(pdir, pairs)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -472,7 +572,8 @@ async def update_participants(
     settings: Settings = Depends(get_settings),
 ) -> None:
     pdir = file_service.resolve_project(settings, user, project_id)
-    file_service.write_participants(pdir, body.rows)
+    with ingest_log.tracked(pdir, "participants_edit"):
+        file_service.write_participants(pdir, body.rows)
     await file_service.publish_uploads(settings, user, project_id, pdir)
 
 
@@ -525,3 +626,59 @@ async def verify_provenance(
 ) -> ProvenanceReport:
     pdir = file_service.resolve_project(settings, user, project_id)
     return provenance_service.verify_provenance(pdir, project_id)
+
+
+@router.get(
+    "/provenance/report",
+    summary="Project provenance report",
+    description=(
+        "How every current result of the project was produced: the raw inputs and every "
+        "upload or edit of them (with timestamps and SHA-256 digests), each pipeline step "
+        "that produced current outputs (run, image and digest, parameters, inputs and "
+        "where they came from, outputs), the result → steps lineage, and shell commands "
+        "to rerun each step with Docker or Singularity/Apptainer. Steps that ran before "
+        "full provenance tracking are marked ``reconstructed``. Hashes are cached, but the "
+        "first request on a large project reads every input and output file."
+    ),
+    response_model=ProvenanceDossier,
+    responses=_AUTH_ERRORS,
+)
+async def provenance_report_endpoint(
+    project_id: str,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> ProvenanceDossier:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    return await asyncio.to_thread(
+        provenance_report.build_dossier,
+        pdir, project_id, user.sub,
+        settings.pipelines_path, settings.tools_path, settings.resources_path,
+    )
+
+
+@router.get(
+    "/provenance/checksums",
+    summary="Checksums of inputs and current outputs",
+    description=(
+        "``sha256sum``-format list (``<sha256>  <project-relative path>``) of every raw input "
+        "file and every file of the outputs in the provenance report. Check a copy of the "
+        "project with ``sha256sum -c`` from its root."
+    ),
+    response_class=PlainTextResponse,
+    responses=_AUTH_ERRORS,
+)
+async def provenance_checksums(
+    project_id: str,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> PlainTextResponse:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    text = await asyncio.to_thread(
+        provenance_report.checksums,
+        pdir, project_id, user.sub,
+        settings.pipelines_path, settings.tools_path, settings.resources_path,
+    )
+    return PlainTextResponse(
+        text,
+        headers={"Content-Disposition": f'attachment; filename="{project_id}_checksums.sha256"'},
+    )

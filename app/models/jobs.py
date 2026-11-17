@@ -76,7 +76,11 @@ class StepStatus(BaseModel):
         ),
     )
     container_image: str | None = Field(
-        default=None, description="Container image used for this step."
+        default=None,
+        description=(
+            "Container image used for this step. For a step skipped as 'cached', the "
+            "image that produced the reused output in the source run (null if unknown)."
+        ),
     )
     error: str | None = Field(default=None, description="Error message if the step failed.")
     cached_from_run_id: str | None = Field(

@@ -29,6 +29,11 @@ resources:
   memory: 14000
   gpus: 0
 
+# Measured 2026-11-12 on cbica/ccl_nmf_prediction_wrapped:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), two
+# cohort sizes: 3.5 s at N=1 and 3.4 s at N=100 => ~3.5 s fixed and no per-subject
+# cost that is measurable at this scale. The seven CCL-NMF loadings are predicted
+# in one vectorised pass, so cost is container start and model load.
+fixed_seconds: 4
 time_per_subject_seconds: null
 
 container:

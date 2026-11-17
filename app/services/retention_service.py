@@ -115,6 +115,58 @@ def expires_at(last_modified: datetime, retention_days: int) -> datetime:
     return last_modified + timedelta(days=retention_days)
 
 
+def _mtime_expiry(
+    project_dir: Path,
+    project_id: str,
+    user_id: str,
+    retention_days: int,
+) -> datetime | None:
+    """Expiry derived from the project directory's mtime, for a project with no marker.
+
+    The directory's mtime moves whenever an entry is added or removed, so it
+    tracks real activity, and unlike the heartbeat it is not an object a user can
+    reach and delete. That is the point: with no fallback, removing the marker
+    makes a project unexpirable, so the cheapest way to keep data on the server
+    forever is to delete the one object that measures its age.
+
+    It is a weaker clock than the heartbeat — writing a file inside a
+    subdirectory does not touch the project directory itself — but it only has to
+    be good enough to stop a project living forever, and every path that should
+    extend retention writes a heartbeat anyway.
+
+    ``None`` if the directory cannot be stat'ed, which keeps an unreadable
+    project from being condemned by a failure to measure it.
+    """
+    try:
+        mtime = datetime.fromtimestamp(project_dir.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        _log.exception(
+            "Project %r (user %r) has no retention heartbeat and its directory "
+            "could not be stat'ed; treating its expiry as unknown.",
+            project_id, user_id,
+        )
+        return None
+
+    expiry = expires_at(mtime, retention_days)
+    if expiry < datetime.now(timezone.utc):
+        # The consequential case: this project is now a deletion candidate on the
+        # strength of its mtime alone, so say so once per query rather than
+        # letting it disappear with only the reaper's log to explain it.
+        _log.warning(
+            "Project %r (user %r) has no retention heartbeat; its directory mtime "
+            "(%s) puts its expiry at %s, already past. It is a deletion candidate "
+            "on the mtime fallback alone.",
+            project_id, user_id, mtime.isoformat(), expiry.isoformat(),
+        )
+    else:
+        _log.debug(
+            "Project %r (user %r) has no retention heartbeat; using its directory "
+            "mtime, which expires at %s.",
+            project_id, user_id, expiry.isoformat(),
+        )
+    return expiry
+
+
 async def resolve_expiry(
     bucket: str | None,
     prefix: str,
@@ -122,6 +174,7 @@ async def resolve_expiry(
     project_id: str,
     project_dir: Path,
     retention_days: int,
+    mtime_fallback: bool,
 ) -> datetime | None:
     """The project's effective expiry, or ``None`` when there is no clock to read.
 
@@ -129,17 +182,20 @@ async def resolve_expiry(
     retention endpoints and the reaper so the value the API reports and the one
     it acts on cannot disagree.
 
+    Clocks, in the order they are consulted: a local test override, the heartbeat
+    object, and — with ``mtime_fallback`` — the project directory's mtime.
+
     ``None`` means *unknown*, and callers must never read it as *expired*:
 
     - local mode, or no data bucket — retention is not tracked at all;
-    - the heartbeat object does not exist — a project created before the
-      heartbeat shipped, or one whose marker was swept while its files remain.
-      Deleting on that would destroy a project that was never given a clock;
+    - the heartbeat object does not exist and ``mtime_fallback`` is off;
     - S3 could not be reached. Failing open keeps a network blip from deleting
-      data; the next query re-reads the marker.
-
-    A local test override (see below) takes precedence over S3 so the expiry
-    path can be exercised without manipulating object timestamps.
+      data; the next query re-reads the marker. The fallback deliberately does
+      *not* apply here: an absent marker is a fact, an unreadable one is not, and
+      a project whose heartbeat is perfectly current must not be condemned by an
+      outage. Note that ``head_object`` answers 403 rather than 404 when the
+      caller lacks bucket-level permission, so a misconfigured role lands here
+      and keeps the old fail-open behaviour.
     """
     override = read_retention_override(project_dir)
     if override is not None:
@@ -158,7 +214,9 @@ async def resolve_expiry(
         )
         return None
     if last_modified is None:
-        return None
+        if not mtime_fallback:
+            return None
+        return _mtime_expiry(project_dir, project_id, user_id, retention_days)
     return expires_at(last_modified, retention_days)
 
 

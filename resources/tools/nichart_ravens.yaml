@@ -34,7 +34,13 @@ resources:
   memory: 28000
   gpus: 0
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/nichart_ravens:0.0.1, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), two cohort sizes: 63.7 s
+# at N=1 and 90.8 s at N=4 => ~55 s fixed plus ~9 s/subject, with --reg-mode test
+# and --n-jobs -1 as the command declares. CPU-bound registration across 16
+# threads, so the per-subject figure depends on core count more than most tools
+# here; re-measure if the deployment target has a different CPU.
+fixed_seconds: 55
+time_per_subject_seconds: 9.0
 
 container:
   image: cbica/nichart_ravens:0.0.1

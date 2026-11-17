@@ -37,5 +37,5 @@ fixed_seconds: 10
 time_per_subject_seconds: null
 
 container:
-  image: cbica/nichart_spare_score_runall:0.0.4
+  image: cbica/nichart_spare_score_runall:0.0.5
   command: "-i {dlmuse_vol} -demog {demog_csv} --category misc -o {spare_all_csv}"

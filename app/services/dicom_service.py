@@ -6,8 +6,8 @@ module handles the pure-Python DICOM side: staging uploads, reading headers,
 and grouping files by SeriesInstanceUID ahead of the conversion job.
 """
 
+import os
 import shutil
-import tempfile
 import uuid
 from collections import defaultdict
 from pathlib import Path
@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app.models.dicom import SeriesInfo
 from app.services.path_security import (
+    ArchiveTooLargeError,
     PathEscapeError,
     assert_safe_path,
     assert_safe_upload_filename,
@@ -28,8 +29,16 @@ _STAGING_SUBDIR = Path("_upload") / "dicoms"
 
 # ── Upload / staging ──────────────────────────────────────────────────────────
 
-def stage_dicom_upload(project_path: Path, contents: bytes, filename: str) -> str:
-    """Extract a DICOM zip into an isolated staging area. Returns the staging_id."""
+def stage_dicom_upload(
+    project_path: Path, archive: Path, filename: str, *, max_extracted_bytes: int
+) -> str:
+    """Extract a staged DICOM zip into an isolated staging area. Returns the staging_id.
+
+    *max_extracted_bytes* bounds the uncompressed contents; an archive over it
+    raises ``HTTPException(413)``. DICOM pixel data is often already compressed,
+    but a series of uncompressed slices is highly redundant, so this is the
+    upload type where the bound matters most.
+    """
     if not filename.lower().endswith(".zip"):
         raise HTTPException(400, "DICOM upload must be a .zip file")
 
@@ -37,23 +46,20 @@ def stage_dicom_upload(project_path: Path, contents: bytes, filename: str) -> st
     staging_dir = project_path / _STAGING_SUBDIR / staging_id
     staging_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(contents)
-        tmp_path = Path(tmp.name)
-
     try:
-        safe_unzip(tmp_path, staging_dir)
+        safe_unzip(archive, staging_dir, max_total_bytes=max_extracted_bytes)
+    except ArchiveTooLargeError as exc:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise HTTPException(413, str(exc))
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
     return staging_id
 
 
-def stage_dicom_files(project_path: Path, files: list[tuple[str, bytes]]) -> str:
-    """Stage a batch of DICOM files supplied as (filename, content) pairs.
+def stage_dicom_files(project_path: Path, files: list[tuple[str, Path]]) -> str:
+    """Stage a batch of DICOM files supplied as (filename, spooled_path) pairs.
 
     Each filename is validated to be flat (no directory separators or traversal).
     Returns the staging_id exactly as ``stage_dicom_upload`` does.
@@ -63,11 +69,11 @@ def stage_dicom_files(project_path: Path, files: list[tuple[str, bytes]]) -> str
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        for filename, content in files:
+        for filename, source in files:
             assert_safe_upload_filename(filename, allow_subdirs=False)
             dest = staging_dir / Path(filename).name
             assert_safe_path(staging_dir, dest)
-            dest.write_bytes(content)
+            shutil.move(str(source), dest)
     except (PathEscapeError, Exception):
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
@@ -139,14 +145,38 @@ def inspect_dicom_series(project_path: Path, staging_id: str) -> list[SeriesInfo
 
 # ── Series file organisation ──────────────────────────────────────────────────
 
+def _link_or_copy(src: Path, dest: Path) -> None:
+    """Place *src* at *dest* as a hardlink, falling back to a copy.
+
+    The per-series subdirectory lives inside the same staging directory as
+    *src*, so a hardlink is always on the same filesystem and costs no extra
+    space. That matters: sorting a staging area into series used to leave a
+    second full copy of every slice resident until the staging area was
+    discarded, roughly doubling the disk a DICOM upload occupies. The
+    conversion job sees an identical file either way, and removing the staging
+    area removes both names.
+
+    Some filesystems refuse hardlinks (and a bind-mounted volume may too), so a
+    copy remains the fallback. An existing *dest* is replaced, matching the
+    ``shutil.copy2`` behaviour this replaced.
+    """
+    if dest.exists():
+        dest.unlink()
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
 def organize_series_files_bulk(
     project_path: Path,
     staging_id: str,
     series_uids: set[str],
 ) -> dict[str, tuple[Path, str | None]]:
     """
-    Copy DICOM files belonging to each of ``series_uids`` into series-specific
-    subdirectories within the staging area, and capture each series' PatientID
+    Link DICOM files belonging to each of ``series_uids`` into series-specific
+    subdirectories within the staging area (see :func:`_link_or_copy`, which
+    hardlinks rather than copying), and capture each series' PatientID
     along the way. A single pass over the staging directory serves every
     requested series at once (rather than one full rescan per series), which
     matters once a staging area holds a large folder/zip upload with many
@@ -159,7 +189,20 @@ def organize_series_files_bulk(
     when the client didn't supply one.
     """
     staging_dir = _resolve_staging(project_path, staging_id)
+
+    # The series UID arrives in the request body and becomes a directory name, so
+    # it is contained before the first mkdir. A UID that resolves to the staging
+    # directory itself ("", ".") is rejected too: it would make the "already
+    # sorted into a series dir" test below skip every file, converting nothing.
     series_dirs = {uid: staging_dir / uid for uid in series_uids}
+    for uid, d in series_dirs.items():
+        try:
+            assert_safe_path(staging_dir, d)
+        except PathEscapeError:
+            raise HTTPException(400, f"Invalid series UID {uid!r}")
+        if d.resolve() == staging_dir.resolve():
+            raise HTTPException(400, f"Invalid series UID {uid!r}")
+
     for d in series_dirs.values():
         d.mkdir(exist_ok=True)
     patient_ids: dict[str, str | None] = dict.fromkeys(series_uids)
@@ -174,7 +217,7 @@ def organize_series_files_bulk(
             uid = str(ds.get("SeriesInstanceUID", "")).strip()
             if uid not in series_dirs:
                 continue
-            shutil.copy2(dcm_path, series_dirs[uid] / dcm_path.name)
+            _link_or_copy(dcm_path, series_dirs[uid] / dcm_path.name)
             if patient_ids.get(uid) is None:
                 pid = str(ds.get("PatientID", "")).strip()
                 patient_ids[uid] = pid or None

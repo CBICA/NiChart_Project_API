@@ -50,7 +50,13 @@ resources:
   memory: 28000
   gpus: 1
 
-time_per_subject_seconds: null
+# Measured 2026-11-12 on cbica/nichart_dlwmls:0.0.3, this dev box (GTX 1080 Ti, Xeon E5-2623 v3), three cohort
+# sizes: 39.7 s at N=1, 64.0 s at N=4 and 110.4 s at N=8 => ~27 s fixed plus
+# ~10 s/subject. The fixed part is container start, CUDA init and loading the
+# nnU-Net weights; the per-subject part is LPS conversion, inference and the
+# DLMUSE-space resampling.
+fixed_seconds: 27
+time_per_subject_seconds: 10.0
 
 container:
   image: cbica/nichart_dlwmls:0.0.3

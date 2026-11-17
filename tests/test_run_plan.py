@@ -208,7 +208,7 @@ def test_missing_outputs_are_reported(study, tools_path):
 
 def test_untimed_steps_contribute_zero_to_the_total(study, tools_path):
     """An untimed tool must not void the whole estimate, only understate it."""
-    chain = [_step("s", "merge_feature_csvs_by_mrid",
+    chain = [_step("s", "dcm2niix",
                    {"i": "${STUDY}/t1"}, {"o": "${STUDY}/o"})]
     steps, total, full = _plan(study, chain, tools_path)
 
@@ -221,7 +221,7 @@ def test_untimed_steps_contribute_zero_to_the_total(study, tools_path):
 def test_mixed_timing_totals_only_the_known_steps(study, tools_path):
     chain = [
         _step("timed", TOOL_A, {"i": "${STUDY}/t1"}, {"o": "${STUDY}/out_a"}),
-        _step("untimed", "merge_feature_csvs_by_mrid",
+        _step("untimed", "dcm2niix",
               {"i": "${STUDY}/out_a"}, {"o": "${STUDY}/out_b"}),
     ]
     steps, total, _full = _plan(study, chain, tools_path)
@@ -378,6 +378,34 @@ def test_cache_hit_carries_skip_reason_cached(job_client):
     assert step["cached_from_run_id"]
 
 
+def test_cache_hit_reports_the_image_that_produced_the_output(job_client):
+    pid = _create_project(job_client, "cachedimage")
+    body = {"pipeline_id": "test_pipeline", "params": {"duration_seconds": 1}}
+    first = job_client.post(f"/projects/{pid}/jobs/pipelines", json=body).json()["run_id"]
+    second = job_client.post(f"/projects/{pid}/jobs/pipelines", json=body).json()["run_id"]
+    ran = job_client.get(f"/jobs/pipelines/{first}").json()["steps"][0]
+    reused = job_client.get(f"/jobs/pipelines/{second}").json()["steps"][0]
+
+    assert reused["skip_reason"] == "cached"
+    assert ran["container_image"]
+    assert reused["container_image"] == ran["container_image"]
+
+
+def test_cached_step_image_prefers_entry_then_source_run(monkeypatch):
+    """Legacy cache entries carry no image: it comes from the source run's step
+    that ran the tool, never from a step that was itself skipped."""
+    source = SimpleNamespace(steps=[
+        SimpleNamespace(tool_id="t", container_image="old:1", status="skipped"),
+        SimpleNamespace(tool_id="t", container_image="img:2", status="succeeded"),
+    ])
+    monkeypatch.setattr(job_service, "_load_run", lambda rid: source if rid == "r1" else None)
+
+    assert job_service._cached_step_image({"container_image": "entry:3"}, "r1", "t") == "entry:3"
+    assert job_service._cached_step_image({"run_id": "r1"}, "r1", "t") == "img:2"
+    assert job_service._cached_step_image(None, "r1", "other") is None
+    assert job_service._cached_step_image(None, "gone", "t") is None
+
+
 def test_submit_with_start_from_step_forces_earlier_steps(job_client):
     """Step 1 is skipped unchecked; step 2 runs and the detail records the start."""
     pid = _create_project(job_client, "startfrom")
@@ -532,7 +560,7 @@ def test_fixed_and_per_subject_add_up(study, tools_path):
 
 
 def test_step_with_neither_timing_is_still_null(study, tools_path):
-    chain = [_step("s", "merge_feature_csvs_by_mrid",
+    chain = [_step("s", "dcm2niix",
                    {"i": "${STUDY}/t1/a.csv"}, {"o": "${STUDY}/o.csv"})]
     steps, total, _full = _plan(study, chain, tools_path)
 

@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.auth.dependencies import public
 from app.config import Settings, get_settings
+from app.models.files import UploadLimits
 from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
 from app.routers.cloud import router as cloud_router
@@ -112,7 +113,7 @@ async def _lifespan(app: FastAPI):
     import time
 
     from app.backends import get_backend_instance
-    from app.services import job_service
+    from app.services import job_service, staging_sweeper
 
     _log = logging.getLogger("uvicorn.error")
     settings = get_settings()
@@ -131,6 +132,20 @@ async def _lifespan(app: FastAPI):
         except Exception as exc:
             _log.warning("Could not resume SLURM runs at startup: %s", exc)
 
+    # Remove staging areas no client ever committed or discarded
+    # (NICHART_STAGING_TTL_HOURS; 0 disables). Sweeps at startup, then hourly.
+    sweeper: asyncio.Task | None = None
+    if settings.staging_ttl_hours > 0:
+        sweeper = asyncio.create_task(
+            staging_sweeper.run_periodically(
+                settings.data_root, settings.staging_ttl_hours
+            )
+        )
+        _log.info(
+            "Staging sweep enabled: uncommitted uploads removed after %dh.",
+            settings.staging_ttl_hours,
+        )
+
     # Inactivity auto-shutdown (opt-in via NICHART_INACTIVITY_TIMEOUT_SECONDS > 0).
     watchdog: asyncio.Task | None = None
     if settings.inactivity_timeout_seconds and settings.inactivity_timeout_seconds > 0:
@@ -145,10 +160,11 @@ async def _lifespan(app: FastAPI):
 
     yield
 
-    if watchdog is not None:
-        watchdog.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await watchdog
+    for task in (watchdog, sweeper):
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app() -> FastAPI:
@@ -243,6 +259,25 @@ def create_app() -> FastAPI:
             "execution_mode": settings.execution_mode,
             "version": _VERSION,
         }
+
+    # ── Limits ────────────────────────────────────────────────────────────────
+    @app.get(
+        "/limits",
+        tags=["Health"],
+        summary="Upload size limits",
+        response_model=UploadLimits,
+        description=(
+            "Returns the upload size limits in force on this deployment, so a client "
+            "can reject an oversized file before transferring it. The limits are the "
+            "same for every upload endpoint. No authentication required."
+        ),
+        dependencies=[],   # explicitly public — no require_auth
+    )
+    async def limits(settings: Settings = Depends(get_settings)) -> UploadLimits:
+        return UploadLimits(
+            max_upload_file_mb=settings.max_upload_file_mb,
+            max_upload_request_mb=settings.max_upload_request_mb,
+        )
 
     return app
 

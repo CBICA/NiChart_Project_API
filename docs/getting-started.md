@@ -347,7 +347,9 @@ All variables are prefixed `NICHART_`. Set them in `.env` or via the compose
 | `NICHART_DATA_ROOT` | `/data` | Root directory for all project data |
 | `NICHART_HOST_DATA_ROOT` | — | Host path to data root, needed for DooD (local mode with sibling containers) |
 | `NICHART_CORS_ORIGINS` | `["http://localhost:3000"]` | JSON array of allowed UI origins |
-| `NICHART_STAGING_TTL_HOURS` | `24` | Hours before uncommitted uploads are cleaned up |
+| `NICHART_MAX_UPLOAD_FILE_MB` | `1024` | Largest single file any upload endpoint accepts. Over it: 413, nothing saved. |
+| `NICHART_MAX_UPLOAD_REQUEST_MB` | `10240` | Largest total per upload request, and the largest uncompressed size a `.zip` may expand to. Reported by `GET /limits`. |
+| `NICHART_STAGING_TTL_HOURS` | `24` | Hours before an uncommitted staging upload is removed. A background sweep runs at startup and then hourly; `0` disables it. |
 | `NICHART_INACTIVITY_TIMEOUT_SECONDS` | `0` (off) | Idle auto-shutdown: exit after N seconds with no API activity and no in-progress runs. `0`/`-1` disables. The CLI's spawned servers enable this by default. |
 | `NICHART_S3_DATA_BUCKET` | — | S3 bucket for automatic data sync in cloud mode (e.g. `cbica-nichart-io`). When set, data is uploaded to S3 before each step and downloaded after. |
 | `NICHART_S3_DATA_PREFIX` | `fsx` | Key prefix within the S3 data bucket |
