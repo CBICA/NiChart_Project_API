@@ -17,3 +17,7 @@ SurrealGAN identifies individualized, continuous disease subtypes from structura
 - DLMUSE regional brain volumes CSV (produced by the DLMUSE pipeline)
 - `participants/participants.csv` with columns: `MRID`, `Age`, `Sex`
 - Minimum 3 subjects required
+
+## Note
+
+In NiChart, the indices are computed by a tabular transformer trained through knowledge distillation to reproduce the original model's outputs.

@@ -15,3 +15,7 @@ CCL-NMF (Coupled Cross-sectional and Longitudinal Non-negative Matrix Factorizat
 
 - DLMUSE regional brain volumes CSV (produced by the DLMUSE pipeline)
 - `participants/participants.csv` with at minimum an `MRID` column
+
+## Note
+
+In NiChart, the indices are computed by a tabular transformer trained through knowledge distillation to reproduce the original model's outputs.

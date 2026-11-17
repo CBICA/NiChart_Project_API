@@ -4,6 +4,9 @@ File management within a project — authenticated.
 All paths from the client are validated against the project root before any I/O.
 """
 
+from collections.abc import Callable
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -14,6 +17,7 @@ from app.models.files import (
     DirectoryTree,
     DownloadZipRequest,
     NiftiCommitRequest,
+    BidsUploadResult,
     NiftiCommitResult,
     NiftiStagingResult,
     ParticipantsList,
@@ -317,6 +321,7 @@ async def upload_csv(
         "A ``participants.tsv`` at the archive root is converted to ``participants/participants.csv``."
     ),
     status_code=202,
+    response_model=BidsUploadResult,
     responses=_AUTH_ERRORS,
 )
 async def upload_bids(
@@ -324,13 +329,14 @@ async def upload_bids(
     file: UploadFile,
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> BidsUploadResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     contents = await file.read()
     usage_service.record_upload("bids", settings.execution_mode, files=1, total_bytes=len(contents))
-    file_service.store_bids_upload(pdir, contents, file.filename or "")
-    file_service.sync_participants_with_images(pdir)
-    await file_service.publish_uploads(settings, user, project_id, pdir)
+    return await _import_bids(
+        settings, user, project_id, pdir,
+        lambda: file_service.store_bids_upload(pdir, contents, file.filename or ""),
+    )
 
 
 @router.post(
@@ -343,6 +349,7 @@ async def upload_bids(
         "Reorganisation into the NiChart project layout is identical to the ZIP upload."
     ),
     status_code=202,
+    response_model=BidsUploadResult,
     responses=_AUTH_ERRORS,
 )
 async def upload_bids_files(
@@ -350,16 +357,39 @@ async def upload_bids_files(
     files: list[UploadFile] = FastAPIFile(...),
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> BidsUploadResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     pairs = [(f.filename or "", await f.read()) for f in files]
     usage_service.record_upload(
         "bids", settings.execution_mode,
         files=len(pairs), total_bytes=sum(len(d) for _n, d in pairs),
     )
-    file_service.store_bids_files(pdir, pairs)
+    return await _import_bids(
+        settings, user, project_id, pdir,
+        lambda: file_service.store_bids_files(pdir, pairs),
+    )
+
+
+async def _import_bids(
+    settings: Settings,
+    user: CurrentUser,
+    project_id: str,
+    pdir: Path,
+    store: Callable[[], int],
+) -> BidsUploadResult:
+    """Run a BIDS import (``store`` returns the images placed), then add participants.csv
+    rows for any imaged subjects it still lacks, and report what changed."""
+    had_participants = file_service.participants_csv_exists(pdir)
+    rows_before = file_service.participants_row_count(pdir)
+    scans = store()
     file_service.sync_participants_with_images(pdir)
+    added = max(0, file_service.participants_row_count(pdir) - rows_before)  # rows are never removed
     await file_service.publish_uploads(settings, user, project_id, pdir)
+    return BidsUploadResult(
+        scans_imported=scans,
+        participants_added=added,
+        participants_created=not had_participants and file_service.participants_csv_exists(pdir),
+    )
 
 
 # ── IDAT upload ───────────────────────────────────────────────────────────────

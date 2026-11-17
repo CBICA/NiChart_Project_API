@@ -495,6 +495,11 @@ def participants_csv_exists(project_path: Path) -> bool:
     return (project_path / _PARTICIPANTS_PATH).exists()
 
 
+def participants_row_count(project_path: Path) -> int:
+    """Rows in participants.csv (0 if it is missing or has no MRID column)."""
+    return len(read_participants(project_path).rows)
+
+
 # Values given to new subjects when participants.csv is created or extended from images.
 DEFAULT_BATCH = "Batch1"
 DEFAULT_DX = "CN"
