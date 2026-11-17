@@ -2302,7 +2302,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/BidsUploadResult"
+                }
               }
             }
           },
@@ -2403,7 +2405,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/BidsUploadResult"
+                }
               }
             }
           },
@@ -5218,6 +5222,33 @@
         ],
         "title": "BatchFeaturesResult",
         "description": "Summary of the pipeline's batch-level feature CSV."
+      },
+      "BidsUploadResult": {
+        "properties": {
+          "scans_imported": {
+            "type": "integer",
+            "title": "Scans Imported",
+            "description": "Images placed into the project's modality folders (one per modality and scan; duplicate runs keep the first)."
+          },
+          "participants_added": {
+            "type": "integer",
+            "title": "Participants Added",
+            "description": "Rows added to participants/participants.csv, from participants.tsv / sessions.tsv and for imaged subjects missing from them (the file is created if it didn't exist).",
+            "default": 0
+          },
+          "participants_created": {
+            "type": "boolean",
+            "title": "Participants Created",
+            "description": "True when participants/participants.csv did not exist and was created by this upload.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "scans_imported"
+        ],
+        "title": "BidsUploadResult",
+        "description": "Response after a BIDS dataset (zip or files) has been imported."
       },
       "Body_upload_bids_files_projects__project_id__files_upload_bids_files_post": {
         "properties": {

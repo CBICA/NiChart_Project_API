@@ -151,6 +151,28 @@ class CommittedFile(BaseModel):
     path: str = Field(description="Path relative to the project root where the file was written.")
 
 
+class BidsUploadResult(BaseModel):
+    """Response after a BIDS dataset (zip or files) has been imported."""
+
+    scans_imported: int = Field(
+        description=(
+            "Images placed into the project's modality folders "
+            "(one per modality and scan; duplicate runs keep the first)."
+        ),
+    )
+    participants_added: int = Field(
+        default=0,
+        description=(
+            "Rows added to participants/participants.csv, from participants.tsv / sessions.tsv "
+            "and for imaged subjects missing from them (the file is created if it didn't exist)."
+        ),
+    )
+    participants_created: bool = Field(
+        default=False,
+        description="True when participants/participants.csv did not exist and was created by this upload.",
+    )
+
+
 class NiftiCommitResult(BaseModel):
     """Response after a successful NIfTI commit."""
 

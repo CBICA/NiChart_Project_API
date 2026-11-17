@@ -18,7 +18,7 @@ Computed from DLMUSE regional brain volumes extracted from T1-weighted MRI alone
 - Additional disease-specific scores (see CSV column headers for the full list)
 
 **T1 + FLAIR (SPARE-All CVM)**  
-Adds white matter lesion features from DLWMLS to the T1-derived volumes, enabling cardiovascular and cerebrovascular disease-related scores (CVM variants).
+Adds white matter lesion features from DLWMLS to the T1-derived volumes, enabling cardiovascular and cerebrovascular disease-related scores (CVM variants): SPARE scores for hypertension, diabetes, obesity and smoking.
 
 ## Harmonized variants
 

@@ -673,3 +673,38 @@ def test_readiness_via_api(data_client, tmp_path):
     resp = data_client.get(f"/projects/{pid}/readiness/test_pipeline")
     assert resp.status_code == 200
     assert resp.json()["satisfied"] is True
+
+
+# ── BIDS upload result ────────────────────────────────────────────────────────
+
+def _bids_zip(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_bids_upload_reports_scans_and_participants(data_client):
+    pid = _create_project(data_client)
+    z = _bids_zip({
+        "sub-01/anat/sub-01_T1w.nii.gz": b"x",
+        "sub-02/anat/sub-02_T1w.nii.gz": b"x",
+        "sub-02/anat/sub-02_FLAIR.nii.gz": b"x",
+        "participants.tsv": b"participant_id\tage\nsub-01\t70\n",
+    })
+    resp = data_client.post(
+        f"/projects/{pid}/files/upload/bids",
+        files={"file": ("ds.zip", io.BytesIO(z), "application/zip")},
+    )
+    assert resp.status_code == 202
+    # sub-02 is imaged but not in participants.tsv: added by the image sync
+    assert resp.json() == {"scans_imported": 3, "participants_added": 2, "participants_created": True}
+
+    # Uploading the same subjects again adds no scans' rows and doesn't "create" the file
+    resp = data_client.post(
+        f"/projects/{pid}/files/upload/bids/files",
+        files=[("files", ("sub-03/anat/sub-03_T1w.nii.gz", io.BytesIO(b"x"), "application/gzip"))],
+    )
+    assert resp.status_code == 202
+    assert resp.json() == {"scans_imported": 1, "participants_added": 1, "participants_created": False}

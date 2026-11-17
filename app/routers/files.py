@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import secrets
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -26,6 +27,7 @@ from app.models.files import (
     DirectoryTree,
     DownloadZipRequest,
     NiftiCommitRequest,
+    BidsUploadResult,
     NiftiCommitResult,
     NiftiStagingResult,
     ParticipantsList,
@@ -508,6 +510,7 @@ async def upload_csv(
         "A ``participants.tsv`` at the archive root is converted to ``participants/participants.csv``."
     ),
     status_code=202,
+    response_model=BidsUploadResult,
     responses=_UPLOAD_ERRORS,
 )
 async def upload_bids(
@@ -515,19 +518,22 @@ async def upload_bids(
     file: UploadFile,
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> BidsUploadResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     with upload_spool.spool_dir(pdir) as spool:
         archive = spool / "upload.zip"
         size = await upload_spool.UploadBudget(settings).spool(file, archive)
         usage_service.record_upload("bids", settings.execution_mode, files=1, total_bytes=size)
         with ingest_log.tracked(pdir, "bids_upload", {"filename": file.filename}):
-            file_service.store_bids_upload(
-                pdir, archive, file.filename or "",
-                max_extracted_bytes=upload_spool.extracted_cap(settings),
+            result = _import_bids(
+                pdir,
+                lambda: file_service.store_bids_upload(
+                    pdir, archive, file.filename or "",
+                    max_extracted_bytes=upload_spool.extracted_cap(settings),
+                ),
             )
-            file_service.sync_participants_with_images(pdir)
     await file_service.publish_uploads(settings, user, project_id, pdir)
+    return result
 
 
 @router.post(
@@ -540,6 +546,7 @@ async def upload_bids(
         "Reorganisation into the NiChart project layout is identical to the ZIP upload."
     ),
     status_code=202,
+    response_model=BidsUploadResult,
     responses=_UPLOAD_ERRORS,
 )
 async def upload_bids_files(
@@ -547,7 +554,7 @@ async def upload_bids_files(
     files: list[UploadFile] = FastAPIFile(...),
     user: CurrentUser = Depends(require_auth),
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> BidsUploadResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     with upload_spool.spool_dir(pdir) as spool:
         budget = upload_spool.UploadBudget(settings)
@@ -561,9 +568,29 @@ async def upload_bids_files(
             files=len(pairs), total_bytes=budget.total,
         )
         with ingest_log.tracked(pdir, "bids_upload", {"files": len(pairs)}):
-            file_service.store_bids_files(pdir, pairs)
-            file_service.sync_participants_with_images(pdir)
+            result = _import_bids(pdir, lambda: file_service.store_bids_files(pdir, pairs))
     await file_service.publish_uploads(settings, user, project_id, pdir)
+    return result
+
+
+def _import_bids(pdir: Path, store: Callable[[], int]) -> BidsUploadResult:
+    """Run a BIDS import (``store`` returns the images placed), then add participants.csv
+    rows for any imaged subjects it still lacks, and report what changed.
+
+    Publishing is left to the caller rather than done here: this runs inside the
+    upload's spool and ingest-log contexts, and an S3 publish should not hold the
+    spooled archive on disk for its duration.
+    """
+    had_participants = file_service.participants_csv_exists(pdir)
+    rows_before = file_service.participants_row_count(pdir)
+    scans = store()
+    file_service.sync_participants_with_images(pdir)
+    added = max(0, file_service.participants_row_count(pdir) - rows_before)  # rows are never removed
+    return BidsUploadResult(
+        scans_imported=scans,
+        participants_added=added,
+        participants_created=not had_participants and file_service.participants_csv_exists(pdir),
+    )
 
 
 # ── IDAT upload ───────────────────────────────────────────────────────────────
