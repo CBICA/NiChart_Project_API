@@ -73,6 +73,13 @@ def stage_dicom_files(project_path: Path, files: list[tuple[str, Path]]) -> str:
             assert_safe_upload_filename(filename, allow_subdirs=False)
             dest = staging_dir / Path(filename).name
             assert_safe_path(staging_dir, dest)
+            # Scanner exports reuse names in every series folder (1-01.dcm, IM0001, …)
+            # and a folder upload arrives flat: never let one file replace another.
+            # Series are grouped by their headers, so the stored name doesn't matter.
+            n = 1
+            while dest.exists():
+                dest = staging_dir / f"{n}_{Path(filename).name}"
+                n += 1
             shutil.move(str(source), dest)
     except (PathEscapeError, Exception):
         shutil.rmtree(staging_dir, ignore_errors=True)

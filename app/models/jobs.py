@@ -139,6 +139,14 @@ class PipelineRunSummary(BaseModel):
     finished_at: datetime | None = Field(default=None)
     current_step: int = Field(default=0, description="Index of the step currently executing (0-based).")
     total_steps: int = Field(default=0)
+    cancelled: bool = Field(
+        default=False,
+        description=(
+            "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). "
+            "A cancelled run ends with status 'failed'; use this to tell a deliberate "
+            "cancel from a failure."
+        ),
+    )
 
 
 class ManualUploadRecord(BaseModel):
@@ -225,7 +233,21 @@ class PipelineRunLogs(BaseModel):
     """Aggregated logs for all completed steps in a pipeline run."""
 
     run_id: str
-    logs: str = Field(description="Concatenated log output from all steps executed so far.")
+    logs: str = Field(
+        description=(
+            "Concatenated log output from all steps executed so far — or, when the request "
+            "gave a matching ``offset``, only the text after it (see ``offset``)."
+        )
+    )
+    offset: int = Field(
+        default=0,
+        description=(
+            "Where ``logs`` starts in the full log text. 0 means ``logs`` is the full text "
+            "(also when the requested offset could not be honoured, e.g. the earlier text "
+            "changed); otherwise append ``logs`` to the text already held."
+        ),
+    )
+    total_length: int = Field(default=0, description="Length of the full log text, in characters.")
 
 
 class PipelineRunCreated(BaseModel):
@@ -249,7 +271,9 @@ class FinishedRunsResponse(BaseModel):
         description=(
             "Server timestamp when this response was generated. "
             "Stored server-side as the cursor for the next call — "
-            "only runs finishing after this moment appear in the next response."
+            "only runs finishing after this moment appear in the next response. "
+            "When the request gave ``since``, nothing is stored: pass this value as the "
+            "next ``since``."
         )
     )
 

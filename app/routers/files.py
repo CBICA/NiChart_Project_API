@@ -5,6 +5,12 @@ All paths from the client are validated against the project root before any I/O.
 """
 
 import asyncio
+import json
+import re
+import secrets
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -13,6 +19,8 @@ from app.auth.dependencies import CurrentUser, require_auth
 from app.config import Settings, get_settings
 from app.models.errors import ErrorDetail
 from app.models.files import (
+    ArchiveLink,
+    ArchiveLinkRequest,
     DeleteSubjectsRequest,
     DeleteSubjectsResult,
     DirectoryTree,
@@ -109,12 +117,38 @@ async def download_file(
         if not target.is_dir():
             raise HTTPException(400, "zip=true requires a directory path")
         return StreamingResponse(
-            file_service.zip_directory_stream(target),
+            file_service.zip_directory_stream(target, project_path=pdir),
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{target.name}.zip"'},
         )
 
     return FileResponse(path=target, filename=target.name)
+
+
+@router.get(
+    "/files/content",
+    summary="Get a file or directory (same as /files/download)",
+    description=(
+        "Identical to ``GET /files/download``: a single file, or a directory as a streaming "
+        "zip archive when ``zip=true``. Named to avoid 'download' in the URL, which some "
+        "ad-blocker/privacy extensions filter — the frontend uses this one for reads made "
+        "from script (chart data, the MRI viewer, previews). ``/files/download`` stays for "
+        "existing links."
+    ),
+    response_model=None,
+    responses={
+        200: {"description": "File content or zip stream."},
+        **_AUTH_ERRORS,
+    },
+)
+async def get_file_content(
+    project_id: str,
+    path: str = Query(description="Path relative to the project root."),
+    zip: bool = Query(default=False, description="Stream target directory as a zip archive."),
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse | FileResponse:
+    return await download_file(project_id=project_id, path=path, zip=zip, user=user, settings=settings)
 
 
 @router.post(
@@ -143,6 +177,85 @@ async def create_archive(
         file_service.zip_paths_stream(pdir, body.paths),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{project_id}.zip"'},
+    )
+
+
+# ── Archive links (large selections, saved by the browser) ───────────────────
+
+ARCHIVE_LINK_TTL = timedelta(minutes=15)
+
+
+def _archive_links_dir(settings: Settings) -> Path:
+    return Path(settings.data_root) / "_working" / "archive_links"
+
+
+@router.post(
+    "/files/archive/link",
+    summary="Make a short-lived link that streams a selection as a zip",
+    description=(
+        "Same selection as ``POST /files/archive``, but instead of the zip it returns a URL "
+        "(valid for 15 minutes, for this user and project only) that the browser can open "
+        "itself, so a large archive streams straight to disk. Also says how many files and "
+        "bytes the archive will hold, so the size can be shown before starting."
+    ),
+    response_model=ArchiveLink,
+    responses=_AUTH_ERRORS,
+)
+async def create_archive_link(
+    project_id: str,
+    body: ArchiveLinkRequest,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> ArchiveLink:
+    pdir = file_service.resolve_project(settings, user, project_id)
+    count, total = file_service.archive_totals(pdir, body.paths)  # validates every path
+    now = datetime.now(timezone.utc)
+    links = _archive_links_dir(settings)
+    links.mkdir(parents=True, exist_ok=True)
+    for old in links.glob("*.json"):  # drop expired links
+        try:
+            if datetime.fromisoformat(json.loads(old.read_text())["expires_at"]) < now:
+                old.unlink(missing_ok=True)
+        except (OSError, ValueError, KeyError):
+            old.unlink(missing_ok=True)
+    token = secrets.token_urlsafe(24)
+    expires = now + ARCHIVE_LINK_TTL
+    (links / f"{token}.json").write_text(json.dumps({
+        "user": user.sub, "project": project_id, "paths": body.paths,
+        "filename": body.filename or project_id, "expires_at": expires.isoformat(),
+    }))
+    return ArchiveLink(
+        url=f"/projects/{quote(project_id)}/files/archive/{token}",
+        file_count=count, total_bytes=total, expires_at=expires,
+    )
+
+
+@router.get(
+    "/files/archive/{token}",
+    summary="Stream a selection made with POST /files/archive/link",
+    response_model=None,
+    responses={200: {"description": "Zip stream."}, **_AUTH_ERRORS},
+)
+async def get_archive_link(
+    project_id: str,
+    token: str,
+    user: CurrentUser = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token):
+        raise HTTPException(404, "This download link doesn't exist or has expired.")
+    try:
+        record = json.loads((_archive_links_dir(settings) / f"{token}.json").read_text())
+        expired = datetime.fromisoformat(record["expires_at"]) < datetime.now(timezone.utc)
+    except (OSError, ValueError, KeyError):
+        raise HTTPException(404, "This download link doesn't exist or has expired.")
+    if expired or record.get("user") != user.sub or record.get("project") != project_id:
+        raise HTTPException(404, "This download link doesn't exist or has expired.")
+    pdir = file_service.resolve_project(settings, user, project_id)
+    return StreamingResponse(
+        file_service.zip_paths_stream(pdir, record["paths"]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{record["filename"]}.zip"'},
     )
 
 
@@ -324,7 +437,11 @@ async def commit_nifti(
 ) -> NiftiCommitResult:
     pdir = file_service.resolve_project(settings, user, project_id)
     with ingest_log.tracked(pdir, "nifti_upload", {"staging_id": staging_id}):
-        result = file_service.commit_nifti_staging(pdir, staging_id, body.mappings)
+        # In a thread: uncompressed uploads are gzipped on commit, which takes a while
+        # for a large batch and mustn't block the event loop.
+        result = await asyncio.to_thread(
+            file_service.commit_nifti_staging, pdir, staging_id, body.mappings,
+        )
         had_participants = file_service.participants_csv_exists(pdir)
         result.participants_added = file_service.sync_participants_with_images(pdir)
     result.participants_created = not had_participants and result.participants_added > 0

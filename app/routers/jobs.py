@@ -14,6 +14,7 @@ URL structure:
 """
 
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
@@ -337,14 +338,27 @@ async def list_pipeline_runs(
         "\n\n"
         "Designed for lightweight notification polling (e.g. every 10–30 seconds). "
         "For full run history use ``GET /jobs/pipelines``."
+        "\n\n"
+        "**With ``since``**: returns the runs that finished after that time and stores "
+        "nothing. Clients should prefer this: with the shared server cursor, two open "
+        "tabs split the completions between them, and a page load can't tell which "
+        "completions it hasn't announced yet. Pass the response's ``polled_at`` as the "
+        "next ``since``."
     ),
     response_model=FinishedRunsResponse,
     responses=_AUTH_ERRORS,
 )
 async def get_finished_pipeline_runs(
+    since: datetime | None = Query(
+        default=None,
+        description="Return runs that finished after this time (ISO 8601); don't use or move the server cursor.",
+    ),
     user: CurrentUser = Depends(require_auth),
 ) -> FinishedRunsResponse:
-    runs, polled_at = job_service.get_and_advance_poll_cursor(user.sub)
+    if since is not None:
+        runs, polled_at = job_service.get_finished_since(user.sub, since)
+    else:
+        runs, polled_at = job_service.get_and_advance_poll_cursor(user.sub)
     return FinishedRunsResponse(runs=runs, polled_at=polled_at)
 
 
@@ -407,10 +421,23 @@ async def get_pipeline_run(
 )
 async def get_pipeline_logs(
     run_id: str,
+    offset: int | None = Query(
+        default=None, ge=0,
+        description=(
+            "Length of the log text the client already has. With a matching ``tail``, "
+            "only the text after it is returned (response ``offset`` > 0)."
+        ),
+    ),
+    tail: str | None = Query(
+        default=None, max_length=job_service.LOG_TAIL_CHARS,
+        description="The last characters (up to 64) of the client's text, to check it still matches.",
+    ),
     user: CurrentUser = Depends(require_auth),
     backend: JobBackend = Depends(get_backend),
 ) -> PipelineRunLogs:
-    return await job_service.get_run_logs(run_id=run_id, user_id=user.sub, backend=backend)
+    return await job_service.get_run_logs(
+        run_id=run_id, user_id=user.sub, backend=backend, offset=offset, tail=tail,
+    )
 
 
 @jobs_router.get(

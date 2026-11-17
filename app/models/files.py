@@ -4,6 +4,8 @@ Request/response schemas for file management endpoints.
 
 from typing import Any, Literal
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -34,6 +36,26 @@ class DownloadZipRequest(BaseModel):
             "original directory structure is preserved."
         ),
     )
+
+
+class ArchiveLinkRequest(DownloadZipRequest):
+    """Request body for a one-time archive link (same paths as ``DownloadZipRequest``)."""
+
+    filename: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$",
+        description="Name for the saved zip, without ``.zip``. Defaults to the project ID.",
+    )
+
+
+class ArchiveLink(BaseModel):
+    """A short-lived URL that streams a selection as a zip — opened by the browser itself,
+    so a large archive is saved straight to disk instead of being held in page memory."""
+
+    url: str = Field(description="Path of the archive, relative to the API root (GET, same session).")
+    file_count: int = Field(description="Files the archive will contain.")
+    total_bytes: int = Field(description="Their combined size before compression.")
+    expires_at: datetime = Field(description="The link stops working after this time (UTC).")
 
 
 # ── NIfTI upload / staging ───────────────────────────────────────────────────

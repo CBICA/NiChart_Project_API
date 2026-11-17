@@ -182,6 +182,87 @@
         }
       }
     },
+    "/agreements": {
+      "get": {
+        "tags": [
+          "Agreements"
+        ],
+        "summary": "List this user's agreement acceptances",
+        "operationId": "list_agreements_agreements_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgreementList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Agreements"
+        ],
+        "summary": "Record that this user accepted an agreement",
+        "description": "Appends a record (agreement, version, time) for the signed-in user. Accepting the same version again adds another record; clients check ``GET /agreements`` first.",
+        "operationId": "record_agreement_agreements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgreementAcceptance"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgreementRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/catalog/pipelines": {
       "get": {
         "tags": [
@@ -1228,6 +1309,110 @@
         }
       }
     },
+    "/projects/{project_id}/files/content": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get a file or directory (same as /files/download)",
+        "description": "Identical to ``GET /files/download``: a single file, or a directory as a streaming zip archive when ``zip=true``. Named to avoid 'download' in the URL, which some ad-blocker/privacy extensions filter \u2014 the frontend uses this one for reads made from script (chart data, the MRI viewer, previews). ``/files/download`` stays for existing links.",
+        "operationId": "get_file_content_projects__project_id__files_content_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Path relative to the project root.",
+              "title": "Path"
+            },
+            "description": "Path relative to the project root."
+          },
+          {
+            "name": "zip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Stream target directory as a zip archive.",
+              "default": false,
+              "title": "Zip"
+            },
+            "description": "Stream target directory as a zip archive."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content or zip stream.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/projects/{project_id}/files/archive": {
       "post": {
         "tags": [
@@ -1257,6 +1442,188 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Zip stream.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/archive/link": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Make a short-lived link that streams a selection as a zip",
+        "description": "Same selection as ``POST /files/archive``, but instead of the zip it returns a URL (valid for 15 minutes, for this user and project only) that the browser can open itself, so a large archive streams straight to disk. Also says how many files and bytes the archive will hold, so the size can be shown before starting.",
+        "operationId": "create_archive_link_projects__project_id__files_archive_link_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveLink"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied to this project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or file not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsafe path.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{project_id}/files/archive/{token}": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Stream a selection made with POST /files/archive/link",
+        "operationId": "get_archive_link_projects__project_id__files_archive__token__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Zip stream.",
@@ -3631,8 +3998,29 @@
           "Jobs"
         ],
         "summary": "Poll for newly finished pipeline runs",
-        "description": "Returns all pipeline runs that reached a terminal state (``succeeded`` or ``failed``) since the last time this endpoint was called by the authenticated user. The server stores a per-user cursor so only genuinely new completions are returned on each call. \n\n**First call**: the cursor defaults to epoch, so all existing terminal runs are returned \u2014 useful for bootstrapping a UI on first load. \n\nDesigned for lightweight notification polling (e.g. every 10\u201330 seconds). For full run history use ``GET /jobs/pipelines``.",
+        "description": "Returns all pipeline runs that reached a terminal state (``succeeded`` or ``failed``) since the last time this endpoint was called by the authenticated user. The server stores a per-user cursor so only genuinely new completions are returned on each call. \n\n**First call**: the cursor defaults to epoch, so all existing terminal runs are returned \u2014 useful for bootstrapping a UI on first load. \n\nDesigned for lightweight notification polling (e.g. every 10\u201330 seconds). For full run history use ``GET /jobs/pipelines``.\n\n**With ``since``**: returns the runs that finished after that time and stores nothing. Clients should prefer this: with the shared server cursor, two open tabs split the completions between them, and a page load can't tell which completions it hasn't announced yet. Pass the response's ``polled_at`` as the next ``since``.",
         "operationId": "get_finished_pipeline_runs_jobs_pipelines_finished_get",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return runs that finished after this time (ISO 8601); don't use or move the server cursor.",
+              "title": "Since"
+            },
+            "description": "Return runs that finished after this time (ISO 8601); don't use or move the server cursor."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3660,6 +4048,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -3821,6 +4219,44 @@
               "type": "string",
               "title": "Run Id"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Length of the log text the client already has. With a matching ``tail``, only the text after it is returned (response ``offset`` > 0).",
+              "title": "Offset"
+            },
+            "description": "Length of the log text the client already has. With a matching ``tail``, only the text after it is returned (response ``offset`` > 0)."
+          },
+          {
+            "name": "tail",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last characters (up to 64) of the client's text, to check it still matches.",
+              "title": "Tail"
+            },
+            "description": "The last characters (up to 64) of the client's text, to check it still matches."
           }
         ],
         "responses": {
@@ -4554,6 +4990,139 @@
   },
   "components": {
     "schemas": {
+      "AgreementAcceptance": {
+        "properties": {
+          "agreement": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]{1,40}$",
+            "title": "Agreement",
+            "description": "Which agreement, e.g. 'upload'."
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,40}$",
+            "title": "Version",
+            "description": "The version of its text that was shown."
+          }
+        },
+        "type": "object",
+        "required": [
+          "agreement",
+          "version"
+        ],
+        "title": "AgreementAcceptance"
+      },
+      "AgreementList": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AgreementRecord"
+            },
+            "type": "array",
+            "title": "Records",
+            "description": "Oldest first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "records"
+        ],
+        "title": "AgreementList"
+      },
+      "AgreementRecord": {
+        "properties": {
+          "agreement": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]{1,40}$",
+            "title": "Agreement",
+            "description": "Which agreement, e.g. 'upload'."
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,40}$",
+            "title": "Version",
+            "description": "The version of its text that was shown."
+          },
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accepted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agreement",
+          "version",
+          "accepted_at"
+        ],
+        "title": "AgreementRecord"
+      },
+      "ArchiveLink": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Path of the archive, relative to the API root (GET, same session)."
+          },
+          "file_count": {
+            "type": "integer",
+            "title": "File Count",
+            "description": "Files the archive will contain."
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes",
+            "description": "Their combined size before compression."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "The link stops working after this time (UTC)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "file_count",
+          "total_bytes",
+          "expires_at"
+        ],
+        "title": "ArchiveLink",
+        "description": "A short-lived URL that streams a selection as a zip \u2014 opened by the browser itself,\nso a large archive is saved straight to disk instead of being held in page memory."
+      },
+      "ArchiveLinkRequest": {
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Paths",
+            "description": "Paths relative to the project root \u2014 a mix of files and directories is allowed. Each entry keeps its project-relative path inside the resulting archive, so the original directory structure is preserved."
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename",
+            "description": "Name for the saved zip, without ``.zip``. Defaults to the project ID."
+          }
+        },
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "title": "ArchiveLinkRequest",
+        "description": "Request body for a one-time archive link (same paths as ``DownloadZipRequest``)."
+      },
       "BatchFeaturesResult": {
         "properties": {
           "available": {
@@ -6148,7 +6717,7 @@
             "type": "string",
             "format": "date-time",
             "title": "Polled At",
-            "description": "Server timestamp when this response was generated. Stored server-side as the cursor for the next call \u2014 only runs finishing after this moment appear in the next response."
+            "description": "Server timestamp when this response was generated. Stored server-side as the cursor for the next call \u2014 only runs finishing after this moment appear in the next response. When the request gave ``since``, nothing is stored: pass this value as the next ``since``."
           }
         },
         "type": "object",
@@ -7920,6 +8489,12 @@
             "title": "Total Steps",
             "default": 0
           },
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled",
+            "description": "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). A cancelled run ends with status 'failed'; use this to tell a deliberate cancel from a failure.",
+            "default": false
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/StepStatus"
@@ -8004,7 +8579,19 @@
           "logs": {
             "type": "string",
             "title": "Logs",
-            "description": "Concatenated log output from all steps executed so far."
+            "description": "Concatenated log output from all steps executed so far \u2014 or, when the request gave a matching ``offset``, only the text after it (see ``offset``)."
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "Where ``logs`` starts in the full log text. 0 means ``logs`` is the full text (also when the requested offset could not be honoured, e.g. the earlier text changed); otherwise append ``logs`` to the text already held.",
+            "default": 0
+          },
+          "total_length": {
+            "type": "integer",
+            "title": "Total Length",
+            "description": "Length of the full log text, in characters.",
+            "default": 0
           }
         },
         "type": "object",
@@ -8107,6 +8694,12 @@
             "type": "integer",
             "title": "Total Steps",
             "default": 0
+          },
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled",
+            "description": "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). A cancelled run ends with status 'failed'; use this to tell a deliberate cancel from a failure.",
+            "default": false
           }
         },
         "type": "object",

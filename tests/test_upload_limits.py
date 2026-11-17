@@ -6,6 +6,7 @@ Every ordinary upload endpoint streams to disk through
 checked against both.
 """
 
+import gzip
 import io
 import zipfile
 
@@ -161,7 +162,8 @@ def test_rejected_upload_leaves_nothing_on_disk(capped_client, tmp_path):
         (project / "_upload" / "_spool").iterdir()
     )
     assert not (project / "t1").exists()
-    leftovers = [p for p in project.rglob("*") if p.is_file()]
+    # (The project's own creation record is not an upload leftover.)
+    leftovers = [p for p in project.rglob("*") if p.is_file() and p != project / "_working" / "project.json"]
     assert leftovers == [], leftovers
 
 
@@ -184,7 +186,8 @@ def test_upload_under_the_cap_still_succeeds(capped_client, tmp_path):
     assert resp.status_code == 200, resp.text
     committed = tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz"
     assert committed.exists()
-    assert committed.stat().st_size == int(0.5 * _MIB)
+    # The test blob isn't gzip, so commit compressed it (stored images are always gzip).
+    assert len(gzip.decompress(committed.read_bytes())) == int(0.5 * _MIB)
 
 
 def test_zip_upload_under_the_cap_still_succeeds(capped_client, tmp_path):

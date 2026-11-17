@@ -39,6 +39,7 @@ import math
 import re
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1984,6 +1985,72 @@ def _poll_cursor_path(user_id: str) -> Path | None:
     return d.parent / "poll_cursors" / f"{user_id}.txt"
 
 
+# Listing runs used to parse every run file of every user on each call (the run list
+# polls every few seconds while a run is active). Run files are only rewritten through
+# _save_run, so a summary cached against the file's mtime and size stays valid until
+# the file changes.
+_summary_cache: dict[str, tuple[int, int, _RunRecord]] = {}
+
+
+def _cached_run_headers(d: Path) -> Iterator[_RunRecord]:
+    """Yield a record for every run file in *d*, re-parsing only files that changed.
+
+    The records are shared with the cache: read-only use (filtering, _to_summary).
+    """
+    seen: set[str] = set()
+    for p in d.glob("*.json"):
+        key = p.name
+        seen.add(key)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        hit = _summary_cache.get(key)
+        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+            yield hit[2]
+            continue
+        run = _load_run(p.stem)
+        if run is None:
+            _summary_cache.pop(key, None)
+            continue
+        _summary_cache[key] = (st.st_mtime_ns, st.st_size, run)
+        yield run
+    for key in list(_summary_cache):
+        if key not in seen:
+            _summary_cache.pop(key, None)
+
+
+def _finished_after(user_id: str, cursor: datetime) -> list[_RunRecord]:
+    d = _runs_dir()
+    finished: list[_RunRecord] = []
+    if d and d.exists():
+        for run in _cached_run_headers(d):
+            if run.user_id != user_id or run.status not in _TERMINAL_STATUSES:
+                continue
+            fa = run.finished_at
+            if fa is None:
+                continue
+            if fa.tzinfo is None:
+                fa = fa.replace(tzinfo=timezone.utc)
+            if fa > cursor:
+                finished.append(run)
+    finished.sort(
+        key=lambda r: r.finished_at or datetime.fromtimestamp(0, tz=timezone.utc)
+    )
+    return finished
+
+
+def get_finished_since(
+    user_id: str, since: datetime,
+) -> tuple[list[PipelineRunSummary], datetime]:
+    """Terminal runs for *user_id* that finished after *since*. Stores nothing, so each
+    client (browser tab) keeps its own position instead of sharing one cursor."""
+    now = datetime.now(timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    return [_to_summary(r) for r in _finished_after(user_id, since)], now
+
+
 def get_and_advance_poll_cursor(
     user_id: str,
 ) -> tuple[list[PipelineRunSummary], datetime]:
@@ -2006,26 +2073,7 @@ def get_and_advance_poll_cursor(
         except Exception:
             cursor = datetime.fromtimestamp(0, tz=timezone.utc)
 
-    d = _runs_dir()
-    finished: list[_RunRecord] = []
-    if d and d.exists():
-        for p in d.glob("*.json"):
-            run = _load_run(p.stem)
-            if run is None or run.user_id != user_id:
-                continue
-            if run.status not in _TERMINAL_STATUSES:
-                continue
-            fa = run.finished_at
-            if fa is None:
-                continue
-            if fa.tzinfo is None:
-                fa = fa.replace(tzinfo=timezone.utc)
-            if fa > cursor:
-                finished.append(run)
-
-    finished.sort(
-        key=lambda r: r.finished_at or datetime.fromtimestamp(0, tz=timezone.utc)
-    )
+    finished = _finished_after(user_id, cursor)
 
     if cursor_p is not None:
         cursor_p.parent.mkdir(parents=True, exist_ok=True)
@@ -2105,6 +2153,7 @@ def _to_summary(run: _RunRecord) -> PipelineRunSummary:
         finished_at=run.finished_at,
         current_step=run.current_step,
         total_steps=run.total_steps,
+        cancelled=run.cancelled,
     )
 
 
@@ -2118,6 +2167,7 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
         finished_at=run.finished_at,
         current_step=run.current_step,
         total_steps=run.total_steps,
+        cancelled=run.cancelled,
         error=run.error,
         start_from_step=run.start_from_step,
         manual_uploads=[ManualUploadRecord(**r) for r in run.manual_uploads],
@@ -2180,12 +2230,10 @@ def list_runs(
     d = _runs_dir()
     if d is None or not d.exists():
         return []
-    runs: list[_RunRecord] = []
-    for p in d.glob("*.json"):
-        run = _load_run(p.stem)
-        if run and run.user_id == user_id:
-            if project_id is None or run.project_id == project_id:
-                runs.append(run)
+    runs = [
+        run for run in _cached_run_headers(d)
+        if run.user_id == user_id and (project_id is None or run.project_id == project_id)
+    ]
     runs.sort(key=lambda r: r.submitted_at, reverse=True)
     return [_to_summary(r) for r in runs[:limit]]
 
@@ -2264,7 +2312,27 @@ async def _live_logs_for_job(backend, job_id: str) -> str | None:
         return None
 
 
-async def get_run_logs(run_id: str, user_id: str, backend=None) -> PipelineRunLogs:
+# How much of the text before ``offset`` the client sends back (``tail``) so the server
+# can tell its copy still matches: live logs are replaced by the persisted ones when a
+# step completes, which can rewrite earlier text.
+LOG_TAIL_CHARS = 64
+
+
+def slice_logs(run_id: str, full: str, offset: int | None, tail: str | None) -> PipelineRunLogs:
+    """The part of *full* after *offset*, if the client's copy ends with *tail* there;
+    otherwise the full text (offset 0)."""
+    if (
+        offset is not None and tail is not None
+        and 0 < offset <= len(full)
+        and full[max(0, offset - len(tail)):offset] == tail
+    ):
+        return PipelineRunLogs(run_id=run_id, logs=full[offset:], offset=offset, total_length=len(full))
+    return PipelineRunLogs(run_id=run_id, logs=full, offset=0, total_length=len(full))
+
+
+async def get_run_logs(
+    run_id: str, user_id: str, backend=None, offset: int | None = None, tail: str | None = None,
+) -> PipelineRunLogs:
     run = _load_run(run_id)
     if not run:
         raise HTTPException(404, f"Run '{run_id}' not found")
@@ -2308,7 +2376,7 @@ async def get_run_logs(run_id: str, user_id: str, backend=None) -> PipelineRunLo
             if live_logs:
                 parts.append(f"=== Step {s.step_id} ===\n{live_logs}")
 
-    return PipelineRunLogs(run_id=run_id, logs="\n".join(parts))
+    return slice_logs(run_id, "\n".join(parts), offset, tail)
 
 
 def get_chunk_logs(run_id: str, user_id: str, step_id: str, chunk_idx: int) -> str:

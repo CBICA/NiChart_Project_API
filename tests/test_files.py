@@ -3,6 +3,7 @@ Tests for file listing, download, delete, NIfTI staging, CSV/IDAT upload,
 and the participants endpoints.
 """
 
+import gzip
 import io
 import zipfile
 
@@ -42,7 +43,7 @@ def test_list_files_shows_content(data_client, tmp_path):
 def test_list_files_excludes_hidden(data_client, tmp_path):
     pid = _create_project(data_client)
     user_dir = tmp_path / "LOCAL_USER" / pid
-    (user_dir / "_working").mkdir()
+    (user_dir / "_working").mkdir(exist_ok=True)
     (user_dir / "_working" / "meta.json").write_text("{}")
     (user_dir / "_upload").mkdir()
     (user_dir / "_upload" / "tmp.nii").write_bytes(b"")
@@ -90,6 +91,24 @@ def test_download_missing_file(data_client):
     pid = _create_project(data_client)
     resp = data_client.get(f"/projects/{pid}/files/download?path=nope.txt")
     assert resp.status_code == 404
+
+
+def test_content_alias_matches_download(data_client, tmp_path):
+    # /files/content is /files/download under a name ad-blockers don't filter.
+    pid = _create_project(data_client)
+    root = tmp_path / "LOCAL_USER" / pid
+    (root / "data.txt").write_text("content")
+    d = root / "mydir"
+    d.mkdir()
+    (d / "a.txt").write_text("aaa")
+    resp = data_client.get(f"/projects/{pid}/files/content?path=data.txt")
+    assert resp.status_code == 200
+    assert resp.content == b"content"
+    resp = data_client.get(f"/projects/{pid}/files/content?path=mydir&zip=true")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    assert data_client.get(f"/projects/{pid}/files/content?path=../../etc/passwd").status_code == 400
+    assert data_client.get(f"/projects/{pid}/files/content?path=nope.txt").status_code == 404
 
 
 # ── Multi-select zip download ──────────────────────────────────────────────────
@@ -318,7 +337,8 @@ def test_nifti_commit_skips_existing_target(data_client, tmp_path):
     assert len(body1["committed"]) == 1
     assert body1["skipped"] == []
     target = tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz"
-    assert target.read_bytes() == b"\x00" * 348
+    # The placeholder isn't gzip, so it was compressed on commit (see the tests below).
+    assert gzip.decompress(target.read_bytes()) == b"\x00" * 348
 
     # Re-upload the same subject/modality with different bytes — should be
     # skipped, not overwritten.
@@ -329,11 +349,48 @@ def test_nifti_commit_skips_existing_target(data_client, tmp_path):
     assert len(body2["skipped"]) == 1
     assert body2["skipped"][0]["mrid"] == "sub001"
     assert body2["skipped"][0]["modality"] == "t1"
-    assert target.read_bytes() == b"\x00" * 348  # unchanged
+    assert gzip.decompress(target.read_bytes()) == b"\x00" * 348  # unchanged
 
     # The duplicate staged file should have been cleaned up.
     staging_root = tmp_path / "LOCAL_USER" / pid / "_upload" / "nifti"
     assert not any(staging_root.iterdir()) if staging_root.exists() else True
+
+
+def _commit_one(client, pid, filename, content):
+    resp = client.post(
+        f"/projects/{pid}/files/upload/nifti",
+        files=[("files", (filename, io.BytesIO(content), "application/octet-stream"))],
+    )
+    assert resp.status_code == 202
+    staging_id = resp.json()["staging_id"]
+    resp = client.post(
+        f"/projects/{pid}/files/stage/{staging_id}/commit",
+        json={"mappings": [{"filename": filename, "mrid": "sub001", "modality": "t1"}]},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.parametrize("filename", ["sub001_T1.nii", "sub001_T1.nii.gz"])
+def test_nifti_commit_gzips_uncompressed_upload(data_client, tmp_path, filename):
+    # Stored images are always {MRID}.nii.gz, so uncompressed content — a .nii, or a
+    # .nii.gz that isn't really compressed — is gzipped on commit, not just renamed.
+    pid = _create_project(data_client)
+    content = b"\x5c\x01" + b"\x07" * 1000   # NIfTI-1 header starts 5c 01 00 00
+    _commit_one(data_client, pid, filename, content)
+    target = tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz"
+    stored = target.read_bytes()
+    assert stored[:2] == b"\x1f\x8b"
+    assert gzip.decompress(stored) == content
+    # No temporary file left next to it.
+    assert [p.name for p in target.parent.iterdir()] == ["sub001.nii.gz"]
+
+
+def test_nifti_commit_keeps_gzip_upload_as_is(data_client, tmp_path):
+    pid = _create_project(data_client)
+    content = gzip.compress(b"\x5c\x01" + b"\x07" * 1000)
+    _commit_one(data_client, pid, "sub001_T1.nii.gz", content)
+    target = tmp_path / "LOCAL_USER" / pid / "t1" / "sub001.nii.gz"
+    assert target.read_bytes() == content  # moved, not recompressed
 
 
 def test_nifti_stage_discard(data_client, tmp_path):

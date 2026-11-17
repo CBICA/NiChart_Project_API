@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.auth.dependencies import public
 from app.config import Settings, get_settings
 from app.models.files import UploadLimits
+from app.routers.agreements import router as agreements_router
 from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
 from app.routers.cloud import router as cloud_router
@@ -226,6 +227,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(auth_router)
+    app.include_router(agreements_router)
     app.include_router(catalog_router)
     app.include_router(docs_router)
     app.include_router(cloud_router)

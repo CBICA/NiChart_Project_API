@@ -6,8 +6,11 @@ All user-supplied paths are validated via path_security before any I/O.
 
 import asyncio
 import csv
+import gzip
 import io
+import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -120,12 +123,48 @@ async def publish_uploads(
 
 # ── Project CRUD ──────────────────────────────────────────────────────────────
 
+# When a project was created. A folder's mtime changes whenever an entry is added to it, so
+# it can't serve as the creation date; the date is recorded here on creation instead.
+_PROJECT_META_FILE = "_working/project.json"
+
+
+def _write_created_at(pdir: Path, created: datetime) -> None:
+    meta = pdir / _PROJECT_META_FILE
+    try:
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        tmp = meta.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"created_at": created.isoformat()}))
+        os.replace(tmp, meta)
+    except OSError:
+        _log.warning("Could not record the creation date of %s", pdir, exc_info=True)
+
+
+def project_created_at(pdir: Path) -> datetime:
+    """The project's creation time: the recorded one, else (projects from before it was
+    recorded) the oldest modification time of anything in it, which is then recorded so
+    the date stays put."""
+    meta = pdir / _PROJECT_META_FILE
+    try:
+        return datetime.fromisoformat(json.loads(meta.read_text())["created_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    oldest = pdir.stat().st_mtime
+    for item in pdir.rglob("*"):
+        try:
+            oldest = min(oldest, item.stat().st_mtime)
+        except OSError:
+            continue
+    created = datetime.fromtimestamp(oldest)
+    _write_created_at(pdir, created)
+    return created
+
+
 def list_projects(settings: Settings, user: CurrentUser) -> list[Project]:
     root = user_root(settings, user)
     if not root.exists():
         return []
     return [
-        Project(id=d.name, created_at=datetime.fromtimestamp(d.stat().st_mtime))
+        Project(id=d.name, created_at=project_created_at(d))
         for d in sorted(root.iterdir())
         if d.is_dir()
     ]
@@ -138,7 +177,9 @@ def create_project(settings: Settings, user: CurrentUser, name: str) -> Project:
     if pdir.exists():
         raise HTTPException(409, f"Project '{name}' already exists")
     pdir.mkdir()
-    return Project(id=name, created_at=datetime.fromtimestamp(pdir.stat().st_mtime))
+    created = datetime.now()
+    _write_created_at(pdir, created)
+    return Project(id=name, created_at=created)
 
 
 async def delete_project(settings: Settings, user: CurrentUser, project_id: str) -> None:
@@ -359,14 +400,28 @@ def _stream_zip_entries(entries: Iterable[tuple[Path, str]]) -> Iterator[bytes]:
         yield chunk
 
 
-def zip_directory_stream(directory: Path) -> Iterator[bytes]:
+def _is_hidden(item: Path, project_path: Path | None) -> bool:
+    """Inside the app's own folders (staged uploads, run state), which the file browser
+    doesn't show either."""
+    if project_path is None:
+        return False
+    try:
+        parts = item.resolve().relative_to(project_path.resolve()).parts
+    except ValueError:
+        return False
+    return any(p in _HIDDEN for p in parts)
+
+
+def zip_directory_stream(directory: Path, project_path: Path | None = None) -> Iterator[bytes]:
+    """Zip a directory. With ``project_path``, the app's hidden folders under it
+    (``_upload/``, ``_working/``) are left out, as in the file listing."""
     # Resolve the file list eagerly (a plain function, not a generator) so any error
     # here surfaces immediately rather than after the StreamingResponse has already
     # started sending the 200 + headers to the client.
     entries = [
         (item, str(item.relative_to(directory)))
         for item in sorted(directory.rglob("*"))
-        if item.is_file()
+        if item.is_file() and not _is_hidden(item, project_path)
     ]
     return _stream_zip_entries(entries)
 
@@ -377,7 +432,7 @@ def _resolve_zip_path_entries(project_path: Path, paths: list[str]) -> list[tupl
     for user_path in paths:
         target = resolve_file_path(project_path, user_path)
         items = (
-            [item for item in sorted(target.rglob("*")) if item.is_file()]
+            [item for item in sorted(target.rglob("*")) if item.is_file() and not _is_hidden(item, project_path)]
             if target.is_dir()
             else [target]
         )
@@ -388,6 +443,12 @@ def _resolve_zip_path_entries(project_path: Path, paths: list[str]) -> list[tupl
             seen.add(arcname)
             entries.append((item, arcname))
     return entries
+
+
+def archive_totals(project_path: Path, paths: list[str]) -> tuple[int, int]:
+    """(file count, total bytes) of what ``zip_paths_stream`` would include."""
+    entries = _resolve_zip_path_entries(project_path, paths)
+    return len(entries), sum(p.stat().st_size for p, _ in entries)
 
 
 def zip_paths_stream(project_path: Path, paths: list[str]) -> Iterator[bytes]:
@@ -939,6 +1000,41 @@ def stage_nifti_zip(
     )
 
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _is_gzip(path: Path) -> bool:
+    with path.open("rb") as f:
+        return f.read(2) == _GZIP_MAGIC
+
+
+def _store_as_nii_gz(src: Path, target: Path) -> None:
+    """Moves a staged NIfTI to ``target`` (a ``.nii.gz`` name), gzipping it on the way
+    unless it already is gzip.
+
+    Project images are always stored as ``{MRID}.nii.gz``, and readers (nibabel, the
+    pipelines) pick the decoder from the extension — so an uncompressed ``.nii`` upload,
+    or a ``.nii.gz`` that isn't actually compressed, must not land under that name as-is.
+    The content is checked, not the uploaded name. Written to a temporary file first so a
+    failure never leaves a partial image under the real name. ``mtime=0`` keeps the output
+    identical for identical input, so provenance digests are reproducible.
+    """
+    if _is_gzip(src):
+        shutil.move(str(src), target)
+        return
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with src.open("rb") as fin, tmp.open("wb") as raw, gzip.GzipFile(
+            filename=target.name.removesuffix(".gz"), mode="wb", fileobj=raw,
+            compresslevel=6, mtime=0,
+        ) as fout:
+            shutil.copyfileobj(fin, fout, 1024 * 1024)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    src.unlink()
+
+
 def commit_nifti_staging(
     project_path: Path,
     staging_id: str,
@@ -985,7 +1081,7 @@ def commit_nifti_staging(
             ))
             continue
         target_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), target)
+        _store_as_nii_gz(src, target)
         committed.append(CommittedFile(
             mrid=mapping.mrid,
             modality=mapping.modality,

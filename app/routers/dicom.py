@@ -43,7 +43,8 @@ _log = logging.getLogger(__name__)
 
 
 async def _sync_participants_after_convert(
-    settings: Settings, user: CurrentUser, project_id: str, pdir: Path, run_id: str
+    settings: Settings, user: CurrentUser, project_id: str, pdir: Path, run_id: str,
+    staging_id: str | None = None,
 ) -> None:
     """Add rows to participants.csv for subjects the conversion just produced.
 
@@ -61,6 +62,15 @@ async def _sync_participants_after_convert(
             await file_service.publish_uploads(settings, user, project_id, pdir)
     except Exception:
         _log.exception("participants.csv sync after DICOM conversion failed for %s", project_id)
+    # The original DICOMs stay in the hidden staging area, which the user can't see or
+    # delete; once every series converted they're no longer needed. After a failure
+    # they're kept so the conversion can be retried (the TTL sweep removes them later).
+    if staging_id:
+        try:
+            if job_service.get_run_detail(run_id, user.sub).status == "succeeded":
+                dicom_service.discard_dicom_staging(pdir, staging_id)
+        except Exception:
+            _log.exception("Removing DICOM staging %s after conversion failed", staging_id)
 
 _AUTH_ERRORS = {
     401: {"model": ErrorDetail, "description": "Missing or invalid token."},
@@ -214,9 +224,20 @@ async def convert_dicom(
     )
 
     direct_steps: list[job_service.DirectStep] = []
+    targets: dict[tuple[str, str], str] = {}
     for mapping in body.series_mappings:
         series_dir, patient_id = organized[mapping.series_uid]
         mrid = mapping.mrid or patient_id or "subject"
+        # Two series converted to the same MRID and modality would write one file.
+        key = (mapping.nichart_modality, mrid)
+        if key in targets:
+            raise HTTPException(
+                400,
+                f"Series {targets[key]} and {mapping.series_uid} would both be saved as "
+                f"{mapping.nichart_modality}/{mrid}.nii.gz. Give one of them a different "
+                "'mrid', or convert only one.",
+            )
+        targets[key] = mapping.series_uid
         # PatientID comes from the DICOM header, so it is untrusted too.
         try:
             assert_safe_mrid(mrid)
@@ -260,7 +281,7 @@ async def convert_dicom(
         execution_mode=settings.execution_mode,
     )
     background_tasks.add_task(
-        _sync_participants_after_convert, settings, user, project_id, pdir, run.run_id
+        _sync_participants_after_convert, settings, user, project_id, pdir, run.run_id, staging_id
     )
     return DicomConvertResult(run_id=run.run_id)
 
