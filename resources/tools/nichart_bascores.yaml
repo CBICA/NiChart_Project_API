@@ -10,6 +10,10 @@ inputs:
 outputs:
   out_csv:
     type: file
+    # Observed: one row per subject (SPARE_BA_Image.csv, MRID + Prediction, 8 rows at N=8). Checked after each run (subject
+    # coverage): a subject without a row counts as dropped by this step.
+    csv_columns: [MRID]
+    rows_per_subject: true
   out_attention:
     type: directory
 

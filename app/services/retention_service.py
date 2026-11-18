@@ -178,6 +178,31 @@ async def resolve_expiry(
 ) -> datetime | None:
     """The project's effective expiry, or ``None`` when there is no clock to read.
 
+    See ``resolve_retention``, which this wraps.
+    """
+    expiry, _ = await resolve_retention(
+        bucket, prefix, user_id, project_id, project_dir, retention_days, mtime_fallback
+    )
+    return expiry
+
+
+async def resolve_retention(
+    bucket: str | None,
+    prefix: str,
+    user_id: str,
+    project_id: str,
+    project_dir: Path,
+    retention_days: int,
+    mtime_fallback: bool,
+) -> tuple[datetime | None, datetime | None]:
+    """The project's effective expiry (``None`` when there is no clock to read), and
+    when its retention was last extended: the heartbeat's time, when the heartbeat is
+    the clock (``None`` for a test override or the directory-mtime fallback).
+
+    The heartbeat is written when the project is created and rewritten by an explicit
+    refresh and by use (uploads, pipeline submission), so "last extended" covers all
+    three; a client compares it with the creation time to tell them apart.
+
     The single definition of "when does this project expire", shared by the
     retention endpoints and the reaper so the value the API reports and the one
     it acts on cannot disagree.
@@ -199,9 +224,9 @@ async def resolve_expiry(
     """
     override = read_retention_override(project_dir)
     if override is not None:
-        return override
+        return override, None
     if not bucket:
-        return None
+        return None, None
     try:
         last_modified = await read_heartbeat(
             bucket=bucket, prefix=prefix, user_id=user_id, project_id=project_id
@@ -212,12 +237,12 @@ async def resolve_expiry(
             "treating its expiry as unknown.",
             project_id, user_id,
         )
-        return None
+        return None, None
     if last_modified is None:
         if not mtime_fallback:
-            return None
-        return _mtime_expiry(project_dir, project_id, user_id, retention_days)
-    return expires_at(last_modified, retention_days)
+            return None, None
+        return _mtime_expiry(project_dir, project_id, user_id, retention_days), None
+    return expires_at(last_modified, retention_days), last_modified
 
 
 def overdue_by(expiry: datetime | None, now: datetime | None = None) -> timedelta | None:

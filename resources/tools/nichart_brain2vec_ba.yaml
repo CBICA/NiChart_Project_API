@@ -21,6 +21,7 @@ outputs:
     contents:
       - pattern: "ViT_BA_Predictions.csv"
         csv_columns: [MRID, Prediction]
+        rows_per_subject: true
 
 mounts:
   t1_img:

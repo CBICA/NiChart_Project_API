@@ -32,6 +32,10 @@ outputs:
     description: string      # Optional.
     contents: [...]          # Optional. See "Declared contents" below.
     csv_columns: [str]       # Optional. File slots only.
+    rows_per_subject: bool   # Optional. File slots only: the CSV has one row per
+                             # subject (see "Subject coverage" below).
+    mrid_column: str         # Optional. With rows_per_subject; default MRID.
+    manifest: ...            # Optional. See "Manifest" below.
     merge: directory_union | directory_union_csv_concat | csv_concat
     # Required only when parallelizable: true (see below). Tells the orchestrator how to
     # merge this output across parallel chunks:
@@ -68,8 +72,22 @@ outputs:
 #         - pattern: "DLMUSE_Volumes.csv"     # one fixed file for the cohort
 #           csv_columns: [MRID]               # must parse as CSV with these columns
 #
-# A file slot declares `csv_columns` directly instead of a `contents` list,
-# since there is only ever one file and its name is fixed by the mount.
+#     dlmuse_vol:                             # (continued) the same CSV, once
+#       contents:                             # it is known to hold a row for
+#         - pattern: "DLMUSE_Volumes.csv"     # every subject the tool was given:
+#           csv_columns: [MRID]
+#           rows_per_subject: true            # one row per subject
+#           mrid_column: MRID                 # optional; default MRID
+#
+# A file slot declares `csv_columns` (and `rows_per_subject` / `mrid_column`)
+# directly instead of a `contents` list, since there is only ever one file and
+# its name is fixed by the mount.
+#
+# `contents` has a second use: SUBJECT COVERAGE (below). After every run of the
+# tool, the subjects it was given are checked against the `per_subject: true`
+# patterns and `rows_per_subject: true` CSVs of its outputs. A wrong pattern
+# therefore no longer just rejects uploads: it makes every subject look
+# dropped, and the step fails as "all scans excluded".
 #
 # `{MRID}` is the same placeholder a pipeline's `results.per_subject[].pattern`
 # uses, and scripts/check_pipeline_tool_filenames.py asserts that the two agree
@@ -79,7 +97,63 @@ outputs:
 #
 # Declare a pattern only where the real naming is known, from observed output or
 # from a flag in this tool's own command. A guessed pattern will reject valid
-# uploads, which is worse than declaring nothing.
+# uploads and fail valid runs, which is worse than declaring nothing.
+#
+# ── Manifest ─────────────────────────────────────────────────────────────────
+# Optional, per output slot. A file the tool writes about its run — a QC table,
+# a status list, a log — named relative to the slot's directory (for a file
+# slot, to the file's directory). Its format is the tool's own: NiChart makes
+# no assumptions about it and shows it to the user as written (the run page and
+# the provenance report keep its first 8 KB). A string is shorthand for
+# {pattern: ...}.
+#
+#   outputs:
+#     ravens_out:
+#       manifest: "processing_manifest.csv"
+#
+# Only for a format you control or have checked: declare `mrid_column` and the
+# manifest is also read as a CSV, and each dropped subject's row is shown as its
+# reason (`reason_column`, or the whole row when omitted).
+#
+#       manifest:
+#         pattern: "processing_manifest.csv"
+#         mrid_column: MRID
+#         reason_column: Status
+#
+# A manifest only explains; it never decides. A subject counts as dropped when
+# its declared outputs are missing, whether or not a manifest lists it.
+
+# ── Subject coverage ─────────────────────────────────────────────────────────
+# A tool may skip some subjects without failing (DLMUSE writing no segmentation
+# for a scan that fails its QC). Nothing is required of the container to detect
+# this. After a step's job succeeds, the orchestrator compares
+#
+#   expected — the subjects in the step's inputs: `{MRID}` patterns of its
+#              input slots, else the producing tool's output patterns; the MRID
+#              column of a CSV input; the images of a project modality folder
+#              (t1/, fl/ ...). Inputs of unknown naming are left out, never
+#              taken as empty.
+#   produced — subjects with every `per_subject` file and a row in every
+#              `rows_per_subject` CSV of its outputs.
+#
+# and records, per step: subjects dropped (with the manifest's reason, or the
+# missing outputs), and subjects of the run that never reached the step, each
+# traced to where it was lost — the upstream step that dropped it, or the
+# project input that lacks it (no image, no participants.csv row).
+#
+# - Some subjects dropped: the step succeeds and the run continues with the
+#   rest; the run is flagged a partial success.
+# - Every subject dropped: the step fails with failure_kind "all_excluded",
+#   distinct from a job error.
+# - No per-subject output declared: coverage is "not checked" for the step.
+#
+# The check reads directory listings and one CSV column, never image data, and
+# is the same for every execution backend and whether or not the step ran in
+# chunks (a failed chunk is still a step failure, reported separately).
+#
+# Every key above is ignored by the cloud submit Lambda, which reads only each
+# slot's `type`/`description`, `mounts`, `resources`, `parameters` and
+# `container` (its pydantic models ignore unknown keys).
 
 # ── Container mounts ─────────────────────────────────────────────────────────
 # Map each slot label to a path inside the container and an access mode.

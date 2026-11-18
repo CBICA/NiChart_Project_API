@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.models.jobs import MissingInputSubject, StepCoverage
+
 
 class ProvenanceInputCheck(BaseModel):
     """Staleness check for one input path recorded in a provenance file."""
@@ -163,6 +165,24 @@ class InputSource(BaseModel):
     ref: str | None = None
 
 
+class ReplacedOutput(BaseModel):
+    """An output directory or file this step replaced, and what had written it."""
+
+    label: str = Field(description="Output label in the tool definition.")
+    path: str = Field(description="Project-relative path.")
+    source: Literal["step", "manual_upload", "unknown"] = Field(
+        description=(
+            "'step' — written by the execution named here; 'manual_upload' — uploaded by "
+            "hand; 'unknown' — no record (produced before tracking, or placed by hand)."
+        )
+    )
+    execution_id: str | None = None
+    run_id: str | None = None
+    pipeline_id: str | None = None
+    step_id: str | None = None
+    finished_at: str | None = Field(default=None, description="When the replaced output was made.")
+
+
 class ExecutionOut(BaseModel):
     """One executed pipeline step that produced current project outputs."""
 
@@ -200,6 +220,22 @@ class ExecutionOut(BaseModel):
         ),
     )
     results: list[str] = Field(default_factory=list, description="pipeline_ids of results it feeds.")
+    coverage: StepCoverage | None = Field(
+        default=None,
+        description=(
+            "Which subjects it received and produced output for, as recorded when it ran. "
+            "For a step recorded before coverage was tracked, measured from the files as "
+            "they are now (coverage_measured_now)."
+        ),
+    )
+    coverage_measured_now: bool = Field(
+        default=False,
+        description="True when coverage was measured from the current files, not when it ran.",
+    )
+    replaced: list[ReplacedOutput] = Field(
+        default_factory=list,
+        description="Outputs it replaced when it ran: overwritten directories, and their origin.",
+    )
 
 
 class ResultLineage(BaseModel):
@@ -218,6 +254,13 @@ class ResultLineage(BaseModel):
     )
     executions: list[str] = Field(description="execution_ids behind it, in run order.")
     inputs: list[str] = Field(description="Raw input roots it derives from.")
+    missing_scans: list[MissingInputSubject] = Field(
+        default_factory=list,
+        description=(
+            "Subjects with no result because a step behind it dropped them or never "
+            "received them, each with where it was lost. From checked coverage only."
+        ),
+    )
     warnings: list[str] = Field(default_factory=list)
 
 

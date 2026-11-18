@@ -240,6 +240,21 @@ The background task:
 3. Updates the pipeline run record after each step.
 4. On any step failure: marks the run as failed and stops.
 
+**Staged outputs and subject coverage** (`job_service`, `subject_coverage.py`): a step's
+job writes into fresh staging dirs (`_working/steps/{run_id}/{step_id}/{label}`), never
+into its published output paths. After the job succeeds the orchestrator compares the
+subjects in the step's inputs with those its outputs cover (per the tool YAML's
+`outputs.<slot>.contents`: `{MRID}` patterns, `rows_per_subject` CSVs), records
+`coverage` on the step (dropped subjects with a reason, subjects of the run's `scope`
+that never reached it traced to where they were lost, the tool's `manifest` as written),
+then renames the staged outputs into place (S3: `promote_outputs`). Some subjects dropped
+→ the step succeeds and the run is a `partial_success`; all dropped → the step fails with
+`failure_kind: "all_excluded"`; nothing declared → coverage `checked: false`. A failed
+step publishes nothing. The step ledger keeps each execution's `coverage` and the outputs
+it `replaced`; the provenance report shows both, plus each result's `missing_scans`.
+See `resources/tools/SCHEMA.md` (Subject coverage, Manifest) and
+`resources/pipelines/SCHEMA.md` (Step execution).
+
 The task is lightweight (mostly I/O-bound polling with `asyncio.sleep`), so
 `asyncio.create_task` inside the request lifecycle is acceptable.
 

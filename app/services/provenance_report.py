@@ -34,6 +34,7 @@ from app.models.provenance import (
     InputDataset,
     InputSource,
     ProvenanceDossier,
+    ReplacedOutput,
     ResultLineage,
 )
 from app.services import (
@@ -45,6 +46,7 @@ from app.services import (
     replication,
     results_service,
     step_ledger,
+    subject_coverage,
 )
 from app.services.provenance_service import _check_input
 
@@ -404,6 +406,18 @@ class _Builder:
                     "step actually ran, with today's command template."
                 )
 
+        coverage = rec.get("coverage")
+        measured_now = False
+        if coverage is None and rec.get("outputs"):
+            coverage = self.coverage_now(rec)
+            measured_now = coverage is not None
+        if coverage and coverage.get("checked") and coverage.get("dropped"):
+            n, total = len(coverage["dropped"]), coverage.get("expected") or 0
+            warnings.append(
+                f"Dropped {n} of its {total} scan{'s' if total != 1 else ''}: it produced "
+                f"no output for {'them' if n != 1 else 'it'} (see Scans)."
+            )
+
         sdef = self.resolved_steps(rec["pipeline_id"]).get(rec["step_id"]) or {}
         return ExecutionOut(
             execution_id=exec_id,
@@ -428,7 +442,51 @@ class _Builder:
             reconstructed=bool(rec.get("reconstructed")),
             warnings=warnings,
             commands=commands,
+            coverage=coverage,
+            coverage_measured_now=measured_now,
+            replaced=[ReplacedOutput(**r) for r in rec.get("replaced") or []],
         )
+
+    def coverage_now(self, rec: dict) -> dict | None:
+        """Coverage of a step recorded before coverage was, from the files as they are now.
+
+        Has no run scope, so it says what the step dropped but not what never
+        reached it. Its outputs may have changed since (see the step's warnings).
+        """
+        spec = self.tool(rec.get("tool_id"))
+        if spec is None:
+            return None
+        inputs = {}
+        for label, rel in (rec.get("inputs") or {}).items():
+            if Path(rel).is_absolute():
+                continue
+            producer_rules = None
+            for eid in self.producers_of(rel, exclude=rec["execution_id"]):
+                prec = self.execs.get(eid) or {}
+                pspec = self.tool(prec.get("tool_id"))
+                plabel = next(
+                    (k for k, v in (prec.get("outputs") or {}).items() if _related(rel, v)), None
+                )
+                if pspec is not None and plabel:
+                    producer_rules = pspec.output_contents.get(plabel)
+                    break
+            subs = subject_coverage.input_slot_subjects(
+                self.study_dir / rel, spec.input_contents.get(label), producer_rules
+            )
+            inputs[label] = (rel, subs, None)
+        outputs = {
+            label: (self.study_dir / rel, rel)
+            for label, rel in (rec.get("outputs") or {}).items()
+            if not Path(rel).is_absolute() and self.producer.get(rel) == rec["execution_id"]
+        }
+        try:
+            return subject_coverage.compute_coverage(
+                scope=None, inputs=inputs, outputs=outputs,
+                output_rules=spec.output_contents, manifests=spec.output_manifests,
+            )
+        except Exception:
+            _log.exception("Couldn't measure coverage of %s", rec.get("execution_id"))
+            return None
 
     # ── inputs ──────────────────────────────────────────────────────────────
 
@@ -514,6 +572,29 @@ class _Builder:
         return paths
 
 
+def _missing_scans(chain: list[ExecutionOut]) -> list[dict]:
+    """Subjects a result lacks: dropped by, or missing from, the steps behind it.
+
+    A drop at a step in the chain is reported as that step's; a subject missing
+    from a step's inputs keeps the origin traced when it ran. One entry per
+    subject, an explicit drop preferred.
+    """
+    found: dict[str, dict] = {}
+    for ex in chain:
+        cov = ex.coverage
+        if cov is None or not cov.checked:
+            continue
+        for d in cov.dropped:
+            found[d.mrid] = {"mrid": d.mrid, "origin": {
+                "kind": "dropped", "step_id": ex.step_id, "run_id": ex.run_id,
+                "pipeline_id": ex.pipeline_id, "tool_id": ex.tool_id, "reason": d.reason,
+            }}
+        for m in cov.missing_inputs:
+            if m.mrid not in found:
+                found[m.mrid] = {"mrid": m.mrid, "origin": m.origin.model_dump()}
+    return [found[k] for k in sorted(found)]
+
+
 def _ordered(execs: list[ExecutionOut]) -> list[ExecutionOut]:
     """Dependencies first; otherwise by finish time."""
     by_id = {e.execution_id: e for e in execs}
@@ -577,6 +658,13 @@ def build_dossier(
             roots.update(s.ref for s in ex.inputs if s.kind == "input" and s.ref)
             if any(s.kind == "manual" for s in ex.inputs):
                 warnings.append(f"Built on manually uploaded data (step {ex.step_name or ex.step_id}).")
+        missing = _missing_scans([by_id[eid] for eid in ordered])
+        if missing:
+            warnings.append(
+                f"{len(missing)} scan{'s have' if len(missing) != 1 else ' has'} no result: "
+                "a step behind it dropped or never received "
+                f"{'them' if len(missing) != 1 else 'it'} (see Missing scans)."
+            )
         flagged = sum(1 for eid in ordered if by_id[eid].warnings)
         if flagged:
             warnings.append(
@@ -593,6 +681,7 @@ def build_dossier(
             },
             executions=ordered,
             inputs=sorted(roots),
+            missing_scans=missing,
             warnings=list(dict.fromkeys(warnings)),
         ))
     b.hashes.save()
@@ -614,6 +703,12 @@ def build_dossier(
     if flagged:
         warnings.append(
             f"{flagged} step{' has' if flagged == 1 else 's have'} warnings — see each step."
+        )
+    incomplete = [r for r in results if r.missing_scans]
+    if incomplete:
+        warnings.append(
+            f"{len(incomplete)} result{'s don’t' if len(incomplete) != 1 else ' doesn’t'} cover "
+            "every scan: a step dropped some — see Missing scans under each result."
         )
     if any(r.warnings and any(w.startswith("No step record") for w in r.warnings) for r in results):
         warnings.append("Some results have no record of the step that produced them.")

@@ -479,3 +479,59 @@ async def delete_s3_prefix(bucket: str, prefix: str) -> None:
     """
     n = await _sync_with_retry("delete", _delete_prefix_sync, bucket, prefix)
     _log.info("s3 delete complete: %d object(s) under s3://%s/%s", n, bucket, prefix)
+
+
+def _promote_sync(
+    bucket: str, prefix: str, local_dir: Path, moves: list[tuple[str, str, bool]]
+) -> int:
+    """Make S3 match a step's outputs after they were moved into place locally.
+
+    Each move is (staged dir, published dir, whole), project-relative. Objects
+    under the staged dir are copied server-side to the published dir (managed
+    copy: multipart for large objects, nothing passes through this host) and
+    then deleted. With ``whole`` (a directory output, replaced as a whole), any
+    published object the local directory no longer has is deleted too —
+    otherwise the next sync down would bring a replaced file back. Files the
+    local merge produced that were never in S3 are left to the next sync up.
+    """
+    s3 = _client()
+    copies: list[tuple[str, str, str]] = []
+    deletes: list[str] = []
+    for src_rel, dst_rel, whole in moves:
+        src_prefix = f"{prefix}/{src_rel}"
+        dst_prefix = f"{prefix}/{dst_rel}"
+        new_names: set[str] = set()
+        for obj in _list_remote(s3, bucket, src_prefix):
+            name = obj["Key"][len(src_prefix) + 1:]
+            deletes.append(obj["Key"])
+            if not name or name.endswith("/"):
+                continue
+            new_names.add(name)
+            copies.append((name, obj["Key"], f"{dst_prefix}/{name}"))
+        if whole:
+            local = {rel for rel, _p, _s in _walk_local_files(local_dir / dst_rel)}
+            for obj in _list_remote(s3, bucket, dst_prefix):
+                name = obj["Key"][len(dst_prefix) + 1:]
+                if name and name not in local and name not in new_names:
+                    deletes.append(obj["Key"])
+
+    def _copy_one(item: tuple[str, str, str]) -> bool:
+        name, src_key, dst_key = item
+        _retry(
+            f"copy {name}", s3.copy,
+            {"Bucket": bucket, "Key": src_key}, bucket, dst_key,
+        )
+        return True
+
+    copied = _run_transfers("promote", copies, _copy_one) if copies else 0
+    if deletes:
+        _delete_keys_sync(bucket, deletes)
+    return copied
+
+
+async def promote_outputs(
+    bucket: str, prefix: str, local_dir: Path, moves: list[tuple[str, str, bool]]
+) -> None:
+    """Publish a step's staged outputs in S3 (see ``_promote_sync``). Non-blocking."""
+    n = await _sync_with_retry("promote", _promote_sync, bucket, prefix, local_dir, moves)
+    _log.info("s3 promote complete: %d object(s) under s3://%s/%s/", n, bucket, prefix)

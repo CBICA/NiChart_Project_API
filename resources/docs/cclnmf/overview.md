@@ -13,8 +13,8 @@ CCL-NMF (Coupled Cross-sectional and Longitudinal Non-negative Matrix Factorizat
 
 ## Input requirements
 
-- DLMUSE regional brain volumes CSV (produced by the DLMUSE pipeline)
-- `participants/participants.csv` with at minimum an `MRID` column
+- T1-weighted MRI scans in NIfTI format (`.nii.gz`), one file per subject, in the project's `t1/` directory. The pipeline runs DLMUSE segmentation internally to get the regional volumes.
+- `participants/participants.csv` with columns `MRID`, `Age` (0–120) and `Sex` (M or F).
 
 ## Note
 

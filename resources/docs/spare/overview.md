@@ -18,7 +18,7 @@ Computed from DLMUSE regional brain volumes extracted from T1-weighted MRI alone
 - Additional disease-specific scores (see CSV column headers for the full list)
 
 **T1 + FLAIR (SPARE-All CVM)**  
-Adds white matter lesion features from DLWMLS to the T1-derived volumes, enabling cardiovascular and cerebrovascular disease-related scores (CVM variants): SPARE scores for hypertension, diabetes, obesity and smoking.
+Adds white matter lesion features from DLWMLS to the T1-derived volumes, enabling cardiovascular and cerebrovascular disease-related scores (CVM variants): SPARE scores for hypertension, diabetes, obesity and smoking. CVM scores are currently available only as a harmonized pipeline.
 
 ## Harmonized variants
 
@@ -26,11 +26,11 @@ Harmonized variants use ComBat-FAM corrected DLMUSE volumes as input. Use harmon
 - Your data comes from multiple sites or scanner types
 - You intend to combine your results with a reference cohort from a different acquisition protocol
 
-Harmonized outputs are written to a separate directory (`ml_biomarkers_harmonized/`) and do not overwrite standard outputs.
+Harmonized outputs are written to separate directories (`spare_all_harmonized/`, `spare_all_cvm_harmonized/`) and do not overwrite the standard outputs (`spare_all/`).
 
 ## Input requirements
 
-- DLMUSE regional volumes CSV (produced by the DLMUSE pipeline)
-- `participants/participants.csv` with columns: `MRID`, `Age` (0–120), `Sex` (M or F)
-- CVM variants additionally require DLWMLS outputs (T1 + FLAIR scans needed)
-- Minimum 3 subjects required; 30+ recommended for reliable estimates
+- T1-weighted MRI scans in the project's `t1/` directory. The pipelines run DLMUSE segmentation (and, for CVM, DLWMLS lesion segmentation) internally.
+- CVM variants additionally need FLAIR scans in the project's `fl/` directory.
+- `participants/participants.csv` with columns: `MRID`, `Age` (0–120), `Sex` (M or F).
+- Harmonized variants also need a `DX` column, and at least 30 scans, including at least 30 cognitively normal (`DX` = `CN`) scans in each `Batch`.

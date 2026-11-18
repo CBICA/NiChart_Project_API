@@ -36,6 +36,27 @@ class ContentRule:
     pattern: str | None
     per_subject: bool = False
     csv_columns: tuple[str, ...] | None = None
+    # A CSV holding one row per subject: every subject the step received must
+    # appear in its ``mrid_column``. Used by the subject-coverage check after a
+    # step runs (subject_coverage.py), not by upload validation.
+    rows_per_subject: bool = False
+    mrid_column: str = "MRID"
+
+
+@dataclass(frozen=True)
+class ManifestSpec:
+    """An output slot's optional manifest: a file the tool writes about its run.
+
+    ``pattern`` names the file relative to the slot's directory (for a file
+    slot, relative to the file's directory). Its format is the tool's own: the
+    API makes no assumptions about it and shows it to the user as written.
+    Only when ``mrid_column`` is declared (tools whose format we control) is it
+    also read as a CSV, to attach each dropped subject's row (``reason_column``,
+    or the whole row) to that subject.
+    """
+    pattern: str
+    mrid_column: str | None = None
+    reason_column: str | None = None
 
 
 @dataclass
@@ -84,6 +105,8 @@ class ToolSpec:
     # requires. Absent labels declare nothing, which keeps prior behaviour.
     input_contents: dict[str, list[ContentRule]] = field(default_factory=dict)
     output_contents: dict[str, list[ContentRule]] = field(default_factory=dict)
+    # Per output label: the manifest the tool writes about its run, if it does.
+    output_manifests: dict[str, ManifestSpec] = field(default_factory=dict)
 
     # ── Metadata ──────────────────────────────────────────────────────────────
     github_url: str | None = None

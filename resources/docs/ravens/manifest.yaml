@@ -1,7 +1,7 @@
-title: "RAVENS Maps"
-description: "Patient-specific regional brain volume abnormality maps via RAVENS voxel-based morphometry."
+title: "RAVENS Density & MuSIC"
+description: "Gray matter RAVENS tissue-density maps and MuSIC regional values from T1-weighted MRI."
 pipelines:
-  - run_nichart_ravens
+  - run_nichart_ravens_toolkit_fireants
 
 sections:
   - id: overview

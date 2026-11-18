@@ -10,6 +10,10 @@ inputs:
 outputs:
   spare_all_csv:
     type: file
+    # Observed: one row per subject (SPARE_ALL.csv, 100 rows at N=100). Checked after each run (subject
+    # coverage): a subject without a row counts as dropped by this step.
+    csv_columns: [MRID]
+    rows_per_subject: true
 
 mounts:
   demog_csv:

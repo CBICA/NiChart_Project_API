@@ -25,6 +25,13 @@ outputs:
         per_subject: true
       - pattern: "{MRID}_Warped.nii.gz"
         per_subject: true
+    # The toolkit's wrapper writes a per-subject status table (observed:
+    # MRID, Status, Return_Code, T1_Path, DLMUSE_Path, Timestamp). Shown to the
+    # user with the run; a dropped subject's Status is given as the reason.
+    manifest:
+      pattern: "processing_manifest.csv"
+      mrid_column: MRID
+      reason_column: Status
 
 mounts:
   t1_img:

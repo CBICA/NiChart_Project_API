@@ -15,9 +15,10 @@ DLMUSE (Deep Learning Multi-atlas Segmentation) automatically parcellates T1-wei
 
 ## Harmonized variant
 
-The harmonized variant (`DLMUSE Brain Segmentation — Harmonized`) adds a ComBat-FAM harmonization step after volume extraction. This corrects for site and scanner effects, making volumes more comparable across studies. Use the harmonized outputs as inputs to downstream SPARE score pipelines when your data comes from multiple sites or acquisition protocols.
+The harmonized variant (`DLMUSE (Harmonized)`) adds a ComBat-FAM harmonization step after volume extraction. This corrects for site and scanner effects, making volumes more comparable across studies. Its volumes are written to `dlmuse_vol_harmonized/`, with columns named `H_DL_MUSE_Volume_{id}`. The harmonized SPARE and DLWMLS pipelines run this same step themselves.
 
 ## Input requirements
 
 - T1-weighted MRI scans in NIfTI format (`.nii.gz`), one file per subject, named `{MRID}.nii.gz` and placed in the project's `t1/` directory.
-- No participants.csv is required for this pipeline.
+- No participants.csv is required for the standard pipeline.
+- The harmonized variant requires `participants/participants.csv` with columns `MRID`, `Age` (0–120), `Sex` (M or F) and `DX`, and at least 30 scans, including at least 30 cognitively normal (`DX` = `CN`) scans in each `Batch`.

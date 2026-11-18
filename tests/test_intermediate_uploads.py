@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import MockBackend
+
 PIPELINE = "run_spare_all_cvm_harmonized"
 START = "merge_feature_csvs"
 DLMUSE_VOL_SLOT = "harmonize_dlmuse.dlmuse_vol_harmonized"
@@ -945,14 +947,28 @@ def test_a_touched_but_unchanged_file_still_counts(data_client, tmp_path):
     assert manual_upload_store.find_manual_data(study, [csv])
 
 
+class _MergeWritingBackend(MockBackend):
+    """MockBackend whose CSV merge writes a row for S1, as the real merge would.
+
+    A step that writes no row for any subject it received now fails as
+    'all_excluded' (subject coverage), so a do-nothing mock can't stand in for it.
+    """
+
+    async def submit(self, tool_spec, mount_paths, params, **kw):
+        if tool_spec.tool_id == "merge_feature_csvs_by_mrid":
+            Path(mount_paths["out_csv"]).write_text("MRID,x\nS1,1\n")
+        return await super().submit(tool_spec, mount_paths, params, **kw)
+
+
 def test_outputs_computed_from_an_upload_carry_it_forward(job_client, tmp_path):
+    from app.backends import get_backend
+
+    job_client.app.dependency_overrides[get_backend] = lambda: _MergeWritingBackend()
     project = "derivproj"
     _make_project(job_client, project)
     _upload(job_client, [("files", ("DLMUSE_Volumes.csv", _csv_bytes(), "text/csv"))], project=project)
     study = tmp_path / "LOCAL_USER" / project
     merged = study / "merged_dlmuse_dlwmls" / "csv_out.csv"
-    merged.parent.mkdir(parents=True)
-    merged.write_text("MRID,x\nS1,1\n")   # stands in for what the merge step writes
 
     _run(job_client, project)   # the merge step reads the upload
 

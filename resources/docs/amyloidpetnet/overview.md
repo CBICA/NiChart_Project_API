@@ -13,4 +13,5 @@ AmyloidPETNet is an end-to-end deep learning model that classifies amyloid posit
 
 ## Input requirements
 
-- PET scans in NIfTI format (`.nii.gz`), provided as a flat directory. No structural MRI is required.
+- PET scans in NIfTI format (`.nii.gz`), one file per subject, in the project's `pet/` directory.
+- No structural MRI or participants.csv is required.

@@ -668,3 +668,54 @@ def test_an_upload_replaces_the_fallback_with_a_real_heartbeat(
 
     assert resp.status_code == 204
     assert writes == [pid]
+
+
+# ── last_extended_at ─────────────────────────────────────────────────────────
+
+def test_resolve_retention_reports_the_heartbeat_as_last_extended(tmp_path, monkeypatch):
+    written = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    async def _hb(**_kw):
+        return written
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _hb)
+    expiry, last_extended = asyncio.run(
+        retention_service.resolve_retention("buck", "fsx", "u", "p", tmp_path, 7,
+                                            mtime_fallback=True)
+    )
+    assert (expiry, last_extended) == (written + timedelta(days=7), written)
+
+
+def test_last_extended_is_unknown_for_an_override_or_the_mtime_fallback(tmp_path, monkeypatch):
+    async def _none(**_kw):
+        return None
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _none)
+    _, from_mtime = asyncio.run(
+        retention_service.resolve_retention("buck", "fsx", "u", "p", tmp_path, 7,
+                                            mtime_fallback=True)
+    )
+    retention_service.write_retention_override(tmp_path, datetime.now(timezone.utc))
+    _, from_override = asyncio.run(
+        retention_service.resolve_retention("buck", "fsx", "u", "p", tmp_path, 7,
+                                            mtime_fallback=True)
+    )
+    assert from_mtime is None and from_override is None
+
+
+def test_retention_endpoints_return_last_extended_at(cloud_upload_client, monkeypatch):
+    pid = _create_project(cloud_upload_client, "lastextended")
+    written = datetime.now(timezone.utc) - timedelta(days=2)
+
+    async def _hb(**_kw):
+        return written
+
+    monkeypatch.setattr(retention_service, "read_heartbeat", _hb)
+    got = cloud_upload_client.get(f"/projects/{pid}/retention").json()
+    assert datetime.fromisoformat(got["last_extended_at"]) == written
+    assert datetime.fromisoformat(got["expires_at"]) == written + timedelta(days=7)
+
+    refreshed = cloud_upload_client.post(f"/projects/{pid}/retention/refresh").json()
+    after = datetime.fromisoformat(refreshed["last_extended_at"])
+    assert after > written
+    assert datetime.fromisoformat(refreshed["expires_at"]) == after + timedelta(days=7)

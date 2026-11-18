@@ -16,4 +16,4 @@ Brain2Vec extracts latent brain embeddings from T1-weighted MRI scans using a ma
 ## Input requirements
 
 - T1-weighted MRI scans in NIfTI format (`.nii.gz`), one file per subject, named `{MRID}.nii.gz` and placed in the project's `t1/` directory.
-- No participants.csv is required for this pipeline.
+- No participants.csv is required. The pipeline runs DLMUSE segmentation and MNI alignment internally as prerequisite steps.

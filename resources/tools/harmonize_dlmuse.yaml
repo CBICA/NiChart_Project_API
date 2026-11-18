@@ -16,6 +16,7 @@ outputs:
     contents:
       - pattern: "DLMUSE_Volumes.csv"
         csv_columns: [MRID]
+        rows_per_subject: true
 
 mounts:
   dlmuse_vol_unharmonized:

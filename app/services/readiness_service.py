@@ -119,6 +119,24 @@ def _processed_subjects(
     return None
 
 
+def pipeline_subjects(project_path: Path, raw_requires: list) -> set[str] | None:
+    """The subjects a pipeline would run on now: its required modalities' images.
+
+    The same population as ``_processed_subjects`` (complete sets when it needs
+    several modalities). None when it requires no imaging modality. Used as a
+    run's scope for subject coverage.
+    """
+    dirs = []
+    for item in raw_requires or []:
+        if isinstance(item, str):
+            mod_dir = modalities.modality_for_requires(item.lower())
+            if mod_dir is not None and mod_dir not in dirs:
+                dirs.append(mod_dir)
+    if not dirs:
+        return None
+    return set.intersection(*(set(_mrids_in_dir(project_path, d)) for d in dirs))
+
+
 @dataclass
 class _CsvCoverage:
     """participants.csv measured against the subjects a pipeline would process."""

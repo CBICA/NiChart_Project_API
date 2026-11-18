@@ -36,6 +36,7 @@ import importlib.metadata
 import json
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -68,6 +69,7 @@ from app.services import (
     manual_upload_store,
     s3_sync_service,
     step_ledger,
+    subject_coverage,
     usage_service,
 )
 
@@ -107,6 +109,12 @@ class _StepRecord:
     # Upload keys of manual data this step read (manual_upload_store). Set when
     # the step is submitted; its outputs are marked as derived on success.
     manual_sources: list[str] = field(default_factory=list)
+    # Which subjects the step received and produced output for (subject_coverage).
+    # For a step reused from the cache, the coverage recorded when it ran.
+    coverage: dict | None = None
+    # Why a failed step failed: "error" (the job or the orchestrator failed) or
+    # "all_excluded" (the job succeeded but produced output for no subject).
+    failure_kind: str | None = None
 
 
 @dataclass
@@ -130,6 +138,10 @@ class _RunRecord:
     # submitted rather than read live, so the record still describes what this
     # run used after later uploads or runs change the project.
     manual_uploads: list[dict] = field(default_factory=list)
+    # The subjects this run is for: the project's images the pipeline requires,
+    # taken at submission (None when it requires none; then the first checked
+    # step's inputs). Each step's coverage is measured against it.
+    scope: list[str] | None = None
 
 
 # Set once at startup by load_runs_from_disk(); used by all persistence helpers.
@@ -618,8 +630,10 @@ def _merge_chunk_outputs(
                     if strategy == "directory_union_csv_concat" and f.suffix == ".csv":
                         csv_files.setdefault(f.name, []).append(f)
                     else:
+                        # Moved, not copied: the fragments are discarded after the
+                        # merge, and a rename costs the same for any file size.
                         dest = final_path / f.name
-                        shutil.copy2(str(f), str(dest))
+                        shutil.move(str(f), str(dest))
 
             if strategy == "directory_union_csv_concat":
                 for fname, sources in csv_files.items():
@@ -649,6 +663,261 @@ def _cleanup_fragment_dirs(study_dir: Path, run_id: str, step_id: str) -> None:
             shutil.rmtree(frag_dir)
         except Exception as exc:
             _log.warning("Could not clean up fragment dir %s: %s", frag_dir, exc)
+
+
+# ── Step output staging ───────────────────────────────────────────────────────
+#
+# A pipeline step never writes into its published output paths. Its job writes
+# into a fresh per-run staging directory instead; only after the step has
+# succeeded (and its subject coverage has been checked) are the staged outputs
+# moved into place, replacing what was there. So:
+#
+# - outputs are always exactly what this run's job wrote: nothing left over from
+#   an earlier run can stand in for a subject the tool skipped;
+# - a failed step leaves the project's previous outputs untouched;
+# - a published output directory always comes from one execution, which is what
+#   the step ledger's per-directory records (and their "replaced" entries) say.
+#
+# Everything is a rename within the project directory, so cost does not depend
+# on file size. Staging lives in _working/steps/{run_id}/{step_id}/{label}; the
+# outputs being replaced pass through _working/replaced/{run_id}/{step_id} and
+# are deleted once the new ones are in place.
+
+def _staging_root(study_dir: Path, run_id: str, step_id: str) -> Path:
+    return study_dir / "_working" / "steps" / run_id / step_id
+
+
+def _staged_outputs(
+    study_dir: Path, run_id: str, step_id: str, resolved_outputs: dict[str, str]
+) -> dict[str, str]:
+    """Where the job writes each output: same file name, in a fresh directory."""
+    root = _staging_root(study_dir, run_id, step_id)
+    out: dict[str, str] = {}
+    for label, final in resolved_outputs.items():
+        p = Path(final)
+        out[label] = str(root / label / p.name) if p.suffix else str(root / label)
+    return out
+
+
+def _prepare_staging(study_dir: Path, run_id: str, step_id: str, staged: dict[str, str]) -> None:
+    """Empty staging directories for a fresh submission of the step."""
+    import shutil
+    root = _staging_root(study_dir, run_id, step_id)
+    if root.exists():
+        shutil.rmtree(root)
+    for path_str in staged.values():
+        p = Path(path_str)
+        (p.parent if p.suffix else p).mkdir(parents=True, exist_ok=True)
+
+
+def _discard_tree(path: Path) -> None:
+    """Delete a directory tree; never raises (leftovers are swept with the run's)."""
+    import shutil
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _discard_run_working(study_dir: Path, run_id: str) -> None:
+    """Delete a finished run's staging and replaced-output directories."""
+    for kind in ("steps", "replaced"):
+        _discard_tree(study_dir / "_working" / kind / run_id)
+
+
+def _publish_outputs(
+    study_dir: Path, run_id: str, step_id: str,
+    staged: dict[str, str], final: dict[str, str],
+) -> None:
+    """Move a succeeded step's staged outputs into their published paths.
+
+    A directory output replaces the published directory as a whole. A file
+    output replaces that file, along with any other file the tool wrote beside
+    it in the staging directory; other files in the published directory stay.
+    On any failure every rename done so far is undone, so the project is left as
+    it was, and the error is re-raised.
+    """
+    trash = study_dir / "_working" / "replaced" / run_id / step_id
+    done: list[tuple[Path, Path]] = []   # (from, to), for rollback
+
+    def _move(src: Path, dst: Path) -> None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dst)
+        done.append((src, dst))
+
+    try:
+        for label, final_str in final.items():
+            s, f = Path(staged[label]), Path(final_str)
+            if f.suffix:
+                if not s.parent.is_dir():
+                    continue
+                for entry in sorted(s.parent.iterdir(), key=lambda e: e.name):
+                    target = f.parent / entry.name
+                    if target.exists() or target.is_symlink():
+                        _move(target, trash / label / entry.name)
+                    _move(entry, target)
+            else:
+                if f.exists() or f.is_symlink():
+                    _move(f, trash / label)
+                if s.is_dir():
+                    _move(s, f)
+                else:
+                    f.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        for src, dst in reversed(done):
+            try:
+                os.replace(dst, src)
+            except OSError:
+                _log.exception("Could not undo output move %s -> %s", src, dst)
+        raise
+    _discard_tree(trash)
+
+
+def _has_content(p: Path) -> bool:
+    if p.suffix:
+        return p.is_file()
+    if not p.is_dir():
+        return False
+    try:
+        with os.scandir(p) as it:
+            return any(e.name != "_provenance.json" for e in it)
+    except OSError:
+        return False
+
+
+def _previous_owners(study_dir: Path, resolved_outputs: dict[str, str]) -> list[dict]:
+    """What each output about to be replaced held: which execution wrote it, if known.
+
+    Recorded in the step ledger as the new execution's ``replaced`` list, so the
+    provenance report can say a directory was overwritten and by what.
+    """
+    ledger = step_ledger.load(study_dir)
+    out: list[dict] = []
+    for label, path_str in resolved_outputs.items():
+        p = Path(path_str)
+        if not _has_content(p):
+            continue
+        rel = _project_rel(study_dir, path_str)
+        entry: dict = {"label": label, "path": rel}
+        exec_id = ledger["outputs"].get(rel)
+        rec = ledger["executions"].get(exec_id) if exec_id else None
+        if rec:
+            entry.update(
+                source="step", execution_id=exec_id, run_id=rec.get("run_id"),
+                pipeline_id=rec.get("pipeline_id"), step_id=rec.get("step_id"),
+                finished_at=rec.get("finished_at"),
+            )
+        elif manual_upload_store.find_manual_data(study_dir, [p]):
+            entry["source"] = "manual_upload"
+        else:
+            entry["source"] = "unknown"
+        out.append(entry)
+    return out
+
+
+# ── Subject coverage ──────────────────────────────────────────────────────────
+
+def _ledger_producer(
+    study_dir: Path, ledger: dict, path_str: str, tools_path: Path, specs: dict,
+) -> subject_coverage.Producer | None:
+    """The execution that last wrote the output holding *path_str*, from the ledger."""
+    rel = _project_rel(study_dir, path_str)
+    for out_rel, exec_id in ledger.get("outputs", {}).items():
+        if rel != out_rel and not rel.startswith(out_rel + "/"):
+            continue
+        rec = ledger.get("executions", {}).get(exec_id)
+        if not rec:
+            return None
+        tool_id = rec.get("tool_id")
+        label = next((k for k, v in (rec.get("outputs") or {}).items() if v == out_rel), None)
+        rules = None
+        if tool_id and label:
+            if tool_id not in specs:
+                try:
+                    specs[tool_id] = catalog_service.load_tool_spec(tools_path, tool_id)
+                except Exception:
+                    specs[tool_id] = None
+            if specs[tool_id] is not None:
+                rules = specs[tool_id].output_contents.get(label)
+        return subject_coverage.Producer(
+            step_id=rec.get("step_id") or "", run_id=rec.get("run_id"),
+            pipeline_id=rec.get("pipeline_id"), tool_id=tool_id,
+            coverage=rec.get("coverage"), rules=rules,
+        )
+    return None
+
+
+def _step_coverage(
+    run: _RunRecord,
+    tool_spec: Any,
+    study_dir: Path,
+    tools_path: Path,
+    resolved_inputs: dict[str, str],
+    resolved_outputs: dict[str, str],
+    staged_outputs: dict[str, str],
+    manual_files: set[str],
+) -> dict:
+    """Subject coverage of a step whose job just succeeded (see subject_coverage).
+
+    Runs off the event loop. *manual_files* are project-relative files of manual
+    uploads the step read: an input holding them was supplied by hand, so a
+    subject missing from it is "not in that input", not an upstream drop.
+    """
+    ledger = step_ledger.load(study_dir)
+    specs: dict = {}
+    inputs: dict[str, tuple[str, set[str] | None, subject_coverage.Producer | None]] = {}
+    for label, path_str in resolved_inputs.items():
+        rel = _project_rel(study_dir, path_str)
+        by_hand = any(m == rel or m.startswith(rel + "/") for m in manual_files)
+        producer = None if by_hand else _ledger_producer(study_dir, ledger, path_str, tools_path, specs)
+        subjects = subject_coverage.input_slot_subjects(
+            Path(path_str),
+            tool_spec.input_contents.get(label),
+            producer.rules if producer else None,
+        )
+        inputs[label] = (rel, subjects, producer)
+    outputs = {
+        label: (Path(staged_outputs[label]), _project_rel(study_dir, final))
+        for label, final in resolved_outputs.items()
+    }
+    scope = set(run.scope) if run.scope is not None else None
+    cov = subject_coverage.compute_coverage(
+        scope=scope,
+        inputs=inputs,
+        outputs=outputs,
+        output_rules=tool_spec.output_contents,
+        manifests=tool_spec.output_manifests,
+    )
+    if run.scope is None and cov.get("checked"):
+        # No imaging requirement to take the run's subjects from: the first
+        # step that can tell what it received defines them for the steps after.
+        known = [s for _r, s, _p in inputs.values() if s is not None]
+        run.scope = sorted(set.intersection(*known)) if known else None
+        cov["scope"] = len(run.scope) if run.scope is not None else None
+    return cov
+
+
+def _coverage_of_cached(study_dir: Path, run_id: str | None, step_id: str) -> dict | None:
+    """Coverage recorded when a now-reused step ran (None if not recorded)."""
+    if not run_id:
+        return None
+    rec = step_ledger.load(study_dir)["executions"].get(step_ledger.execution_id(run_id, step_id))
+    return (rec or {}).get("coverage")
+
+
+def _all_excluded_message(cov: dict) -> str:
+    n = cov.get("expected") or 0
+    if n == 0:
+        return "No scans reached this step: every scan was excluded upstream or missing from its inputs"
+    manifests = cov.get("manifests") or []
+    detail = (
+        f"; see the tool's manifest ({', '.join(m['path'] for m in manifests)})"
+        if manifests else ""
+    )
+    return (
+        f"All {n} scan{'s' if n != 1 else ''} were excluded: the tool finished without "
+        f"error but produced output for none of them{detail}. If it did write files for "
+        "them, the tool's YAML may not describe its outputs correctly "
+        "(outputs.<slot>.contents)"
+    )
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -720,8 +989,12 @@ def _record_execution(
     resolved_outputs: dict[str, str],
     merged_params: dict,
     execution_mode: str,
+    replaced: list[dict] | None = None,
 ) -> None:
     """Add a succeeded step to the step ledger: everything needed to rerun it by hand.
+
+    Also what it did with its subjects (``coverage``) and which earlier outputs it
+    replaced (``replaced``).
 
     Runs off the event loop (it hashes what the step read and wrote). Never
     raises — a ledger failure must not fail the step.
@@ -778,6 +1051,8 @@ def _record_execution(
             "output_digests": digests(outputs),
             "chunks": len(step.chunks),
             "manual_sources": list(step.manual_sources),
+            "coverage": step.coverage,
+            "replaced": list(replaced or []),
         }
         hashes.save()
         step_ledger.record_execution(study_dir, record)
@@ -789,7 +1064,7 @@ def _record_execution(
 
 def _note_manual_inputs(
     run: _RunRecord, step: _StepRecord, study_dir: Path, resolved_inputs: dict[str, str]
-) -> None:
+) -> set[str]:
     """Record any hand-supplied data the step is about to read.
 
     Called only for a step that is really being submitted, at that moment, so a
@@ -813,6 +1088,8 @@ def _note_manual_inputs(
         if step.step_id not in entry["used_by_steps"]:
             entry["used_by_steps"].append(step.step_id)
         entry["indirect"] = bool(entry.get("indirect", True)) and hit.indirect
+    # The hand-supplied files themselves, for the subject-coverage check.
+    return set().union(*(h.files for h in hits.values())) if hits else set()
 
 
 def _mark_derived_outputs(
@@ -851,6 +1128,7 @@ def _run_to_dict(run: _RunRecord) -> dict:
         "backend_type": run.backend_type,
         "start_from_step": run.start_from_step,
         "manual_uploads": run.manual_uploads,
+        "scope": run.scope,
         "steps": [
             {
                 "step_id": s.step_id,
@@ -867,6 +1145,8 @@ def _run_to_dict(run: _RunRecord) -> dict:
                 "cached_from_run_id": s.cached_from_run_id,
                 "skip_reason": s.skip_reason,
                 "manual_sources": s.manual_sources,
+                "coverage": s.coverage,
+                "failure_kind": s.failure_kind,
                 "chunks": [
                     {
                         "chunk_idx": c.chunk_idx,
@@ -905,6 +1185,7 @@ def _run_from_dict(d: dict) -> _RunRecord:
         backend_type=d.get("backend_type", ""),
         start_from_step=d.get("start_from_step"),
         manual_uploads=d.get("manual_uploads") or [],
+        scope=d.get("scope"),
     )
     run.steps = [
         _StepRecord(
@@ -922,6 +1203,8 @@ def _run_from_dict(d: dict) -> _RunRecord:
             cached_from_run_id=s.get("cached_from_run_id"),
             skip_reason=s.get("skip_reason"),
             manual_sources=s.get("manual_sources") or [],
+            coverage=s.get("coverage"),
+            failure_kind=s.get("failure_kind"),
             chunks=[
                 _ChunkRecord(
                     chunk_idx=c["chunk_idx"],
@@ -1034,6 +1317,8 @@ def load_runs_from_disk(data_root: Path) -> None:
             run.error = "Server restarted while run was in progress"
             run.finished_at = run.finished_at or datetime.now(timezone.utc)
             _save_run(run)
+            # Its staged outputs will never be published.
+            _discard_run_working(data_root / run.user_id / run.project_id, run.run_id)
         # SLURM "running" runs are left intact; resume_runs() handles them.
 
 
@@ -1201,6 +1486,11 @@ async def run_pipeline_task(
         )
     finally:
         _record_usage_for_finished_run(run, execution_mode)
+        # A finished run's staged outputs were either published or belong to a
+        # failed step. A run still "running" here (server shutting down under a
+        # SLURM job) keeps them: the resumed run publishes them.
+        if run.status in ("succeeded", "failed"):
+            await asyncio.to_thread(_discard_run_working, study_dir, run.run_id)
 
 
 def _record_usage_for_finished_run(run: _RunRecord, execution_mode: str) -> None:
@@ -1294,6 +1584,131 @@ async def _run_pipeline_steps(
     manual_overrides = manual_upload_store.override_paths(study_dir)
     step_outputs: dict[str, dict[str, str]] = {}
 
+    async def _complete_step(
+        step: _StepRecord,
+        step_def: Any,
+        tool_spec: Any,
+        key: str,
+        flight: _StepFlight | None,
+        resolved_inputs: dict[str, str],
+        resolved_outputs: dict[str, str],
+        staged_outputs: dict[str, str],
+        merged_params: dict,
+        manual_files: set[str],
+    ) -> bool:
+        """After a step's job succeeded: check which subjects it produced output
+        for, publish its staged outputs, and record it. False if the step failed
+        here (the run is then marked failed and saved)."""
+
+        def _fail(message: str, kind: str = "error") -> bool:
+            step.status = "failed"
+            step.failure_kind = kind
+            step.error = message
+            run.status = "failed"
+            run.error = f"Step '{step_def.id}': {message}"
+            run.finished_at = datetime.now(timezone.utc)
+            if flight:
+                flight.resolve(False)
+            _save_run(run)
+            return False
+
+        if tool_spec is not None:
+            try:
+                step.coverage = await asyncio.to_thread(
+                    _step_coverage, run, tool_spec, study_dir, tools_path,
+                    resolved_inputs, resolved_outputs, staged_outputs, manual_files,
+                )
+            except Exception as exc:  # a bookkeeping bug must not fail the step
+                _log.exception("Coverage check failed for step '%s'", step_def.id)
+                step.coverage = {
+                    "checked": False, "note": f"Coverage check failed: {exc}",
+                    "dropped": [], "missing_inputs": [], "manifests": [],
+                }
+            if step.coverage.get("checked") and step.coverage.get("all_excluded"):
+                return _fail(_all_excluded_message(step.coverage), "all_excluded")
+
+        published = staged_outputs != resolved_outputs   # False: legacy reconnect
+        replaced: list[dict] = []
+        if published:
+            replaced = await asyncio.to_thread(_previous_owners, study_dir, resolved_outputs)
+            try:
+                await asyncio.to_thread(
+                    _publish_outputs, study_dir, run.run_id, step_def.id,
+                    staged_outputs, resolved_outputs,
+                )
+            except OSError as exc:
+                return _fail(f"Couldn't move the outputs into place: {exc}")
+
+        if _s3_project_prefix:
+            # The S3 copy must match: the staged objects become the published
+            # ones and anything left in a replaced directory goes, or the next
+            # sync down would bring it back.
+            moves = []
+            for label, final in resolved_outputs.items():
+                st, f = Path(staged_outputs[label]), Path(final)
+                if f.suffix:
+                    moves.append((_project_rel(study_dir, str(st.parent)),
+                                  _project_rel(study_dir, str(f.parent)), False))
+                else:
+                    moves.append((_project_rel(study_dir, str(st)),
+                                  _project_rel(study_dir, str(f)), True))
+            try:
+                if published:
+                    await s3_sync_service.promote_outputs(
+                        s3_sync.bucket, _s3_project_prefix, study_dir, moves,  # type: ignore[union-attr]
+                    )
+                await s3_sync_service.sync_to_s3(
+                    study_dir, s3_sync.bucket, _s3_project_prefix  # type: ignore[union-attr]
+                )
+            except Exception as exc:
+                return _fail(f"S3 output publish failed: {exc}")
+
+        step.status = "succeeded"
+        step_outputs[step_def.id] = resolved_outputs
+        # Provenance must be written BEFORE _mark_cached so that finished_time
+        # (set by time.time() inside _mark_cached) is >= the provenance file's
+        # mtime. If provenance were written after, its mtime would exceed
+        # finished_time and any downstream step whose input dir overlaps this
+        # step's output dir would appear dirty on the next cache check.
+        if tool_spec:
+            _write_provenance(
+                resolved_outputs=resolved_outputs,
+                step_id=step_def.id,
+                pipeline_id=run.pipeline_id,
+                container_image=tool_spec.image,
+                params=merged_params,
+                input_paths=resolved_inputs,
+                submitted_at=step.submitted_at,
+                finished_at=step.finished_at,
+                execution_mode=execution_mode,
+                user_id=run.user_id,
+                backend=run.backend_type,
+                run_id=run.run_id,
+                tool_id=step_def.tool,
+            )
+            await asyncio.to_thread(
+                _record_execution, run, step, step_def, tool_spec, study_dir,
+                resolved_inputs, resolved_outputs, merged_params, execution_mode,
+                replaced,
+            )
+        _mark_derived_outputs(run, step, study_dir, resolved_outputs)
+        _mark_cached(
+            metadata, key, run.run_id,
+            tool_id=step_def.tool,
+            inputs=resolved_inputs,
+            outputs=resolved_outputs,
+            container_image=step.container_image,
+        )
+        _save_metadata(study_dir, metadata)
+        if flight:
+            flight.resolve(True)
+        _save_run(run)
+        if published:
+            await asyncio.to_thread(
+                _discard_tree, _staging_root(study_dir, run.run_id, step_def.id)
+            )
+        return True
+
     for i, step_def in enumerate(pipeline_steps):
         if _is_cancel_requested(run.run_id):
             run.cancelled = True
@@ -1316,8 +1731,18 @@ async def _run_pipeline_steps(
             label: _resolve_path(val, study_dir, step_outputs)
             for label, val in (step_def.outputs or {}).items()
         }
-        mount_paths = {**resolved_inputs, **resolved_outputs}
+        # The job writes into fresh staging directories; _complete_step moves
+        # them into place once the step has succeeded. A job submitted before
+        # staging existed (reconnected after an upgrade) wrote in place.
+        staged_outputs = _staged_outputs(study_dir, run.run_id, step_def.id, resolved_outputs)
+        if (
+            step.status == "running" and step.job_id
+            and not _staging_root(study_dir, run.run_id, step_def.id).exists()
+        ):
+            staged_outputs = dict(resolved_outputs)
+        mount_paths = {**resolved_inputs, **staged_outputs}
         merged_params = {**user_params, **(step_def.params or {})}
+        manual_files: set[str] = set()
 
         # Skip already-completed steps (SLURM restart recovery: resume mid-pipeline).
         if step.status in ("succeeded", "skipped"):
@@ -1364,6 +1789,7 @@ async def _run_pipeline_steps(
                 step.container_image = _cached_step_image(
                     metadata.get(key), cached_run_id, step_def.tool
                 )
+                step.coverage = _coverage_of_cached(study_dir, cached_run_id, step_def.id)
                 step_outputs[step_def.id] = resolved_outputs
                 _save_run(run)
                 continue
@@ -1384,6 +1810,9 @@ async def _run_pipeline_steps(
                 step.status = "skipped"
                 step.skip_reason = "cached"
                 step.finished_at = datetime.now(timezone.utc)
+                step.coverage = _coverage_of_cached(
+                    study_dir, step.cached_from_run_id, step_def.id
+                )
                 step_outputs[step_def.id] = resolved_outputs
                 _save_run(run)
                 continue
@@ -1425,13 +1854,10 @@ async def _run_pipeline_steps(
         if handle is None:
             # Fresh submission path.
 
-            # Ensure output directories exist. For file outputs (path has a
-            # suffix), mkdir the parent so Docker doesn't auto-create a
-            # directory at the file path when it doesn't exist yet.
-            for path_str in resolved_outputs.values():
-                p = Path(path_str)
-                target = p.parent if p.suffix else p
-                target.mkdir(parents=True, exist_ok=True)
+            # Fresh, empty staging directories for the job's outputs. For file
+            # outputs (path has a suffix) the parent is created, so Docker
+            # doesn't auto-create a directory at the file path.
+            _prepare_staging(study_dir, run.run_id, step_def.id, staged_outputs)
 
             # Load tool spec (also used for provenance after success)
             try:
@@ -1450,7 +1876,7 @@ async def _run_pipeline_steps(
             # Estimate subject count for cloud queue-drain metric and SLURM time limits.
             num_subjects = _step_subject_count(resolved_inputs)
 
-            _note_manual_inputs(run, step, study_dir, resolved_inputs)
+            manual_files = _note_manual_inputs(run, step, study_dir, resolved_inputs)
             step.status = "running"
             step.submitted_at = datetime.now(timezone.utc)
             step.container_image = tool_spec.image
@@ -1596,8 +2022,8 @@ async def _run_pipeline_steps(
                             )
                         except Exception as exc:
                             _log.warning("S3 post-chunk sync failed: %s", exc)
-                    # Partial outputs of the chunks that succeeded came from the same inputs.
-                    _mark_derived_outputs(run, step, study_dir, resolved_outputs)
+                    # The succeeded chunks' outputs stay in their fragment
+                    # directories: a failed step publishes nothing.
 
                     if succeeded_chunks:
                         step.status = "partially_failed"
@@ -1642,7 +2068,7 @@ async def _run_pipeline_steps(
                     await asyncio.to_thread(
                         _merge_chunk_outputs,
                         chunk_output_dicts,
-                        resolved_outputs,
+                        staged_outputs,
                         tool_spec.output_merge,
                     )
                 except Exception as exc:
@@ -1658,9 +2084,10 @@ async def _run_pipeline_steps(
 
                 # Verify the merged outputs actually materialised before caching.
                 if _s3_project_prefix:
-                    missing = _verify_outputs_present(resolved_outputs)
+                    missing = _verify_outputs_present(staged_outputs)
                     if missing:
                         step.status = "failed"
+                        step.failure_kind = "error"
                         step.error = missing
                         run.status = "failed"
                         run.error = f"Step '{step_def.id}': {missing}"
@@ -1689,23 +2116,6 @@ async def _run_pipeline_steps(
                             step_def.id, exc,
                         )
 
-                    # Push the merged output to S3. The per-chunk syncs above only
-                    # published fragment outputs; the merge produces the final
-                    # output locally, so without this it would never reach S3
-                    # (the Batch up-sync never sees it, auto-export is disabled).
-                    try:
-                        await s3_sync_service.sync_to_s3(
-                            study_dir, s3_sync.bucket, _s3_project_prefix  # type: ignore[union-attr]
-                        )
-                    except Exception as exc:
-                        _log.warning(
-                            "S3 merged-output sync failed for step '%s' (data remains local): %s",
-                            step_def.id, exc,
-                        )
-
-                step.status = "succeeded"
-                step_outputs[step_def.id] = resolved_outputs
-
                 subjects_complete = sum(len(c.subjects) for c in succeeded_chunks)
                 _log.info(
                     "Step '%s' completed (%d/%d chunks, %d subjects) for run %s",
@@ -1713,38 +2123,13 @@ async def _run_pipeline_steps(
                     subjects_complete, run.run_id,
                 )
 
-                if tool_spec:
-                    _write_provenance(
-                        resolved_outputs=resolved_outputs,
-                        step_id=step_def.id,
-                        pipeline_id=run.pipeline_id,
-                        container_image=tool_spec.image,
-                        params=merged_params,
-                        input_paths=resolved_inputs,
-                        submitted_at=step.submitted_at,
-                        finished_at=step.finished_at,
-                        execution_mode=execution_mode,
-                        user_id=run.user_id,
-                        backend=run.backend_type,
-                        run_id=run.run_id,
-                        tool_id=step_def.tool,
-                    )
-                    await asyncio.to_thread(
-                        _record_execution, run, step, step_def, tool_spec, study_dir,
-                        resolved_inputs, resolved_outputs, merged_params, execution_mode,
-                    )
-                _mark_derived_outputs(run, step, study_dir, resolved_outputs)
-                _mark_cached(
-                    metadata, key, run.run_id,
-                    tool_id=step_def.tool,
-                    inputs=resolved_inputs,
-                    outputs=resolved_outputs,
-                    container_image=step.container_image,
-                )
-                _save_metadata(study_dir, metadata)
-                if flight:
-                    flight.resolve(True)
-                _save_run(run)
+                # Coverage, publishing (the merge was local, so _complete_step's
+                # S3 sync uploads the merged output) and bookkeeping.
+                if not await _complete_step(
+                    step, step_def, tool_spec, key, flight, resolved_inputs,
+                    resolved_outputs, staged_outputs, merged_params, manual_files,
+                ):
+                    return
                 continue  # advance to next pipeline step
 
             # ── Single-job (non-parallel) path ────────────────────────────────
@@ -1772,8 +2157,8 @@ async def _run_pipeline_steps(
         success = await _poll_to_completion(handle, step, run)
 
         if not success:
-            # Whatever the failed step left in its outputs came from the same inputs.
-            _mark_derived_outputs(run, step, study_dir, resolved_outputs)
+            # Nothing is published: the failed job's output stays in staging.
+            step.failure_kind = "error"
             if not run.error:
                 run.error = f"Step '{step_def.id}' failed"
             run.status = "failed"
@@ -1784,38 +2169,36 @@ async def _run_pipeline_steps(
             _save_run(run)
             return
 
-        # Pull the Batch job's outputs from S3, then push local state back. A sync
-        # failure now FAILS the step: without the pulled outputs we cannot confirm
-        # or serve results, and caching an empty success here would make every
-        # future cached run silently serve nothing.
+        # Pull the Batch job's (staged) outputs from S3. A sync failure FAILS the
+        # step: without the pulled outputs we cannot confirm or serve results,
+        # and caching an empty success here would make every future cached run
+        # silently serve nothing. _complete_step pushes local state back.
         if _s3_project_prefix:
-            for direction, fn, args in [
-                ("down", s3_sync_service.sync_from_s3,
-                 (s3_sync.bucket, _s3_project_prefix, study_dir)),  # type: ignore[union-attr]
-                ("up",   s3_sync_service.sync_to_s3,
-                 (study_dir, s3_sync.bucket, _s3_project_prefix)),  # type: ignore[union-attr]
-            ]:
-                try:
-                    await fn(*args)
-                except Exception as exc:
-                    step.status = "failed"
-                    step.error = f"S3 post-sync ({direction}) failed: {exc}"
-                    run.status = "failed"
-                    run.error = f"Step '{step_def.id}': S3 post-sync ({direction}) failed: {exc}"
-                    run.finished_at = datetime.now(timezone.utc)
-                    if flight:
-                        flight.resolve(False)
-                    _save_run(run)
-                    return
+            try:
+                await s3_sync_service.sync_from_s3(
+                    s3_sync.bucket, _s3_project_prefix, study_dir  # type: ignore[union-attr]
+                )
+            except Exception as exc:
+                step.status = "failed"
+                step.failure_kind = "error"
+                step.error = f"S3 post-sync (down) failed: {exc}"
+                run.status = "failed"
+                run.error = f"Step '{step_def.id}': S3 post-sync (down) failed: {exc}"
+                run.finished_at = datetime.now(timezone.utc)
+                if flight:
+                    flight.resolve(False)
+                _save_run(run)
+                return
 
         # Verify the tool's declared outputs actually materialised locally. A tool
         # can exit 0 without producing (or publishing) results; caching that would
         # serve empty output on every future cached run. Scoped to the S3-backed
         # path, where outputs return via sync and this failure mode exists.
         if _s3_project_prefix:
-            missing = _verify_outputs_present(resolved_outputs)
+            missing = _verify_outputs_present(staged_outputs)
             if missing:
                 step.status = "failed"
+                step.failure_kind = "error"
                 step.error = missing
                 run.status = "failed"
                 run.error = f"Step '{step_def.id}': {missing}"
@@ -1825,44 +2208,11 @@ async def _run_pipeline_steps(
                 _save_run(run)
                 return
 
-        step_outputs[step_def.id] = resolved_outputs
-        # Provenance must be written BEFORE _mark_cached so that finished_time
-        # (set by time.time() inside _mark_cached) is >= the provenance file's
-        # mtime. If provenance were written after, its mtime would exceed
-        # finished_time and any downstream step whose input dir overlaps this
-        # step's output dir would appear dirty on the next cache check.
-        if tool_spec:
-            _write_provenance(
-                resolved_outputs=resolved_outputs,
-                step_id=step_def.id,
-                pipeline_id=run.pipeline_id,
-                container_image=tool_spec.image,
-                params=merged_params,
-                input_paths=resolved_inputs,
-                submitted_at=step.submitted_at,
-                finished_at=step.finished_at,
-                execution_mode=execution_mode,
-                user_id=run.user_id,
-                backend=run.backend_type,
-                run_id=run.run_id,
-                tool_id=step_def.tool,
-            )
-            await asyncio.to_thread(
-                _record_execution, run, step, step_def, tool_spec, study_dir,
-                resolved_inputs, resolved_outputs, merged_params, execution_mode,
-            )
-        _mark_derived_outputs(run, step, study_dir, resolved_outputs)
-        _mark_cached(
-            metadata, key, run.run_id,
-            tool_id=step_def.tool,
-            inputs=resolved_inputs,
-            outputs=resolved_outputs,
-            container_image=step.container_image,
-        )
-        _save_metadata(study_dir, metadata)
-        if flight:
-            flight.resolve(True)
-        _save_run(run)
+        if not await _complete_step(
+            step, step_def, tool_spec, key, flight, resolved_inputs,
+            resolved_outputs, staged_outputs, merged_params, manual_files,
+        ):
+            return
 
     run.status = "succeeded"
     run.finished_at = datetime.now(timezone.utc)
@@ -2103,8 +2453,12 @@ def create_pipeline_run(
     pipeline_id: str,
     pipeline_steps: list,
     start_from_step: str | None = None,
+    scope: list[str] | None = None,
 ) -> _RunRecord:
     """Create and register a pipeline run record (does not start the task).
+
+    ``scope`` is the subjects the run is for (readiness_service.pipeline_subjects);
+    each step's coverage is measured against it.
 
     ``manual_uploads`` starts empty: it is filled in as each step is submitted,
     from what that step actually reads (``_note_manual_inputs``).
@@ -2118,6 +2472,7 @@ def create_pipeline_run(
         total_steps=len(pipeline_steps),
         steps=[_StepRecord(step_id=s.id, tool_id=s.tool) for s in pipeline_steps],
         start_from_step=start_from_step,
+        scope=sorted(scope) if scope is not None else None,
     )
     _save_run(run)
     return run
@@ -2143,6 +2498,17 @@ def create_direct_run(
     return run
 
 
+def _scan_counts(run: _RunRecord) -> dict:
+    """Run-level subject counts: its scope, and how many lack a full result."""
+    scope = set(run.scope) if run.scope is not None else None
+    incomplete = subject_coverage.incomplete_subjects([s.coverage for s in run.steps], scope)
+    return {
+        "scans_total": len(scope) if scope is not None else None,
+        "scans_incomplete": len(incomplete),
+        "partial_success": run.status == "succeeded" and bool(incomplete),
+    }
+
+
 def _to_summary(run: _RunRecord) -> PipelineRunSummary:
     return PipelineRunSummary(
         run_id=run.run_id,
@@ -2154,6 +2520,7 @@ def _to_summary(run: _RunRecord) -> PipelineRunSummary:
         current_step=run.current_step,
         total_steps=run.total_steps,
         cancelled=run.cancelled,
+        **_scan_counts(run),
     )
 
 
@@ -2168,6 +2535,7 @@ def _to_detail(run: _RunRecord) -> PipelineRunDetail:
         current_step=run.current_step,
         total_steps=run.total_steps,
         cancelled=run.cancelled,
+        **_scan_counts(run),
         error=run.error,
         start_from_step=run.start_from_step,
         manual_uploads=[ManualUploadRecord(**r) for r in run.manual_uploads],
@@ -2269,6 +2637,10 @@ def _step_record_to_status(s: _StepRecord) -> StepStatus:
         job_id=s.job_id,
         container_image=s.container_image,
         error=s.error,
+        failure_kind=(
+            (s.failure_kind or "error") if s.status in ("failed", "partially_failed") else None
+        ),
+        coverage=s.coverage,
         cached_from_run_id=s.cached_from_run_id,
         skip_reason=s.skip_reason,
         total_chunks=total_chunks,

@@ -9,8 +9,10 @@ DLWMLS quantifies white matter lesion burden from paired T1-weighted and FLAIR M
 
 ## What this pipeline produces
 
-- **Merged feature CSV** — regional DLMUSE volumes combined with DLWMLS lesion volumes, one row per subject. Used as input to CVM SPARE score pipelines.
-- **Lesion segmentation NIfTI** — a binary mask of detected white matter lesions in the FLAIR space.
+- **Regional lesion volume CSV** (`nichart_dlwmls_out/DLWMLS_DLMUSE_Segmented_Volumes.csv`) — white matter lesion volume within each DLMUSE region, one row per subject.
+- **Merged feature CSV** — DLMUSE regional volumes (harmonized, in the harmonized variant) combined with the lesion volumes, one row per subject.
+- **Lesion mask NIfTI** — a binary mask of detected white matter lesions, in FLAIR space.
+- **Lesions by region NIfTI** — the lesions labeled by DLMUSE region, in T1 space.
 
 ## Harmonized variant
 
@@ -19,4 +21,5 @@ The harmonized variant applies ComBat-FAM harmonization to the DLMUSE volumes be
 ## Input requirements
 
 - T1-weighted scans in `t1/` and FLAIR scans in `fl/`, both named `{MRID}.nii.gz`.
-- `participants/participants.csv` with columns: `MRID`, `Age` (numeric), `Sex` (M or F).
+- `participants/participants.csv` with an `MRID` column (created automatically when images are uploaded).
+- The harmonized variant requires `participants/participants.csv` with columns `MRID`, `Age` (0–120), `Sex` (M or F) and `DX`, and at least 30 scans, including at least 30 cognitively normal (`DX` = `CN`) scans in each `Batch`.

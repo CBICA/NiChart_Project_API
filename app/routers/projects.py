@@ -161,7 +161,7 @@ async def get_retention(
     settings: Settings = Depends(get_settings),
 ) -> RetentionInfo:
     pdir = file_service.resolve_project(settings, user, project_id)
-    expiry = await retention_service.resolve_expiry(
+    expiry, last_extended = await retention_service.resolve_retention(
         bucket=settings.s3_data_bucket,
         prefix=settings.s3_data_prefix,
         user_id=user.sub,
@@ -180,7 +180,7 @@ async def get_retention(
             "Retention expiry is unknown for this project — its heartbeat could not be "
             "read, or the directory-mtime fallback is disabled.",
         )
-    return RetentionInfo(expires_at=expiry)
+    return RetentionInfo(expires_at=expiry, last_extended_at=last_extended)
 
 
 @router.post(
@@ -221,5 +221,6 @@ async def refresh_retention(
         project_id=project_id,
     )
     return RetentionInfo(
-        expires_at=retention_service.expires_at(written_at, settings.project_retention_days)
+        expires_at=retention_service.expires_at(written_at, settings.project_retention_days),
+        last_extended_at=written_at,
     )

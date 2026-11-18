@@ -9,6 +9,8 @@ description: |
   tissue-density maps, and extracts opNMF/MuSIC regional values. Same outputs as
   the CPU pipeline, with registration accelerated on the GPU.
 
+docs_id: ravens
+
 categories:
   - image-processing
   - abnormality

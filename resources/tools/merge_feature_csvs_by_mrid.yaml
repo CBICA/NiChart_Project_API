@@ -13,6 +13,8 @@ outputs:
   out_csv:
     type: file
     csv_columns: [MRID]
+    # Observed: one row per subject (100 rows at N=100).
+    rows_per_subject: true
 
 mounts:
   csv_1:

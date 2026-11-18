@@ -43,6 +43,15 @@ class RetentionInfo(BaseModel):
             "POST /projects/{project_id}/retention/refresh."
         )
     )
+    last_extended_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the retention countdown was last restarted (the heartbeat marker's "
+            "time): at creation, by POST /projects/{project_id}/retention/refresh, or by "
+            "use of the project (uploads, pipeline submission). Null when the expiry "
+            "does not come from the heartbeat."
+        ),
+    )
 
 
 class Project(BaseModel):

@@ -15,6 +15,7 @@ outputs:
     contents:
       - pattern: "DLMUSE_Volumes.csv"
         csv_columns: [MRID, DL_MUSE_Volume_702]
+        rows_per_subject: true
   dlmuse_seg:
     type: directory
     # Observed: one segmentation per subject, named after the input T1 stem.

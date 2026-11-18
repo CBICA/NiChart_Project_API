@@ -51,6 +51,16 @@ _TYPE_MAP: dict[str, type] = {"int": int, "float": float, "bool": bool, "str": s
 _SAFE_STRING_RE = re.compile(r"^[a-zA-Z0-9._-]{1,256}$")
 
 
+def _run_scope(pdir, settings: Settings, pipeline_id: str) -> list[str] | None:
+    """The subjects a new run is for (its required images now), for subject coverage."""
+    try:
+        requires = catalog_service.get_pipeline_raw_requires(settings.pipelines_path, pipeline_id)
+        subjects = readiness_service.pipeline_subjects(pdir, requires)
+    except Exception:
+        return None
+    return sorted(subjects) if subjects is not None else None
+
+
 def _resolve_params(
     submitted: dict,
     declared: dict[str, ParameterSpec],
@@ -193,6 +203,7 @@ async def submit_pipeline(
         pipeline_id=body.pipeline_id,
         pipeline_steps=pipeline.steps,
         start_from_step=body.start_from_step,
+        scope=_run_scope(pdir, settings, body.pipeline_id),
     )
     usage_service.record_pipeline_run(
         body.pipeline_id,

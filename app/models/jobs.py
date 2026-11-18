@@ -55,6 +55,98 @@ class ChunkStatus(BaseModel):
     error: str | None = Field(default=None, description="Error message if this chunk failed.")
 
 
+class CoverageOrigin(BaseModel):
+    """Where a subject missing from a step's inputs was lost."""
+
+    kind: Literal["dropped", "not_produced", "not_in_input"] = Field(
+        description=(
+            "'dropped' — an upstream step received it and produced no output for it "
+            "(see reason). 'not_produced' — the upstream step that wrote the input never "
+            "had it (for example, it ran before the scan was added). 'not_in_input' — a "
+            "project input lacks it: no image, or no participants.csv row."
+        )
+    )
+    step_id: str | None = Field(default=None, description="Upstream step, for 'dropped' / 'not_produced'.")
+    run_id: str | None = Field(default=None, description="Run of that upstream step.")
+    pipeline_id: str | None = Field(default=None, description="Pipeline of that upstream step.")
+    tool_id: str | None = Field(default=None, description="Tool of that upstream step.")
+    reason: str | None = Field(default=None, description="The upstream step's reason, for 'dropped'.")
+    input: str | None = Field(
+        default=None, description="Project-relative input of this step that lacks the subject."
+    )
+
+
+class DroppedSubject(BaseModel):
+    """A subject a step received but produced no output for."""
+
+    mrid: str
+    source: Literal["manifest", "no_output"] = Field(
+        description=(
+            "'manifest' — the reason is the subject's row in the tool's manifest. "
+            "'no_output' — the tool gave no reason; the reason lists the declared "
+            "per-subject outputs that are missing."
+        )
+    )
+    reason: str
+
+
+class MissingInputSubject(BaseModel):
+    """A subject in the run's scope that never reached a step."""
+
+    mrid: str
+    origin: CoverageOrigin
+
+
+class ToolManifest(BaseModel):
+    """A manifest a tool wrote about its run, shown as written (its format is the tool's)."""
+
+    path: str = Field(description="Project-relative path of the manifest, as published.")
+    bytes: int | None = Field(default=None, description="File size.")
+    excerpt: str | None = Field(
+        default=None,
+        description="The first 8 KB as text (whole lines), kept with the run. Null for a binary file.",
+    )
+    truncated: bool = Field(default=False, description="True when the excerpt is not the whole file.")
+
+
+class StepCoverage(BaseModel):
+    """Which subjects a step received and produced output for.
+
+    Measured after the job succeeds, from the files alone: the subjects in the
+    step's inputs against those its outputs cover, per the tool YAML's
+    ``outputs.<slot>.contents``. Independent of the execution backend and of
+    chunking.
+    """
+
+    checked: bool = Field(
+        description=(
+            "False when coverage couldn't be measured (see note): the tool declares no "
+            "per-subject outputs, or the step's input subjects couldn't be told."
+        )
+    )
+    note: str | None = Field(default=None, description="Why coverage wasn't checked.")
+    scope: int | None = Field(default=None, description="Subjects the run is for.")
+    expected: int | None = Field(default=None, description="Subjects in the step's inputs.")
+    produced: int | None = Field(default=None, description="Subjects with every declared per-subject output.")
+    unexpected: int = Field(
+        default=0, description="Subjects with output that weren't in the step's inputs."
+    )
+    dropped: list[DroppedSubject] = Field(
+        default_factory=list, description="Subjects the step received but produced no output for."
+    )
+    missing_inputs: list[MissingInputSubject] = Field(
+        default_factory=list,
+        description="Subjects of the run that never reached this step, with where each was lost.",
+    )
+    manifests: list[ToolManifest] = Field(
+        default_factory=list, description="Manifests the tool wrote (outputs.<slot>.manifest)."
+    )
+    all_excluded: bool = Field(
+        default=False,
+        description="True when no subject got output. The step then fails with failure_kind 'all_excluded'.",
+    )
+
+
 class StepStatus(BaseModel):
     """Status record for a single pipeline step."""
 
@@ -63,7 +155,8 @@ class StepStatus(BaseModel):
     status: Literal["pending", "running", "succeeded", "failed", "skipped", "partially_failed"] = Field(
         description=(
             "Current execution state. 'partially_failed' means at least one chunk succeeded "
-            "but at least one failed; the pipeline is halted and partial output is preserved."
+            "but at least one failed; the pipeline is halted and nothing is published. A "
+            "step that dropped some subjects but not all is 'succeeded' — see coverage."
         )
     )
     submitted_at: datetime | None = Field(default=None)
@@ -83,6 +176,22 @@ class StepStatus(BaseModel):
         ),
     )
     error: str | None = Field(default=None, description="Error message if the step failed.")
+    failure_kind: Literal["error", "all_excluded"] | None = Field(
+        default=None,
+        description=(
+            "Why a failed step failed. 'error' — the job or the orchestrator failed (or "
+            "it was cancelled). 'all_excluded' — the job finished without error but "
+            "produced output for none of its subjects; see coverage. Null unless failed."
+        ),
+    )
+    coverage: StepCoverage | None = Field(
+        default=None,
+        description=(
+            "Which subjects the step received and produced output for. For a step "
+            "reused from the cache, the coverage recorded when it ran. Null when not "
+            "measured (the step hasn't finished, or ran before coverage was recorded)."
+        ),
+    )
     cached_from_run_id: str | None = Field(
         default=None,
         description=(
@@ -145,6 +254,24 @@ class PipelineRunSummary(BaseModel):
             "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). "
             "A cancelled run ends with status 'failed'; use this to tell a deliberate "
             "cancel from a failure."
+        ),
+    )
+    scans_total: int | None = Field(
+        default=None,
+        description="Subjects the run is for (its scope). Null when unknown.",
+    )
+    scans_incomplete: int = Field(
+        default=0,
+        description=(
+            "Subjects that some step dropped or never received, i.e. without a full "
+            "result. Counted only over steps whose coverage was checked."
+        ),
+    )
+    partial_success: bool = Field(
+        default=False,
+        description=(
+            "True for a succeeded run with scans_incomplete > 0: results exist for only "
+            "some of its subjects. Shown as a warning wherever the run is."
         ),
     )
 

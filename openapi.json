@@ -5833,6 +5833,98 @@
         "title": "CompleteSetsRequirement",
         "description": "Cross-modality check: each subject must have files in every required modality."
       },
+      "CoverageOrigin": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "dropped",
+              "not_produced",
+              "not_in_input"
+            ],
+            "title": "Kind",
+            "description": "'dropped' \u2014 an upstream step received it and produced no output for it (see reason). 'not_produced' \u2014 the upstream step that wrote the input never had it (for example, it ran before the scan was added). 'not_in_input' \u2014 a project input lacks it: no image, or no participants.csv row."
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id",
+            "description": "Upstream step, for 'dropped' / 'not_produced'."
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "Run of that upstream step."
+          },
+          "pipeline_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipeline Id",
+            "description": "Pipeline of that upstream step."
+          },
+          "tool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Id",
+            "description": "Tool of that upstream step."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "The upstream step's reason, for 'dropped'."
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input",
+            "description": "Project-relative input of this step that lacks the subject."
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "CoverageOrigin",
+        "description": "Where a subject missing from a step's inputs was lost."
+      },
       "CsvRequirement": {
         "properties": {
           "required_columns": {
@@ -6250,6 +6342,35 @@
         "title": "DownloadZipRequest",
         "description": "Request body for bundling multiple files/directories into a single zip."
       },
+      "DroppedSubject": {
+        "properties": {
+          "mrid": {
+            "type": "string",
+            "title": "Mrid"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manifest",
+              "no_output"
+            ],
+            "title": "Source",
+            "description": "'manifest' \u2014 the reason is the subject's row in the tool's manifest. 'no_output' \u2014 the tool gave no reason; the reason lists the declared per-subject outputs that are missing."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mrid",
+          "source",
+          "reason"
+        ],
+        "title": "DroppedSubject",
+        "description": "A subject a step received but produced no output for."
+      },
       "ErrorDetail": {
         "properties": {
           "detail": {
@@ -6453,6 +6574,31 @@
             "type": "array",
             "title": "Results",
             "description": "pipeline_ids of results it feeds."
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which subjects it received and produced output for, as recorded when it ran. For a step recorded before coverage was tracked, measured from the files as they are now (coverage_measured_now)."
+          },
+          "coverage_measured_now": {
+            "type": "boolean",
+            "title": "Coverage Measured Now",
+            "description": "True when coverage was measured from the current files, not when it ran.",
+            "default": false
+          },
+          "replaced": {
+            "items": {
+              "$ref": "#/components/schemas/ReplacedOutput"
+            },
+            "type": "array",
+            "title": "Replaced",
+            "description": "Outputs it replaced when it ran: overwritten directories, and their origin."
           }
         },
         "type": "object",
@@ -7569,6 +7715,24 @@
         "title": "MinSubjectsSpec",
         "description": "Declared subject-count requirement, with optional per-cohort minimums.\n\nThresholds are returned with pipeline-YAML defaults already resolved, so a\nclient never has to replicate the defaulting rules."
       },
+      "MissingInputSubject": {
+        "properties": {
+          "mrid": {
+            "type": "string",
+            "title": "Mrid"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CoverageOrigin"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mrid",
+          "origin"
+        ],
+        "title": "MissingInputSubject",
+        "description": "A subject in the run's scope that never reached a step."
+      },
       "ModalityInfo": {
         "properties": {
           "code": {
@@ -8526,6 +8690,30 @@
             "description": "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). A cancelled run ends with status 'failed'; use this to tell a deliberate cancel from a failure.",
             "default": false
           },
+          "scans_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scans Total",
+            "description": "Subjects the run is for (its scope). Null when unknown."
+          },
+          "scans_incomplete": {
+            "type": "integer",
+            "title": "Scans Incomplete",
+            "description": "Subjects that some step dropped or never received, i.e. without a full result. Counted only over steps whose coverage was checked.",
+            "default": 0
+          },
+          "partial_success": {
+            "type": "boolean",
+            "title": "Partial Success",
+            "description": "True for a succeeded run with scans_incomplete > 0: results exist for only some of its subjects. Shown as a warning wherever the run is.",
+            "default": false
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/StepStatus"
@@ -8730,6 +8918,30 @@
             "type": "boolean",
             "title": "Cancelled",
             "description": "True once the user asked to cancel the run (DELETE /jobs/pipelines/{run_id}). A cancelled run ends with status 'failed'; use this to tell a deliberate cancel from a failure.",
+            "default": false
+          },
+          "scans_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scans Total",
+            "description": "Subjects the run is for (its scope). Null when unknown."
+          },
+          "scans_incomplete": {
+            "type": "integer",
+            "title": "Scans Incomplete",
+            "description": "Subjects that some step dropped or never received, i.e. without a full result. Counted only over steps whose coverage was checked.",
+            "default": 0
+          },
+          "partial_success": {
+            "type": "boolean",
+            "title": "Partial Success",
+            "description": "True for a succeeded run with scans_incomplete > 0: results exist for only some of its subjects. Shown as a warning wherever the run is.",
             "default": false
           }
         },
@@ -9362,6 +9574,94 @@
         "title": "RejectedUploadFile",
         "description": "A file that was not written, and why."
       },
+      "ReplacedOutput": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Output label in the tool definition."
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Project-relative path."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "step",
+              "manual_upload",
+              "unknown"
+            ],
+            "title": "Source",
+            "description": "'step' \u2014 written by the execution named here; 'manual_upload' \u2014 uploaded by hand; 'unknown' \u2014 no record (produced before tracking, or placed by hand)."
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "pipeline_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipeline Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At",
+            "description": "When the replaced output was made."
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "path",
+          "source"
+        ],
+        "title": "ReplacedOutput",
+        "description": "An output directory or file this step replaced, and what had written it."
+      },
       "ResourceSpec": {
         "properties": {
           "vcpus": {
@@ -9431,6 +9731,14 @@
             "title": "Inputs",
             "description": "Raw input roots it derives from."
           },
+          "missing_scans": {
+            "items": {
+              "$ref": "#/components/schemas/MissingInputSubject"
+            },
+            "type": "array",
+            "title": "Missing Scans",
+            "description": "Subjects with no result because a step behind it dropped them or never received them, each with where it was lost. From checked coverage only."
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -9457,6 +9765,19 @@
             "format": "date-time",
             "title": "Expires At",
             "description": "UTC timestamp when the project will be automatically deleted. Computed as the S3 LastModified of the heartbeat marker object plus PROJECT_RETENTION_DAYS. Refresh by calling POST /projects/{project_id}/retention/refresh."
+          },
+          "last_extended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Extended At",
+            "description": "When the retention countdown was last restarted (the heartbeat marker's time): at creation, by POST /projects/{project_id}/retention/refresh, or by use of the project (uploads, pipeline submission). Null when the expiry does not come from the heartbeat."
           }
         },
         "type": "object",
@@ -10026,6 +10347,105 @@
         "title": "SlotCoverage",
         "description": "Per-subject coverage of a slot that has at least one per-subject rule."
       },
+      "StepCoverage": {
+        "properties": {
+          "checked": {
+            "type": "boolean",
+            "title": "Checked",
+            "description": "False when coverage couldn't be measured (see note): the tool declares no per-subject outputs, or the step's input subjects couldn't be told."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Why coverage wasn't checked."
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope",
+            "description": "Subjects the run is for."
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": "Subjects in the step's inputs."
+          },
+          "produced": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Produced",
+            "description": "Subjects with every declared per-subject output."
+          },
+          "unexpected": {
+            "type": "integer",
+            "title": "Unexpected",
+            "description": "Subjects with output that weren't in the step's inputs.",
+            "default": 0
+          },
+          "dropped": {
+            "items": {
+              "$ref": "#/components/schemas/DroppedSubject"
+            },
+            "type": "array",
+            "title": "Dropped",
+            "description": "Subjects the step received but produced no output for."
+          },
+          "missing_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/MissingInputSubject"
+            },
+            "type": "array",
+            "title": "Missing Inputs",
+            "description": "Subjects of the run that never reached this step, with where each was lost."
+          },
+          "manifests": {
+            "items": {
+              "$ref": "#/components/schemas/ToolManifest"
+            },
+            "type": "array",
+            "title": "Manifests",
+            "description": "Manifests the tool wrote (outputs.<slot>.manifest)."
+          },
+          "all_excluded": {
+            "type": "boolean",
+            "title": "All Excluded",
+            "description": "True when no subject got output. The step then fails with failure_kind 'all_excluded'.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "checked"
+        ],
+        "title": "StepCoverage",
+        "description": "Which subjects a step received and produced output for.\n\nMeasured after the job succeeds, from the files alone: the subjects in the\nstep's inputs against those its outputs cover, per the tool YAML's\n``outputs.<slot>.contents``. Independent of the execution backend and of\nchunking."
+      },
       "StepStatus": {
         "properties": {
           "step_id": {
@@ -10049,7 +10469,7 @@
               "partially_failed"
             ],
             "title": "Status",
-            "description": "Current execution state. 'partially_failed' means at least one chunk succeeded but at least one failed; the pipeline is halted and partial output is preserved."
+            "description": "Current execution state. 'partially_failed' means at least one chunk succeeded but at least one failed; the pipeline is halted and nothing is published. A step that dropped some subjects but not all is 'succeeded' \u2014 see coverage."
           },
           "submitted_at": {
             "anyOf": [
@@ -10110,6 +10530,33 @@
             ],
             "title": "Error",
             "description": "Error message if the step failed."
+          },
+          "failure_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "all_excluded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Kind",
+            "description": "Why a failed step failed. 'error' \u2014 the job or the orchestrator failed (or it was cancelled). 'all_excluded' \u2014 the job finished without error but produced output for none of its subjects; see coverage. Null unless failed."
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which subjects the step received and produced output for. For a step reused from the cache, the coverage recorded when it ran. Null when not measured (the step hasn't finished, or ran before coverage was recorded)."
           },
           "cached_from_run_id": {
             "anyOf": [
@@ -10652,6 +11099,51 @@
         ],
         "title": "ToolDetail",
         "description": "Full tool specification."
+      },
+      "ToolManifest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Project-relative path of the manifest, as published."
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes",
+            "description": "File size."
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt",
+            "description": "The first 8 KB as text (whole lines), kept with the run. Null for a binary file."
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "True when the excerpt is not the whole file.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "ToolManifest",
+        "description": "A manifest a tool wrote about its run, shown as written (its format is the tool's)."
       },
       "ToolSummary": {
         "properties": {

@@ -13,6 +13,12 @@ inputs:
 outputs:
   output_data:
     type: directory
+    # Observed: predictions.csv with MRID, img_path, y_score; one row per scan
+    # (4 rows at N=4, 16 at N=16). Matches results.batch_features.
+    contents:
+      - pattern: "predictions.csv"
+        csv_columns: [MRID]
+        rows_per_subject: true
 
 mounts:
   input_data:

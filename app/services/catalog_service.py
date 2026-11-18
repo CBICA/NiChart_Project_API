@@ -13,7 +13,7 @@ import yaml
 from fastapi import HTTPException
 
 from app import modalities
-from app.backends.base import ContentRule, MountSpec, ToolSpec
+from app.backends.base import ContentRule, ManifestSpec, MountSpec, ToolSpec
 from app.models.results import FeatureDefinition
 from app.models.catalog import (
     PerSubjectOutputSpec,
@@ -427,15 +427,37 @@ def _parse_slot_contents(slots: dict | None) -> dict[str, list[ContentRule]]:
                 pattern=str(raw["pattern"]),
                 per_subject=bool(raw.get("per_subject", False)),
                 csv_columns=tuple(cols) if cols else None,
+                rows_per_subject=bool(raw.get("rows_per_subject", False)),
+                mrid_column=str(raw.get("mrid_column") or "MRID"),
             ))
-        if spec.get("csv_columns"):
+        if spec.get("csv_columns") or spec.get("rows_per_subject"):
+            cols = spec.get("csv_columns")
             rules.append(ContentRule(
                 pattern=None,
                 per_subject=False,
-                csv_columns=tuple(spec["csv_columns"]),
+                csv_columns=tuple(cols) if cols else None,
+                rows_per_subject=bool(spec.get("rows_per_subject", False)),
+                mrid_column=str(spec.get("mrid_column") or "MRID"),
             ))
         if rules:
             result[label] = rules
+    return result
+
+
+def _parse_manifests(slots: dict | None) -> dict[str, ManifestSpec]:
+    """Each output slot's optional ``manifest`` declaration (see tools/SCHEMA.md)."""
+    result: dict[str, ManifestSpec] = {}
+    for label, spec in (slots or {}).items():
+        raw = spec.get("manifest") if isinstance(spec, dict) else None
+        if isinstance(raw, str):
+            raw = {"pattern": raw}
+        if not isinstance(raw, dict) or not raw.get("pattern"):
+            continue
+        result[label] = ManifestSpec(
+            pattern=str(raw["pattern"]),
+            mrid_column=str(raw["mrid_column"]) if raw.get("mrid_column") else None,
+            reason_column=str(raw["reason_column"]) if raw.get("reason_column") else None,
+        )
     return result
 
 
@@ -472,6 +494,7 @@ def load_tool_spec(tools_path: Path, tool_id: str) -> ToolSpec:
     return ToolSpec(
         input_contents=_parse_slot_contents(data.get("inputs")),
         output_contents=_parse_slot_contents(data.get("outputs")),
+        output_manifests=_parse_manifests(data.get("outputs")),
         tool_id=tool_id,
         name=data["name"],
         image=data["container"]["image"],

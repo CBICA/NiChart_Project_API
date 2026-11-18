@@ -319,9 +319,26 @@ input and output paths — the pipeline executor substitutes it before calling t
 
 ## Step execution and caching
 
-Steps run sequentially. After each successful step the executor writes a
-`_provenance.json` file in each output directory recording the tool ID, input paths,
-params, and finish time.
+Steps run sequentially. A step's job never writes into the step's output paths: it
+writes into fresh staging directories (`_working/steps/{run_id}/{step_id}/{label}`,
+same file names). Once the job has succeeded, the orchestrator checks which subjects
+it produced output for (subject coverage — see tools/SCHEMA.md), then moves the
+staged outputs into place: a directory output replaces the directory as a whole, a
+file output replaces that file. So
+
+- an output is always exactly what one execution wrote — nothing left by an earlier
+  run can stand in for a subject the tool skipped;
+- a failed step (including one that produced output for no subject) leaves the
+  previous outputs untouched;
+- the step ledger records, for each output, which earlier execution (or manual
+  upload) it replaced.
+
+Every move is a rename inside the project directory, so it costs the same for any
+file size. In cloud mode the S3 copy is updated to match (server-side copies, and
+objects of a replaced directory that no longer exist are deleted).
+
+After each successful step the executor writes a `_provenance.json` file in each
+output directory recording the tool ID, input paths, params, and finish time.
 
 A step is skipped (cache hit) when:
 - Its cache key `MD5(tool_id | json(inputs) | json(params))` matches a prior run, AND

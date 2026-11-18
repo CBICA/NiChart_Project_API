@@ -25,6 +25,17 @@ inputs:
 outputs:
   nichart_dlwmls_out:
     type: directory
+    # Observed (container run 2026-11-12, N=4), and what run_nichart_dlwmls_v2.yaml's
+    # results declare: per-subject lesion segmentations in two spaces plus one
+    # cohort CSV of regional lesion volumes.
+    contents:
+      - pattern: "DLWMLS_DLMUSE_Segmented/{MRID}_DLWMLS_DLMUSE_Segmented.nii.gz"
+        per_subject: true
+      - pattern: "DLWMLS_FLAIR/{MRID}_FL_LPS_DLWMLS.nii.gz"
+        per_subject: true
+      - pattern: "DLWMLS_DLMUSE_Segmented_Volumes.csv"
+        csv_columns: [MRID]
+        rows_per_subject: true
 
 mounts:
   fl_img:
